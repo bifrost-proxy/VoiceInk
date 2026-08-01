@@ -4,10 +4,10 @@ cask "voiceink" do
 
   url "https://github.com/bifrost-proxy/VoiceInk/releases/latest/download/VoiceInk.zip"
   name "VoiceInk"
-  desc "Privacy-focused voice-to-text app for macOS"
+  desc "Privacy-focused voice-to-text app"
   homepage "https://github.com/bifrost-proxy/VoiceInk"
 
-  depends_on macos: ">= :sonoma"
+  depends_on macos: :sonoma
 
   app "VoiceInk.app"
 
