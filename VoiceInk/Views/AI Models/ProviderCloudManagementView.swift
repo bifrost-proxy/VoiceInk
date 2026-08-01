@@ -9,6 +9,7 @@ struct CloudProviderManagementView: View {
         let enhancementProviders: [AIProvider] = [
             .openAI,
             .openRouter,
+            .ark,
             .anthropic,
             .gemini,
             .groq,
@@ -42,7 +43,7 @@ struct CloudProviderManagementView: View {
         }
 
         let preferredOrder = [
-            "Groq", "Cerebras", "Gemini", "OpenAI", "OpenRouter", "Anthropic", "Mistral",
+            "Groq", "Cerebras", "Gemini", "OpenAI", "Volcengine Ark", "OpenRouter", "Anthropic", "Mistral",
             "Deepgram", "ElevenLabs", "Soniox", "Speechmatics", "AssemblyAI", "xAI", "Cartesia",
         ]
 
@@ -106,6 +107,8 @@ struct ProviderDescriptor: Identifiable {
             return "provider-openai"
         case "openrouter":
             return "provider-openrouter"
+        case "volcengine ark":
+            return nil
         case "anthropic":
             return "provider-anthropic"
         case "gemini":
@@ -147,6 +150,8 @@ struct ProviderDescriptor: Identifiable {
             return URL(string: "https://platform.openai.com/api-keys")
         case "openrouter":
             return URL(string: "https://openrouter.ai/keys")
+        case "volcengine ark":
+            return URL(string: "https://console.volcengine.com/ark/region:ark+cn-beijing/apikey")
         case "anthropic":
             return URL(string: "https://console.anthropic.com/settings/keys")
         case "mistral":

@@ -10,8 +10,10 @@ import Testing
 
 struct VoiceInkTests {
 
-    @Test func example() async throws {
-        // Write your test here and use APIs like `#expect(...)` to check expected conditions.
+    @Test func volcanoArkUsesOpenAICompatibleChatEndpoint() {
+        #expect(AIProvider.ark.baseURL == "https://ark.cn-beijing.volces.com/api/v3/chat/completions")
+        #expect(AIProvider.ark.requiresAPIKey)
+        #expect(AIProvider.ark.supportsEnhancement)
     }
 
 }

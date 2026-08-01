@@ -19085,6 +19085,66 @@
           }
         }
       }
+    },
+    "Could not verify this model. Check the name and try again." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法验证此模型，请检查名称后重试。"
+          }
+        }
+      }
+    },
+    "Enter an Ark model ID or inference endpoint ID." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请输入方舟模型 ID 或推理接入点 ID。"
+          }
+        }
+      }
+    },
+    "Model or endpoint name" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "模型或接入点名称"
+          }
+        }
+      }
+    },
+    "Model or endpoint name (for example, ep-20250520154305-lz8cg)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "模型或接入点名称（例如 ep-20250520154305-lz8cg）"
+          }
+        }
+      }
+    },
+    "Model verified and saved." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "模型已验证并保存。"
+          }
+        }
+      }
+    },
+    "Save & Verify" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "保存并验证"
+          }
+        }
+      }
     }
   },
   "version" : "1.1"

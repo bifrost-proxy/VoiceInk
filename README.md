@@ -31,6 +31,7 @@ The goal is to provide an efficient and privacy-focused voice-to-text experience
 - 📝 **Personal Dictionary**: Train the AI to understand your unique terminology with custom words, industry terms, and smart text replacements
 - 🔄 **Smart Modes**: Instantly switch between AI-powered modes optimized for different writing styles and contexts
 - 🤖 **AI Assistant**: Built-in voice assistant mode for a quick chatGPT like conversational assistant
+- ✨ **Volcengine Ark Polishing**: Connect an Ark API key and model or inference endpoint ID to polish transcripts
 
 ## Get Started
 
@@ -52,6 +53,15 @@ brew install --cask voiceink
 ```
 
 For upgrades, use `brew upgrade --cask --greedy voiceink` because the tap follows the latest GitHub Release.
+
+### Volcengine Ark
+
+Open **AI Models → Cloud → Volcengine Ark**, then enter:
+
+- Your Ark API key
+- A model ID or inference endpoint ID, such as `ep-20250520154305-lz8cg`
+
+VoiceInk uses Ark's fixed Beijing OpenAI-compatible endpoint, so no Base URL configuration is needed.
 
 ### Build from Source
 You can build VoiceInk yourself by following [BUILDING.md](BUILDING.md).

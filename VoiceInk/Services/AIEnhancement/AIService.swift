@@ -8,6 +8,7 @@ enum AIProvider: String, CaseIterable {
     case anthropic = "Anthropic"
     case openAI = "OpenAI"
     case openRouter = "OpenRouter"
+    case ark = "Volcengine Ark"
     case mistral = "Mistral"
     case elevenLabs = "ElevenLabs"
     case deepgram = "Deepgram"
@@ -32,6 +33,8 @@ enum AIProvider: String, CaseIterable {
             return "https://api.openai.com/v1/chat/completions"
         case .openRouter:
             return "https://openrouter.ai/api/v1/chat/completions"
+        case .ark:
+            return "https://ark.cn-beijing.volces.com/api/v3/chat/completions"
         case .mistral:
             return "https://api.mistral.ai/v1/chat/completions"
         case .elevenLabs:
@@ -65,6 +68,8 @@ enum AIProvider: String, CaseIterable {
             return "claude-sonnet-5"
         case .openAI:
             return "gpt-5.5"
+        case .ark:
+            return UserDefaults.standard.string(forKey: "Volcengine ArkSelectedModel") ?? ""
         case .mistral:
             return "mistral-medium-3-5"
         case .elevenLabs:
@@ -125,6 +130,9 @@ enum AIProvider: String, CaseIterable {
                 "gpt-4.1-mini",
                 "gpt-4.1-nano",
             ]
+        case .ark:
+            let model = defaultModel.trimmingCharacters(in: .whitespacesAndNewlines)
+            return model.isEmpty ? [] : [model]
         case .mistral:
             return [
                 "mistral-medium-3-5",
@@ -243,7 +251,8 @@ class AIService: ObservableObject {
     var currentModel: String {
         if let selectedModel = selectedModels[selectedProvider],
             !selectedModel.isEmpty,
-            (selectedProvider == .ollama && !selectedModel.isEmpty) || availableModels.contains(selectedModel)
+            ([.ollama, .ark].contains(selectedProvider) && !selectedModel.isEmpty)
+                || availableModels.contains(selectedModel)
         {
             return selectedModel
         }
@@ -278,6 +287,9 @@ class AIService: ObservableObject {
             return ollamaService.availableModels.map { $0.name }
         } else if provider == .openRouter {
             return openRouterModels
+        } else if provider == .ark {
+            let model = selectedModel(for: provider).trimmingCharacters(in: .whitespacesAndNewlines)
+            return model.isEmpty ? [] : [model]
         } else if provider == .custom {
             return CustomAIProviderManager.shared.availableModelNames
         }
@@ -375,6 +387,7 @@ class AIService: ObservableObject {
     }
 
     func selectModel(_ model: String, for provider: AIProvider) {
+        let model = model.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !model.isEmpty else { return }
 
         if provider == .custom {
@@ -443,6 +456,11 @@ class AIService: ObservableObject {
         }
 
         let verificationModel = model ?? selectedModel(for: provider)
+        if provider == .ark,
+            verificationModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        {
+            return (false, "Enter an Ark model ID or inference endpoint ID")
+        }
         let result: (isValid: Bool, errorMessage: String?)
 
         switch provider {

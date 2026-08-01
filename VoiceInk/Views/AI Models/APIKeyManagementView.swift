@@ -18,6 +18,8 @@ struct APIKeyManagementView: View {
     @State private var localCLICommandTemplate: String = ""
     @State private var localCLITimeoutSeconds: Double = LocalCLIService.defaultTimeoutSeconds
     @State private var isSyncingLocalCLIState = false
+    @State private var arkModel: String =
+        UserDefaults.standard.string(forKey: "Volcengine ArkSelectedModel") ?? ""
 
     private var providerOptions: [AIProvider] {
         AIProvider.allCases.filter { provider in
@@ -73,6 +75,7 @@ struct APIKeyManagementView: View {
             .onAppear {
                 syncSelectedProviderAvailability()
                 syncSelectedCustomModelIfNeeded()
+                syncArkModelIfNeeded()
             }
             .onChange(of: aiService.selectedProvider) { oldValue, newValue in
                 if aiService.selectedProvider == .ollama {
@@ -82,6 +85,7 @@ struct APIKeyManagementView: View {
                     syncLocalCLIStateFromService()
                 }
                 syncSelectedCustomModelIfNeeded()
+                syncArkModelIfNeeded()
             }
             .onChange(of: customAIProviderManager.providers) { _, _ in
                 syncSelectedProviderAvailability()
@@ -90,7 +94,16 @@ struct APIKeyManagementView: View {
 
             VStack(alignment: .leading, spacing: 12) {
                 // Model Selection
-                if aiService.selectedProvider == .openRouter {
+                if aiService.selectedProvider == .ark {
+                    TextField("Model or endpoint name (for example, ep-20250520154305-lz8cg)", text: $arkModel)
+                        .textFieldStyle(.roundedBorder)
+                        .onChange(of: arkModel) { _, newValue in
+                            let model = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                            if !model.isEmpty {
+                                aiService.selectModel(model, for: .ark)
+                            }
+                        }
+                } else if aiService.selectedProvider == .openRouter {
                     if aiService.availableModels.isEmpty {
                         HStack {
                             Text("No models loaded")
@@ -308,7 +321,11 @@ struct APIKeyManagementView: View {
                                     Text("Verify and Save")
                                 }
                             }
-                            .disabled(apiKey.isEmpty)
+                            .disabled(
+                                apiKey.isEmpty
+                                    || (aiService.selectedProvider == .ark
+                                        && arkModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                            )
                         }
                     }
                 }
@@ -354,6 +371,11 @@ struct APIKeyManagementView: View {
         }
     }
 
+    private func syncArkModelIfNeeded() {
+        guard aiService.selectedProvider == .ark else { return }
+        arkModel = aiService.selectedModel(for: .ark)
+    }
+
     private func syncLocalCLIStateFromService() {
         isSyncingLocalCLIState = true
         localCLICommandTemplate = aiService.localCLICommandTemplate
@@ -391,6 +413,7 @@ struct APIKeyManagementView: View {
         case .speechmatics: return URL(string: "https://portal.speechmatics.com/manage-access/")
         case .assemblyAI: return URL(string: "https://www.assemblyai.com/dashboard/api-keys")
         case .openRouter: return URL(string: "https://openrouter.ai/keys")
+        case .ark: return URL(string: "https://console.volcengine.com/ark/region:ark+cn-beijing/apikey")
         case .cerebras: return URL(string: "https://cloud.cerebras.ai/")
         default: return nil
         }

@@ -16,6 +16,7 @@ struct ProviderDetailPanel: View {
     @State private var verificationSucceeded = false
     @State private var isShowingRemoveAPIKeyConfirmation = false
     @State private var activeDescriptorID = ""
+    @State private var arkModel = ""
 
     private var isConfigured: Bool {
         APIKeyManager.shared.hasAPIKey(forProvider: descriptor.providerKey)
@@ -87,6 +88,10 @@ struct ProviderDetailPanel: View {
     private var apiKeySection: some View {
         ProviderConfigurationGroup(title: "Connection") {
             VStack(alignment: .leading, spacing: 8) {
+                if descriptor.aiProvider == .ark {
+                    arkModelInputRow
+                }
+
                 if isConfigured {
                     verifiedAPIKeyRow
                 } else {
@@ -96,6 +101,54 @@ struct ProviderDetailPanel: View {
                 verificationStatusMessage
             }
         }
+    }
+
+    private var arkModelInputRow: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 12) {
+                providerDetailIcon("cpu.fill")
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Model or endpoint name")
+                        .font(.system(size: 13, weight: .semibold))
+                    Text("Enter an Ark model ID or inference endpoint ID.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            HStack(spacing: 8) {
+                TextField("ep-20250520154305-lz8cg", text: $arkModel)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 12, design: .monospaced))
+                    .disabled(isVerifying)
+                    .onChange(of: arkModel) { _, _ in
+                        verificationMessage = nil
+                        verificationDetailMessage = nil
+                    }
+
+                if isConfigured {
+                    Button {
+                        verifyAndSaveArkModel()
+                    } label: {
+                        HStack(spacing: 5) {
+                            if isVerifying {
+                                ProgressView().controlSize(.small)
+                            } else {
+                                Image(systemName: "checkmark.seal")
+                            }
+                            Text(isVerifying ? LocalizedStringKey("Verifying") : LocalizedStringKey("Save & Verify"))
+                        }
+                        .font(.system(size: 12, weight: .medium))
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(arkModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isVerifying)
+                }
+            }
+        }
+        .padding(12)
+        .background(ProviderSurface(cornerRadius: 8))
     }
 
     @ViewBuilder
@@ -203,8 +256,8 @@ struct ProviderDetailPanel: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
-                .disabled(apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isVerifying)
-                .opacity(apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isVerifying ? 0.55 : 1)
+                .disabled(!canVerifyAPIKey)
+                .opacity(canVerifyAPIKey ? 1 : 0.55)
             }
 
             if let consoleURL = descriptor.apiConsoleURL {
@@ -432,6 +485,15 @@ struct ProviderDetailPanel: View {
         verificationMessage = nil
         verificationDetailMessage = nil
         isShowingRemoveAPIKeyConfirmation = false
+        arkModel = descriptor.aiProvider == .ark ? aiService.selectedModel(for: .ark) : ""
+    }
+
+    private var canVerifyAPIKey: Bool {
+        guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !isVerifying else {
+            return false
+        }
+        return descriptor.aiProvider != .ark
+            || !arkModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private func verificationModel(for provider: AIProvider) -> String {
@@ -448,6 +510,8 @@ struct ProviderDetailPanel: View {
     private func verifyAndSaveAPIKey() {
         let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedKey.isEmpty else { return }
+        let arkVerificationModel = arkModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        if descriptor.aiProvider == .ark, arkVerificationModel.isEmpty { return }
 
         isVerifying = true
         verificationMessage = nil
@@ -459,10 +523,11 @@ struct ProviderDetailPanel: View {
             if let cloudProvider = descriptor.cloudProvider {
                 result = await cloudProvider.verifyAPIKey(trimmedKey)
             } else if let provider = descriptor.aiProvider {
+                let model = provider == .ark ? arkVerificationModel : verificationModel(for: provider)
                 result = await aiService.verifyAPIKey(
                     trimmedKey,
                     for: provider,
-                    model: verificationModel(for: provider)
+                    model: model
                 )
             } else {
                 result = (false, String(localized: "Provider is not supported"))
@@ -476,9 +541,14 @@ struct ProviderDetailPanel: View {
 
                 if result.isValid {
                     APIKeyManager.shared.saveAPIKey(trimmedKey, forProvider: descriptor.providerKey)
-                    if let provider = descriptor.aiProvider, aiService.selectedProvider == provider {
-                        aiService.apiKey = trimmedKey
-                        aiService.isAPIKeyValid = true
+                    if let provider = descriptor.aiProvider {
+                        if provider == .ark {
+                            aiService.selectModel(arkVerificationModel, for: provider)
+                        }
+                        if aiService.selectedProvider == provider {
+                            aiService.apiKey = trimmedKey
+                            aiService.isAPIKeyValid = true
+                        }
                     }
                     apiKey = ""
                     verificationMessage = nil
@@ -488,6 +558,39 @@ struct ProviderDetailPanel: View {
                 } else {
                     verificationMessage = String(
                         localized: "Could not verify this API key. Check the key and try again.")
+                    verificationDetailMessage = result.errorMessage
+                }
+            }
+        }
+    }
+
+    private func verifyAndSaveArkModel() {
+        let model = arkModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard
+            !model.isEmpty,
+            let savedKey = APIKeyManager.shared.getAPIKey(forProvider: AIProvider.ark.rawValue),
+            !savedKey.isEmpty
+        else { return }
+
+        isVerifying = true
+        verificationMessage = nil
+        verificationDetailMessage = nil
+        let providerID = descriptor.id
+
+        Task {
+            let result = await aiService.verifyAPIKey(savedKey, for: .ark, model: model)
+
+            await MainActor.run {
+                guard activeDescriptorID == providerID else { return }
+                isVerifying = false
+                verificationSucceeded = result.isValid
+
+                if result.isValid {
+                    aiService.selectModel(model, for: .ark)
+                    verificationMessage = String(localized: "Model verified and saved.")
+                    verificationDetailMessage = nil
+                } else {
+                    verificationMessage = String(localized: "Could not verify this model. Check the name and try again.")
                     verificationDetailMessage = result.errorMessage
                 }
             }
