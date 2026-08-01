@@ -5,28 +5,21 @@
 
   [![License](https://img.shields.io/badge/License-GPL%20v3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
   ![Platform](https://img.shields.io/badge/platform-macOS%2014.0%2B-brightgreen)
-  [![GitHub release (latest by date)](https://img.shields.io/github/v/release/Beingpax/VoiceInk)](https://github.com/Beingpax/VoiceInk/releases)
-  ![GitHub all releases](https://img.shields.io/github/downloads/Beingpax/VoiceInk/total)
-  ![GitHub stars](https://img.shields.io/github/stars/Beingpax/VoiceInk?style=social)
-  <p>
-    <a href="https://tryvoiceink.com">Website</a> •
-    <a href="https://www.youtube.com/@tryvoiceink">YouTube</a>
-  </p>
+  [![GitHub release (latest by date)](https://img.shields.io/github/v/release/bifrost-proxy/VoiceInk)](https://github.com/bifrost-proxy/VoiceInk/releases)
+  ![GitHub all releases](https://img.shields.io/github/downloads/bifrost-proxy/VoiceInk/total)
 
-  <a href="https://tryvoiceink.com">
+  <a href="https://github.com/bifrost-proxy/VoiceInk/releases/latest">
     <img src="https://img.shields.io/badge/Download%20Now-Latest%20Version-blue?style=for-the-badge&logo=apple" alt="Download VoiceInk" width="250"/>
   </a>
 </div>
 
 ---
 
-VoiceInk is a native macOS application that transcribes what you say to text almost instantly. You can find all the information and download the app from [here](https://tryvoiceink.com). 
+VoiceInk is a native macOS application that transcribes what you say to text almost instantly. This fork is free to use: it has no paid license, activation, or trial restriction.
 
 ![VoiceInk Mac App](https://github.com/user-attachments/assets/12367379-83e7-48a6-b52c-4488a6a04bba)
 
-After dedicating the past 5 months to developing this app, I've decided to open source it for the greater good. 
-
-My goal is to make it **the most efficient and privacy-focused voice-to-text solution for macOS** that is a joy to use. While the source code is now open for experienced developers to build and contribute, purchasing a license helps support continued development and gives you access to automatic updates, priority support, and upcoming features.
+The goal is to provide an efficient and privacy-focused voice-to-text experience for macOS.
 
 ## Features
 
@@ -42,17 +35,26 @@ My goal is to make it **the most efficient and privacy-focused voice-to-text sol
 ## Get Started
 
 ### Download
-Get the latest version with a free trial from [tryvoiceink.com](https://tryvoiceink.com). Your purchase helps me work on VoiceInk full-time and continuously improve it with new features and updates.
+Download the latest build from [GitHub Releases](https://github.com/bifrost-proxy/VoiceInk/releases/latest).
 
 #### Homebrew
-Alternatively, you can install VoiceInk via `brew`:
+Install VoiceInk from the Bifrost Proxy Homebrew tap:
 
 ```shell
+brew install --cask bifrost-proxy/voiceink/voiceink
+```
+
+Homebrew requires the fully qualified `owner/tap/cask` form for a one-line third-party Cask install. The equivalent two-step form is:
+
+```shell
+brew tap bifrost-proxy/voiceink
 brew install --cask voiceink
 ```
 
+For upgrades, use `brew upgrade --cask --greedy voiceink` because the tap follows the latest GitHub Release.
+
 ### Build from Source
-As an open-source project, you can build VoiceInk yourself by following the instructions in [BUILDING.md](BUILDING.md). However, the compiled version includes additional benefits like automatic updates, priority support via Discord and email, and helps fund ongoing development.
+You can build VoiceInk yourself by following [BUILDING.md](BUILDING.md).
 
 ## Requirements
 
@@ -69,7 +71,7 @@ As an open-source project, you can build VoiceInk yourself by following the inst
 This project is **not accepting pull requests** at this time. You're welcome to fork and modify VoiceInk for your own use.
 
 You can still contribute by:
-- Reporting bugs via [issues](https://github.com/Beingpax/VoiceInk/issues)
+- Reporting bugs via [issues](https://github.com/bifrost-proxy/VoiceInk/issues)
 - Suggesting features or enhancements
 - Improving documentation via issues
 
@@ -93,7 +95,6 @@ If you encounter any issues or have questions, please:
 - [FluidAudio](https://github.com/FluidInference/FluidAudio) - Used for Parakeet model implementation
 
 ### Essential Dependencies
-- [Sparkle](https://github.com/sparkle-project/Sparkle) - Keeping VoiceInk up to date
 - [KeyboardShortcuts](https://github.com/sindresorhus/KeyboardShortcuts) - User-customizable keyboard shortcuts
 - [LaunchAtLogin](https://github.com/sindresorhus/LaunchAtLogin) - Launch at login functionality
 - [MediaRemoteAdapter](https://github.com/ejbills/mediaremote-adapter) - Media playback control during recording
@@ -104,4 +105,4 @@ If you encounter any issues or have questions, please:
 
 ---
 
-Made with ❤️ by Pax
+Fork maintained by [bifrost-proxy](https://github.com/bifrost-proxy). VoiceInk was originally created by Pax.

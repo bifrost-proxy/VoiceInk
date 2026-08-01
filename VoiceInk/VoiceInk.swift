@@ -2,7 +2,6 @@ import AppIntents
 import AppKit
 import FluidAudio
 import OSLog
-import Sparkle
 import SwiftData
 import SwiftUI
 
@@ -17,7 +16,6 @@ struct VoiceInkApp: App {
     @StateObject private var transcriptionModelManager: TranscriptionModelManager
     @StateObject private var recorderUIManager: RecorderUIManager
     @StateObject private var recordingShortcutManager: RecordingShortcutManager
-    @StateObject private var updaterViewModel: UpdaterViewModel
     @StateObject private var menuBarManager: MenuBarManager
     @StateObject private var mainWindowNavigation = MainWindowNavigation.shared
     @StateObject private var aiService = AIService()
@@ -95,9 +93,6 @@ struct VoiceInkApp: App {
         let aiService = AIService()
         _aiService = StateObject(wrappedValue: aiService)
         aiService.refreshOllamaAvailabilityInBackground()
-
-        let updaterViewModel = UpdaterViewModel()
-        _updaterViewModel = StateObject(wrappedValue: updaterViewModel)
 
         let enhancementService = AIEnhancementService(aiService: aiService, modelContext: resolvedContainer.mainContext)
         _enhancementService = StateObject(wrappedValue: enhancementService)
@@ -289,7 +284,6 @@ struct VoiceInkApp: App {
                         .environmentObject(transcriptionModelManager)
                         .environmentObject(recorderUIManager)
                         .environmentObject(recordingShortcutManager)
-                        .environmentObject(updaterViewModel)
                         .environmentObject(menuBarManager)
                         .environmentObject(mainWindowNavigation)
                         .environmentObject(aiService)
@@ -354,17 +348,12 @@ struct VoiceInkApp: App {
                             })
                 }
             }
-            .confettiCelebrationPresenter()
         }
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: AppWindowLayout.width, height: AppWindowLayout.minimumHeight)
         .windowResizability(.contentSize)
         .commands {
             CommandGroup(replacing: .newItem) {}
-
-            CommandGroup(after: .appInfo) {
-                CheckForUpdatesView(updaterViewModel: updaterViewModel)
-            }
         }
 
         MenuBarExtra(isInserted: $showMenuBarIcon) {
@@ -377,7 +366,6 @@ struct VoiceInkApp: App {
                 .environmentObject(recordingShortcutManager)
                 .environmentObject(menuBarManager)
                 .environmentObject(mainWindowNavigation)
-                .environmentObject(updaterViewModel)
                 .environmentObject(aiService)
                 .environmentObject(enhancementService)
         } label: {
@@ -461,44 +449,6 @@ private struct MainWindowRequestBridge: View {
                     logger.notice("🧭 SwiftUI bridge requested existing main window presentation.")
                 }
             }
-    }
-}
-
-class UpdaterViewModel: ObservableObject {
-    private let updaterController: SPUStandardUpdaterController
-
-    @Published var canCheckForUpdates = false
-    @Published var automaticallyChecksForUpdates = false
-
-    init() {
-        updaterController = SPUStandardUpdaterController(
-            startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
-
-        automaticallyChecksForUpdates = updaterController.updater.automaticallyChecksForUpdates
-
-        updaterController.updater.publisher(for: \.canCheckForUpdates)
-            .assign(to: &$canCheckForUpdates)
-
-        updaterController.updater.publisher(for: \.automaticallyChecksForUpdates)
-            .assign(to: &$automaticallyChecksForUpdates)
-    }
-
-    func setAutomaticallyChecksForUpdates(_ value: Bool) {
-        updaterController.updater.automaticallyChecksForUpdates = value
-    }
-
-    func checkForUpdates() {
-        // This is for manual checks - will show UI
-        updaterController.checkForUpdates(nil)
-    }
-}
-
-struct CheckForUpdatesView: View {
-    @ObservedObject var updaterViewModel: UpdaterViewModel
-
-    var body: some View {
-        Button("Check for Updates…", action: updaterViewModel.checkForUpdates)
-            .disabled(!updaterViewModel.canCheckForUpdates)
     }
 }
 

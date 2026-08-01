@@ -17,8 +17,6 @@ struct DashboardContent: View {
     private static let automaticStatsRefreshMetricLimit = 2_000
     private static let statsRefreshDebounceNanoseconds: UInt64 = 750_000_000
     let modelContext: ModelContext
-    let licenseState: LicenseViewModel.LicenseState
-    let onAddLicenseKey: () -> Void
 
     @State private var statsSummary: DashboardStatsSummary = .empty
     @State private var hasLoadedStatsSnapshot: Bool = false
@@ -47,14 +45,8 @@ struct DashboardContent: View {
         return descriptor
     }
 
-    init(
-        modelContext: ModelContext,
-        licenseState: LicenseViewModel.LicenseState,
-        onAddLicenseKey: @escaping () -> Void
-    ) {
+    init(modelContext: ModelContext) {
         self.modelContext = modelContext
-        self.licenseState = licenseState
-        self.onAddLicenseKey = onAddLicenseKey
 
         let cachedSummary = DashboardStatsCache.shared.currentSummary()
         let cachedMetadata = DashboardStatsCache.shared.currentMetadata()
@@ -126,8 +118,6 @@ struct DashboardContent: View {
 
     private func dashboardMainContent(availableWidth: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: DashboardLayout.sectionSpacing) {
-            licenseStatusMessage
-
             greetingHeader
 
             nameEditorDismissArea {
@@ -487,32 +477,6 @@ struct DashboardContent: View {
 
     // MARK: - Sections
 
-    @ViewBuilder
-    private var licenseStatusMessage: some View {
-        switch licenseState {
-        case .unlicensed:
-            TrialMessageView(
-                message: Text("Activate a license to continue using VoiceInk."),
-                type: .licenseRequired,
-                onAddLicenseKey: onAddLicenseKey
-            )
-        case .trial(let daysRemaining):
-            TrialMessageView(
-                message: Text(String(localized: "You have \(daysRemaining) days left in your trial")),
-                type: daysRemaining <= 2 ? .warning : .info,
-                onAddLicenseKey: onAddLicenseKey
-            )
-        case .trialExpired:
-            TrialMessageView(
-                message: nil,
-                type: .expired,
-                onAddLicenseKey: onAddLicenseKey
-            )
-        case .licensed:
-            EmptyView()
-        }
-    }
-
     private var dashboardInsightsView: some View {
         DashboardInsightsView(
             selectedPeriod: $selectedInsightPeriod,
@@ -551,7 +515,7 @@ struct DashboardContent: View {
                 footerActionLabel(
                     icon: isSystemInfoCopied ? "checkmark" : "doc.on.doc",
                     title: isSystemInfoCopied ? "Copied!" : "Copy System Info",
-                    color: isSystemInfoCopied ? AppTheme.Sidebar.license : AppTheme.Sidebar.fallback
+                    color: isSystemInfoCopied ? AppTheme.Status.positive : AppTheme.Sidebar.fallback
                 )
             }
             .buttonStyle(.plain)

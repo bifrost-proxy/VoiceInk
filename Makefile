@@ -2,9 +2,10 @@
 DEPS_DIR := $(HOME)/VoiceInk-Dependencies
 WHISPER_CPP_DIR := $(DEPS_DIR)/whisper.cpp
 FRAMEWORK_PATH := $(WHISPER_CPP_DIR)/build-apple/whisper.xcframework
+WHISPER_CPP_REF := 2ca53bb45e38748d07b310eeb36245a7157ac882
 LOCAL_DERIVED_DATA := $(CURDIR)/.local-build
 
-.PHONY: all clean whisper setup build local check healthcheck help dev run release release-setup
+.PHONY: all clean whisper setup build local check healthcheck help dev run release
 
 # Default target
 all: check build
@@ -29,9 +30,8 @@ whisper:
 		echo "Building whisper.xcframework in $(DEPS_DIR)..."; \
 		if [ ! -d "$(WHISPER_CPP_DIR)" ]; then \
 			git clone https://github.com/ggerganov/whisper.cpp.git $(WHISPER_CPP_DIR); \
-		else \
-			(cd $(WHISPER_CPP_DIR) && git pull); \
 		fi; \
+		cd $(WHISPER_CPP_DIR) && git fetch origin $(WHISPER_CPP_REF) && git checkout --detach $(WHISPER_CPP_REF); \
 		cd $(WHISPER_CPP_DIR) && ./build-xcframework.sh; \
 	else \
 		echo "whisper.xcframework already built in $(DEPS_DIR), skipping build"; \
@@ -93,17 +93,9 @@ run:
 		fi; \
 	fi
 
-# Build a signed, notarized DMG and matching local Sparkle Appcast.
-release: whisper
-	@if [ -n "$(NOTES)" ]; then \
-		./scripts/release.sh --notes "$(NOTES)" $(RELEASE_ARGS); \
-	else \
-		./scripts/release.sh $(RELEASE_ARGS); \
-	fi
-
-# Store Apple's notarization credentials securely in Keychain.
-release-setup:
-	@./scripts/setup-release-notarization.sh
+# Build the same ad-hoc-signed universal ZIP published by the tag workflow.
+release:
+	@./scripts/release.sh --version "$(or $(VERSION),2.1.1)" $(RELEASE_ARGS)
 
 # Cleanup
 clean:
@@ -121,8 +113,7 @@ help:
 	@echo "  local              Build for local use (no Apple Developer certificate needed)"
 	@echo "  run                Launch the built VoiceInk app"
 	@echo "  dev                Build and run the app (for development)"
-	@echo "  release            Build DMG and Appcast using release-notes/<version>.html"
-	@echo "  release-setup      Store notarization credentials in Keychain"
+	@echo "  release            Build a universal release ZIP (VERSION=x.y.z)"
 	@echo "  all                Run full build process (default)"
 	@echo "  clean              Remove build artifacts"
 	@echo "  help               Show this help message"

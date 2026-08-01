@@ -5,7 +5,6 @@ import SwiftUI
 
 struct SettingsView: View {
     @Environment(\.modelContext) private var modelContext
-    @EnvironmentObject private var updaterViewModel: UpdaterViewModel
     @EnvironmentObject private var menuBarManager: MenuBarManager
     @EnvironmentObject private var recordingShortcutManager: RecordingShortcutManager
     @EnvironmentObject private var recorderUIManager: RecorderUIManager
@@ -238,13 +237,6 @@ struct SettingsView: View {
 
                 LaunchAtLogin.Toggle(String(localized: "Launch at Login"))
 
-                Toggle(
-                    "Auto-check Updates",
-                    isOn: Binding(
-                        get: { updaterViewModel.automaticallyChecksForUpdates },
-                        set: { updaterViewModel.setAutomaticallyChecksForUpdates($0) }
-                    ))
-
                 Toggle("Show Announcements", isOn: $enableAnnouncements)
                     .onChange(of: enableAnnouncements) { _, newValue in
                         if newValue {
@@ -254,15 +246,8 @@ struct SettingsView: View {
                         }
                     }
 
-                HStack {
-                    Button("Check for Updates") {
-                        updaterViewModel.checkForUpdates()
-                    }
-                    .disabled(!updaterViewModel.canCheckForUpdates)
-
-                    Button("Reset Onboarding") {
-                        showResetOnboardingAlert = true
-                    }
+                Button("Reset Onboarding") {
+                    showResetOnboardingAlert = true
                 }
             }
 

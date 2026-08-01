@@ -10,7 +10,9 @@ final class AnnouncementsService {
     // MARK: - Configuration
 
     // Hosted via GitHub Pages for this repo
-    private let announcementsURL = URL(string: "https://beingpax.github.io/VoiceInk/announcements.json")!
+    private let announcementsURL = URL(
+        string: "https://raw.githubusercontent.com/bifrost-proxy/VoiceInk/main/announcements.json"
+    )!
 
     // Fetch every 4 hours
     private let refreshInterval: TimeInterval = 4 * 60 * 60

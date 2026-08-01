@@ -13,7 +13,6 @@ struct MenuBarView: View {
     @EnvironmentObject var recordingShortcutManager: RecordingShortcutManager
     @EnvironmentObject var menuBarManager: MenuBarManager
     @EnvironmentObject var mainWindowNavigation: MainWindowNavigation
-    @EnvironmentObject var updaterViewModel: UpdaterViewModel
     @EnvironmentObject var enhancementService: AIEnhancementService
     @EnvironmentObject var aiService: AIService
     @ObservedObject private var modeManager = ModeManager.shared
@@ -154,11 +153,6 @@ struct MenuBarView: View {
                 showMainWindowAndNavigate(to: "Settings", reason: "Settings")
             }
             .keyboardShortcut(",", modifiers: .command)
-
-            Button("Check for Updates") {
-                updaterViewModel.checkForUpdates()
-            }
-            .disabled(!updaterViewModel.canCheckForUpdates)
 
             Button("Quit VoiceInk") {
                 NSApplication.shared.terminate(nil)
