@@ -50,11 +50,20 @@ final class FileTranscriptionSession: TranscriptionSession {
 /// Streaming session with automatic fallback to file-based upload on failure.
 @MainActor
 final class StreamingTranscriptionSession: TranscriptionSession {
+    enum Resolution: String {
+        case streamingFinalized
+        case batchFallbackRequested
+        case batchFallbackAfterEmptyResult
+        case batchFallbackAfterStreamingError
+        case batchFallbackAfterStartupFailure
+    }
+
     private let streamingService: StreamingTranscriptionService
     private let fallbackService: TranscriptionService
     private var model: (any TranscriptionModel)?
     private var context: TranscriptionRequestContext = .currentDefaults
     private var streamingFailed = false
+    private(set) var lastResolution: Resolution?
     private var startupTask: Task<Void, Never>?
     private var startupTaskID: UUID?
     private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "StreamingTranscriptionSession")
@@ -70,7 +79,10 @@ final class StreamingTranscriptionSession: TranscriptionSession {
 
         self.model = model
         self.context = context
+        self.lastResolution = nil
         logger.notice("Streaming session prepare model=\(model.displayName, privacy: .public)")
+
+        streamingService.prepareForStart()
 
         // Return callback immediately; WebSocket connects in background
         let service = streamingService
@@ -136,13 +148,17 @@ final class StreamingTranscriptionSession: TranscriptionSession {
                         "Streaming transcript received elapsed=\(Date().timeIntervalSince(start), format: .fixed(precision: 3), privacy: .public)s chars=\(text.count, privacy: .public)"
                     )
                     if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        lastResolution = .streamingFinalized
                         return text
                     }
+                    lastResolution = .batchFallbackAfterEmptyResult
                     logger.warning("Streaming returned an empty transcript; retrying the complete audio file")
                 case .requiresBatchFallback:
+                    lastResolution = .batchFallbackRequested
                     logger.notice("Streaming provider requested full batch transcription")
                 }
             } catch {
+                lastResolution = .batchFallbackAfterStreamingError
                 logger.error("❌ Streaming failed, falling back to batch: \(error, privacy: .public)")
                 startupTask?.cancel()
                 startupTask = nil
@@ -150,6 +166,7 @@ final class StreamingTranscriptionSession: TranscriptionSession {
                 streamingService.cancel()
             }
         } else {
+            lastResolution = .batchFallbackAfterStartupFailure
             startupTask?.cancel()
             startupTask = nil
             startupTaskID = nil

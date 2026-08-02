@@ -152,14 +152,24 @@ class StreamingTranscriptionService {
     /// Whether the streaming connection is fully established and actively sending.
     var isActive: Bool { state == .streaming || state == .committing }
 
-    /// Start a streaming transcription session for the given model.
-    func startStreaming(model: any TranscriptionModel, context: TranscriptionRequestContext) async throws {
-        let start = Date()
+    /// Resets session accounting before the recorder receives its audio
+    /// callback. Local model loading is asynchronous, so doing this inside
+    /// `startStreaming` could erase chunks already queued during cold start.
+    func prepareForStart() {
         state = .connecting
         committedSegments = []
         metrics.reset()
         firstPartialLogged = false
         firstCommitLogged = false
+        stopStartedAt = nil
+    }
+
+    /// Start a streaming transcription session for the given model.
+    func startStreaming(model: any TranscriptionModel, context: TranscriptionRequestContext) async throws {
+        let start = Date()
+        if state != .connecting {
+            prepareForStart()
+        }
 
         let provider = createProvider(for: model)
         self.provider = provider
@@ -312,7 +322,10 @@ class StreamingTranscriptionService {
                     "SherpaOnnxTranscriptionService required for sherpa-onnx streaming previews."
                 )
             }
-            return BufferedOnDeviceStreamingProvider(backend: .qwen3ASR(sherpaOnnxService))
+            return BufferedOnDeviceStreamingProvider(
+                backend: .qwen3ASR(sherpaOnnxService),
+                configuration: .responsivePreview
+            )
         }
         guard let cloudProvider = CloudProviderRegistry.provider(for: model.provider),
             let streamingProvider = cloudProvider.makeStreamingProvider(modelContext: modelContext)

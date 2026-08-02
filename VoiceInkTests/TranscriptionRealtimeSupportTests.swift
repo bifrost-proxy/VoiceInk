@@ -2,6 +2,10 @@ import Testing
 @testable import VoiceInk
 
 struct TranscriptionRealtimeSupportTests {
+    @Test func sherpaRecognizerStaysWarmForLongSessions() {
+        #expect(SherpaOnnxTranscriptionService.idleRetention == .seconds(3_600))
+    }
+
     @Test func distinguishesNativeStreamingFromSlidingWindowsAndBatchModels() throws {
         let models = TranscriptionModelRegistry.models
 
@@ -24,6 +28,9 @@ struct TranscriptionRealtimeSupportTests {
         #expect(TranscriptionRealtimeSupport.mode(for: paraformer) == .slidingWindow)
         #expect(TranscriptionRealtimeSupport.mode(for: qwen3) == .slidingWindow)
         #expect(TranscriptionRealtimeSupport.mode(for: whisper) == .batchOnly)
+
+        let qwenModel = try #require(qwen3 as? SherpaOnnxModel)
+        #expect(qwenModel.speed == 0.97)
     }
 
     @Test func streamingCloudModelsUseNativeStreaming() {
@@ -54,6 +61,31 @@ struct TranscriptionRealtimeSupportTests {
         #expect(configuration.minimumNewSamples == 8_000)
         #expect(configuration.maximumSegmentSamples == 240_000)
         #expect(!configuration.finalizesAtPause)
+    }
+
+    @Test func bufferedPreviewKeepsBriefPausesProvisional() {
+        #expect(!BufferedOnDeviceStreamingProvider.Configuration.default.finalizesAtPause)
+    }
+
+    @Test func qwenPreviewStartsFromAResponsiveShortWindow() {
+        let configuration = BufferedOnDeviceStreamingProvider.Configuration.responsivePreview
+
+        #expect(configuration.previewInterval == .milliseconds(450))
+        #expect(configuration.minimumSamples == 6_400)
+        #expect(configuration.minimumNewSamples == 6_400)
+        #expect(!configuration.finalizesAtPause)
+    }
+
+    @Test func parakeetTdtFinalizesItsBufferedTailWithoutBatchFallback() {
+        let provider = FluidAudioStreamingProvider(
+            fluidAudioService: FluidAudioTranscriptionService()
+        )
+
+        if case .finalizeStreaming = provider.stopDisposition {
+            #expect(Bool(true))
+        } else {
+            #expect(Bool(false), "Parakeet V2/V3 should finalize the live decoder tail")
+        }
     }
 
     @Test func bufferedRealtimeMigrationPreservesChineseCtcSelection() {

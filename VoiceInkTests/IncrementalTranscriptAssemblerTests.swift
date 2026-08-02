@@ -37,6 +37,17 @@ struct IncrementalTranscriptAssemblerTests {
         #expect(assembler.finalize("") == "这是一个完整的实时结果")
     }
 
+    @Test func authoritativeFinalDoesNotSubmitWordsRemovedFromPreview() {
+        var assembler = IncrementalTranscriptAssembler()
+
+        _ = assembler.updatePartial("看一下不太对劲刚刚我搞了几次")
+        #expect(assembler.finalizeAuthoritative("搞") == "搞")
+
+        assembler.reset()
+        _ = assembler.updatePartial("by")
+        #expect(assembler.finalizeAuthoritative("").isEmpty)
+    }
+
     @Test func englishWindowsKeepNaturalSpacing() {
         #expect(
             IncrementalTranscriptAssembler.merge("Hello world.", "This is VoiceInk")

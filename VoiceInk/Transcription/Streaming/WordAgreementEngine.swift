@@ -29,7 +29,7 @@ struct TimedWord {
 }
 
 struct AgreementConfig {
-    var transcribeIntervalSeconds: Double = 1.0
+    var transcribeIntervalSeconds: Double = 0.7
     var tokenConfirmationsNeeded: Int = 3
     var minWordsToConfirm: Int = 5
     // Passes below this threshold are shown as hypothesis but don't count toward confirmation.

@@ -16,7 +16,11 @@ struct SherpaOnnxModelCardView: View {
                 HStack(spacing: 12) {
                     ModelLanguageSupportButton(model: model)
                     Label(model.size, systemImage: "internaldrive")
-                    Text("本地 · sherpa-onnx")
+                    HStack(spacing: 3) {
+                        Text("Speed")
+                        progressDotsWithNumber(value: model.speed * 10)
+                    }
+                    .fixedSize(horizontal: true, vertical: false)
                 }
                 .font(.system(size: 11))
                 .foregroundColor(Color(.secondaryLabelColor))
@@ -57,35 +61,41 @@ struct SherpaOnnxModelCardView: View {
     private var actions: some View {
         let downloaded = manager.isDownloaded(model)
         let downloading = manager.isDownloading(model)
-        HStack(spacing: 8) {
-            if downloaded && !downloading {
-                modelStatusPill("Downloaded", systemImage: "checkmark.circle")
-                Menu {
-                    Button(role: .destructive) { manager.delete(model) } label: {
-                        Label("Delete Model", systemImage: "trash")
+        VStack(alignment: .trailing, spacing: 6) {
+            HStack(spacing: 8) {
+                if downloaded && !downloading {
+                    modelStatusPill("Downloaded", systemImage: "checkmark.circle")
+                    Menu {
+                        Button(role: .destructive) { manager.delete(model) } label: {
+                            Label("Delete Model", systemImage: "trash")
+                        }
+                        Button { manager.showInFinder(model) } label: {
+                            Label("Show in Finder", systemImage: "folder")
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
                     }
-                    Button { manager.showInFinder(model) } label: {
-                        Label("Show in Finder", systemImage: "folder")
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .frame(width: 20, height: 20)
+                } else {
+                    Button {
+                        Task { await manager.download(model) }
+                    } label: {
+                        Label(downloading ? "Downloading..." : "Download", systemImage: "arrow.down.circle")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(Capsule().fill(AppTheme.Accent.primary))
                     }
-                } label: {
-                    Image(systemName: "ellipsis.circle")
+                    .buttonStyle(.plain)
+                    .disabled(downloading)
                 }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .frame(width: 20, height: 20)
-            } else {
-                Button {
-                    Task { await manager.download(model) }
-                } label: {
-                    Label(downloading ? "Downloading..." : "Download", systemImage: "arrow.down.circle")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundColor(.white)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 6)
-                        .background(Capsule().fill(AppTheme.Accent.primary))
-                }
-                .buttonStyle(.plain)
-                .disabled(downloading)
+            }
+
+            if let officialSourceURL = model.officialSourceURL {
+                ModelOfficialSourceLink(url: officialSourceURL)
             }
         }
     }

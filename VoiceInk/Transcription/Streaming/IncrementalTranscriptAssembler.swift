@@ -35,6 +35,18 @@ struct IncrementalTranscriptAssembler {
         return finalizedText
     }
 
+    /// Commits the latest full-window decode instead of preserving an older,
+    /// longer preview. A preview is allowed to be optimistic; a stop result is
+    /// authoritative and must not submit words the final decode removed.
+    mutating func finalizeAuthoritative(_ text: String) -> String {
+        let candidate = Self.trim(text)
+        if !candidate.isEmpty {
+            finalizedText = Self.merge(finalizedText, candidate)
+        }
+        partialText = ""
+        return finalizedText
+    }
+
     mutating func reset() {
         finalizedText = ""
         partialText = ""

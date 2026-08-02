@@ -14,6 +14,38 @@ struct ModelLanguageSupportSection: Identifiable, Equatable {
 }
 
 enum ModelLanguageSupportCatalog {
+    static func supportsChinese(_ model: any TranscriptionModel) -> Bool {
+        model.supportedLanguages.keys.contains(where: isChineseLanguageCode)
+    }
+
+    static func supportsEnglish(_ model: any TranscriptionModel) -> Bool {
+        model.supportedLanguages.keys.contains { primaryLanguageCode($0) == "en" }
+    }
+
+    static func summary(for model: any TranscriptionModel) -> String {
+        var parts: [String] = []
+        if supportsChinese(model) {
+            parts.append(String(localized: "Chinese"))
+        }
+        if supportsEnglish(model) {
+            parts.append(String(localized: "English"))
+        }
+
+        let additionalEntries = model.supportedLanguages.filter { code, _ in
+            code != "auto" && !isChineseLanguageCode(code) && primaryLanguageCode(code) != "en"
+        }
+
+        if !additionalEntries.isEmpty {
+            if parts.isEmpty, additionalEntries.count == 1, let entry = additionalEntries.first {
+                parts.append(localizedLanguageName(code: entry.key, fallback: entry.value))
+            } else {
+                parts.append(String(localized: "More languages"))
+            }
+        }
+
+        return parts.isEmpty ? model.language : parts.joined(separator: " · ")
+    }
+
     static func sections(for model: any TranscriptionModel) -> [ModelLanguageSupportSection] {
         let languageEntries = model.supportedLanguages
             .filter { $0.key != "auto" }
@@ -24,7 +56,14 @@ enum ModelLanguageSupportCatalog {
                     code: code
                 )
             }
-            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+            .sorted { lhs, rhs in
+                let lhsPriority = summaryPriority(for: lhs.code)
+                let rhsPriority = summaryPriority(for: rhs.code)
+                if lhsPriority != rhsPriority {
+                    return lhsPriority < rhsPriority
+                }
+                return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
+            }
 
         var sections = [
             ModelLanguageSupportSection(
@@ -55,6 +94,26 @@ enum ModelLanguageSupportCatalog {
         Locale.current.localizedString(forIdentifier: code)
             ?? Locale.current.localizedString(forLanguageCode: code)
             ?? fallback
+    }
+
+    private static func summaryPriority(for code: String?) -> Int {
+        guard let code else { return 2 }
+        if isChineseLanguageCode(code) { return 0 }
+        if primaryLanguageCode(code) == "en" { return 1 }
+        return 2
+    }
+
+    private static func isChineseLanguageCode(_ code: String) -> Bool {
+        let primaryCode = primaryLanguageCode(code)
+        return primaryCode == "zh" || primaryCode == "yue"
+    }
+
+    private static func primaryLanguageCode(_ code: String) -> String {
+        code
+            .replacingOccurrences(of: "_", with: "-")
+            .split(separator: "-", maxSplits: 1)
+            .first?
+            .lowercased() ?? code.lowercased()
     }
 
     private static var qwen3DialectEntries: [ModelLanguageSupportEntry] {
@@ -98,12 +157,13 @@ struct ModelLanguageSupportButton: View {
     @State private var isPresentingDetails = false
 
     var body: some View {
+        let languageSummary = ModelLanguageSupportCatalog.summary(for: model)
         Button {
             isPresentingDetails = true
         } label: {
             HStack(spacing: 4) {
                 Image(systemName: "globe")
-                Text(model.language)
+                Text(languageSummary)
                 Image(systemName: "chevron.right")
                     .font(.system(size: 8, weight: .semibold))
             }
@@ -116,7 +176,7 @@ struct ModelLanguageSupportButton: View {
         .accessibilityLabel(
             String(
                 format: String(localized: "%@, view all supported languages"),
-                model.language
+                languageSummary
             )
         )
         .sheet(isPresented: $isPresentingDetails) {

@@ -58,6 +58,7 @@ class FluidAudioTranscriptionService: TranscriptionService {
     private let audioConverter = AudioConverter()
     private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "FluidAudioTranscriptionService")
     private static let senseVoiceTrailingSilenceSamples = 8_000
+    private static let parakeetTrailingSilenceSamples = 16_000
     private static let funASRInferenceGate = FunASRInferenceGate()
 
     private func version(for model: any TranscriptionModel) -> AsrModelVersion {
@@ -325,13 +326,7 @@ class FluidAudioTranscriptionService: TranscriptionService {
             await nemotronAsrManager.setLanguage(languageHint)
             await nemotronAsrManager.reset()
 
-            var speechAudio = try loadAudioSamples(from: audioURL)
-            let trailingSilenceSamples = 16_000
-            let maxSingleChunkSamples = 240_000
-            if speechAudio.count + trailingSilenceSamples <= maxSingleChunkSamples {
-                speechAudio += [Float](repeating: 0, count: trailingSilenceSamples)
-            }
-
+            let speechAudio = try loadAudioSamples(from: audioURL)
             _ = try await nemotronAsrManager.process(samples: speechAudio)
             let text = try await nemotronAsrManager.finish()
             return TextNormalizer.shared.normalizeSentence(text)
@@ -348,9 +343,17 @@ class FluidAudioTranscriptionService: TranscriptionService {
             from: context.language,
             model: model
         )
+        var speechAudio = try loadAudioSamples(from: audioURL)
+        if !BufferedOnDeviceStreamingProvider.isTrailingSilence(
+            in: speechAudio,
+            probeSamples: 4_800,
+            rmsLimit: 0.0018
+        ) {
+            speechAudio += [Float](repeating: 0, count: Self.parakeetTrailingSilenceSamples)
+        }
         var decoderState = TdtDecoderState.make(decoderLayers: await asrManager.decoderLayerCount)
         let result = try await asrManager.transcribe(
-            audioURL,
+            speechAudio,
             decoderState: &decoderState,
             language: languageHint
         )

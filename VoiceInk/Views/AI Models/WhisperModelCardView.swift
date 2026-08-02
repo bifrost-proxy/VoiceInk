@@ -105,50 +105,56 @@ struct WhisperModelCardView: View {
     }
 
     private var actionSection: some View {
-        HStack(spacing: 8) {
-            if isDownloaded {
-                modelStatusPill("Downloaded", systemImage: "checkmark.circle")
-            } else {
-                Button(action: downloadAction) {
-                    HStack(spacing: 4) {
-                        Text(LocalizedStringKey(isDownloading ? "Downloading..." : "Download"))
-                            .font(.system(size: 12, weight: .medium))
-                        Image(systemName: "arrow.down.circle")
-                            .font(.system(size: 12, weight: .medium))
+        VStack(alignment: .trailing, spacing: 6) {
+            HStack(spacing: 8) {
+                if isDownloaded {
+                    modelStatusPill("Downloaded", systemImage: "checkmark.circle")
+                } else {
+                    Button(action: downloadAction) {
+                        HStack(spacing: 4) {
+                            Text(LocalizedStringKey(isDownloading ? "Downloading..." : "Download"))
+                                .font(.system(size: 12, weight: .medium))
+                            Image(systemName: "arrow.down.circle")
+                                .font(.system(size: 12, weight: .medium))
+                        }
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(
+                            Capsule()
+                                .fill(AppTheme.Accent.primary)
+                                .shadow(color: AppTheme.Accent.shadow, radius: 2, x: 0, y: 1)
+                        )
                     }
-                    .foregroundColor(.white)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                    .background(
-                        Capsule()
-                            .fill(AppTheme.Accent.primary)
-                            .shadow(color: AppTheme.Accent.shadow, radius: 2, x: 0, y: 1)
-                    )
+                    .buttonStyle(.plain)
+                    .disabled(isDownloading)
                 }
-                .buttonStyle(.plain)
-                .disabled(isDownloading)
-            }
 
-            if isDownloaded {
-                Menu {
-                    Button(action: deleteAction) {
-                        Label("Delete Model", systemImage: "trash")
-                    }
+                if isDownloaded {
+                    Menu {
+                        Button(action: deleteAction) {
+                            Label("Delete Model", systemImage: "trash")
+                        }
 
-                    Button {
-                        if let modelURL = modelURL {
-                            NSWorkspace.shared.selectFile(modelURL.path, inFileViewerRootedAtPath: "")
+                        Button {
+                            if let modelURL = modelURL {
+                                NSWorkspace.shared.selectFile(modelURL.path, inFileViewerRootedAtPath: "")
+                            }
+                        } label: {
+                            Label("Show in Finder", systemImage: "folder")
                         }
                     } label: {
-                        Label("Show in Finder", systemImage: "folder")
+                        Image(systemName: "ellipsis.circle")
+                            .font(.system(size: 14))
                     }
-                } label: {
-                    Image(systemName: "ellipsis.circle")
-                        .font(.system(size: 14))
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .frame(width: 20, height: 20)
                 }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .frame(width: 20, height: 20)
+            }
+
+            if let officialSourceURL = model.officialSourceURL {
+                ModelOfficialSourceLink(url: officialSourceURL)
             }
         }
     }

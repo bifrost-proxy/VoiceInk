@@ -163,7 +163,10 @@ class RecordingShortcutManager: ObservableObject {
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor in
-                guard AXIsProcessTrusted() else { return }
+                guard AXIsProcessTrusted() else {
+                    AccessibilityShortcutPermissionPrompt.showIfNeeded()
+                    return
+                }
                 self?.refreshShortcutMonitoringAfterAccessibilityAuthorization()
             }
         }
@@ -176,6 +179,11 @@ class RecordingShortcutManager: ObservableObject {
 
     private func refreshShortcutMonitoring() {
         removeAllMonitoring()
+
+        guard AXIsProcessTrusted() else {
+            AccessibilityShortcutPermissionPrompt.showIfNeeded()
+            return
+        }
 
         refreshShortcutMonitor()
         setupMiddleClickMonitoring()
@@ -238,7 +246,7 @@ class RecordingShortcutManager: ObservableObject {
             interruptibleRecordingActions.insert(.secondaryRecording)
         }
 
-        shortcutMonitor.start(
+        let started = shortcutMonitor.start(
             shortcuts: shortcuts,
             interruptibleActions: interruptibleRecordingActions,
             onKeyDown: { [weak self] action, eventTime in
@@ -273,6 +281,10 @@ class RecordingShortcutManager: ObservableObject {
                 }
             }
         )
+
+        if !started {
+            AccessibilityShortcutPermissionPrompt.showIfNeeded()
+        }
     }
 
     private func recordingMode(for action: ShortcutAction) -> Mode? {

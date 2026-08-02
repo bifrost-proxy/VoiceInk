@@ -196,6 +196,11 @@ struct VoiceInkTests {
             #expect(Bool(false), "Buffered previews must finalize their last non-empty result")
         }
 
+        var pcm = [Int16.min.littleEndian, 0, Int16.max.littleEndian]
+        let pcmData = pcm.withUnsafeMutableBytes { Data($0) }
+        let converted = PCMAudioConverter.float32Samples(fromPCM16Data: pcmData)
+        #expect(converted == [-1, 0, Float(Int16.max) / 32768])
+
         let samples: [Float] = [0.1, -0.2, 0.3]
         let prepared = FluidAudioTranscriptionService.prepareSenseVoiceSamples(samples)
         #expect(Array(prepared.prefix(samples.count)) == samples)

@@ -105,7 +105,8 @@ final class ModelPrewarmService: ObservableObject {
             return false
         }
 
-        // Only prewarm local models (Parakeet and Whisper need ANE compilation)
+        // Prewarm every local runtime. Qwen's sherpa-onnx recognizer otherwise
+        // performs its first ONNX initialization after recording has started.
         guard
             let model = ModeRuntimeResolver.transcriptionConfiguration(
                 transcriptionModelManager: transcriptionModelManager
@@ -115,7 +116,7 @@ final class ModelPrewarmService: ObservableObject {
         }
 
         switch model.provider {
-        case .whisper, .fluidAudio:
+        case .whisper, .fluidAudio, .sherpaOnnx:
             return true
         default:
             logger.notice("Skipping prewarm - cloud models don't need it")

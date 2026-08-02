@@ -49,7 +49,10 @@ enum TranscriptionModelRegistry {
                 accuracy: 0.91,
                 ramUsage: 1.0,
                 supportsStreaming: true,
-                supportedLanguages: ["zh-CN": "Mandarin Chinese"]
+                supportedLanguages: [
+                    "zh-CN": "Mandarin Chinese",
+                    "en": "English",
+                ]
             ),
             FluidAudioModel(
                 name: "parakeet-unified-0.6b",
@@ -111,6 +114,10 @@ enum TranscriptionModelRegistry {
                 displayName: "Qwen3-ASR 0.6B (INT8)",
                 description: "Qwen3-ASR 的 sherpa-onnx 本地量化版本，支持中文、方言、多语言及实时预览",
                 size: "838 MB",
+                // Latest-10 local benchmark: 0.322 s median warm batch,
+                // 0.610 s first preview, 0.328 s finalize. This is comparable
+                // overall to the Chinese Parakeet CTC model rated at 9.7.
+                speed: 0.97,
                 archiveURL: URL(string: "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25.tar.bz2")!,
                 archiveSHA256: "393f8a14e2f5fb96746aaab342997a40641001fbd5bf9592a080a8329178ee96",
                 extractedDirectoryName: "sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25",
@@ -122,6 +129,7 @@ enum TranscriptionModelRegistry {
                 displayName: "sherpa-onnx Zipformer CTC (中文)",
                 description: "轻量、快速的中文 Zipformer CTC 本地语音识别模型",
                 size: "287 MB",
+                speed: 0.98,
                 archiveURL: URL(string: "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-zipformer-ctc-zh-int8-2025-07-03.tar.bz2")!,
                 archiveSHA256: "f3ad1814fea34c407eab0cc3df6f6b625419ac9a60d8aebd8efe772a8e85ef67",
                 extractedDirectoryName: "sherpa-onnx-zipformer-ctc-zh-int8-2025-07-03",

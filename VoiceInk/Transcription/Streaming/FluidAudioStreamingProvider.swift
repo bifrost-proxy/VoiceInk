@@ -26,19 +26,14 @@ final class FluidAudioStreamingProvider: StreamingTranscriptionProvider {
     private var transcriptionTask: Task<Void, Never>?
     private var isTranscribing = false
     private var lastTranscribedSampleCount = 0
-    private let confirmationLock = NSLock()
-    private var confirmedSegmentCount = 0
-    private let minimumConfirmedSegmentsForStreamingFinalization = 3
     private let minimumAudioSamples = ASRConstants.minimumRequiredSamples(forSampleRate: ASRConstants.sampleRate)
     private let minNewSamples = ASRConstants.minimumRequiredSamples(forSampleRate: ASRConstants.sampleRate)
 
-    var stopDisposition: StreamingStopDisposition {
-        confirmationLock.lock()
-        defer { confirmationLock.unlock() }
-        return confirmedSegmentCount < minimumConfirmedSegmentsForStreamingFinalization
-            ? .useBatchFallback
-            : .finalizeStreaming
-    }
+    // The provider can always finalize the unconfirmed in-memory tail with its
+    // already-loaded manager. Reopening the complete WAV for short recordings
+    // duplicated the same inference and caused every V2/V3 session to fall
+    // back despite already having a valid live hypothesis.
+    var stopDisposition: StreamingStopDisposition { .finalizeStreaming }
 
     init(fluidAudioService: FluidAudioTranscriptionService, config: AgreementConfig = AgreementConfig()) {
         self.fluidAudioService = fluidAudioService
@@ -69,10 +64,6 @@ final class FluidAudioStreamingProvider: StreamingTranscriptionProvider {
         audioBuffer = []
         trimmedSampleCount = 0
         lastTranscribedSampleCount = 0
-        confirmationLock.lock()
-        confirmedSegmentCount = 0
-        confirmationLock.unlock()
-
         startTranscriptionLoop()
 
         eventsContinuation?.yield(.sessionStarted)
@@ -198,9 +189,6 @@ final class FluidAudioStreamingProvider: StreamingTranscriptionProvider {
             if !agreementResult.newlyConfirmedText.isEmpty {
                 let normalizedConfirmed = TextNormalizer.shared.normalizeSentence(agreementResult.newlyConfirmedText)
                 if !normalizedConfirmed.isEmpty {
-                    confirmationLock.lock()
-                    confirmedSegmentCount += 1
-                    confirmationLock.unlock()
                     eventsContinuation?.yield(.committed(text: normalizedConfirmed))
                 }
             }

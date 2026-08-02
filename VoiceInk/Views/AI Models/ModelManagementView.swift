@@ -21,6 +21,33 @@ enum ModelFilter: String, CaseIterable, Identifiable {
     }
 }
 
+private enum LocalModelLanguageFilter: String, CaseIterable, Identifiable {
+    case all
+    case chinese
+    case english
+
+    var id: String { rawValue }
+
+    var title: LocalizedStringKey {
+        switch self {
+        case .all: "All"
+        case .chinese: "Chinese"
+        case .english: "English"
+        }
+    }
+
+    func includes(_ model: any TranscriptionModel) -> Bool {
+        switch self {
+        case .all:
+            return true
+        case .chinese:
+            return ModelLanguageSupportCatalog.supportsChinese(model)
+        case .english:
+            return ModelLanguageSupportCatalog.supportsEnglish(model)
+        }
+    }
+}
+
 struct ModelManagementView: View {
     @EnvironmentObject private var aiService: AIService
     @EnvironmentObject private var whisperModelManager: WhisperModelManager
@@ -31,6 +58,7 @@ struct ModelManagementView: View {
     @ObservedObject private var warmupCoordinator = WhisperModelWarmupCoordinator.shared
 
     @State private var selectedFilter: ModelFilter = .local
+    @State private var selectedLocalLanguageFilter: LocalModelLanguageFilter = .all
     @State private var activePanel: ModelManagementPanel?
 
     @State private var isShowingDeleteAlert = false
@@ -242,6 +270,8 @@ struct ModelManagementView: View {
 
     private var localModelsSection: some View {
         VStack(spacing: 12) {
+            localLanguageFilterPicker
+
             ForEach(localModels, id: \.id) { model in
                 let isWarming =
                     (model as? WhisperModel).map { whisperModel in
@@ -272,6 +302,39 @@ struct ModelManagementView: View {
                 .environmentObject(aiService)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var localLanguageFilterPicker: some View {
+        HStack(spacing: 8) {
+            Label("Language", systemImage: "globe")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.secondary)
+
+            ForEach(LocalModelLanguageFilter.allCases) { filter in
+                Button {
+                    withAnimation(.easeInOut(duration: 0.16)) {
+                        selectedLocalLanguageFilter = filter
+                    }
+                } label: {
+                    Text(filter.title)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(selectedLocalLanguageFilter == filter ? Color.white : Color.primary)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(
+                            Capsule().fill(
+                                selectedLocalLanguageFilter == filter
+                                    ? AppTheme.Accent.primary
+                                    : Color(.quaternarySystemFill)
+                            )
+                        )
+                }
+                .buttonStyle(.plain)
+            }
+
+            Spacer()
+        }
+        .padding(.horizontal, 2)
     }
 
     private var importLocalModelButton: some View {
@@ -334,11 +397,13 @@ struct ModelManagementView: View {
     }
 
     private var localModels: [any TranscriptionModel] {
-        transcriptionModelManager.allAvailableModels.filter {
+        let models = transcriptionModelManager.allAvailableModels.filter {
             ($0.provider == .whisper || $0.provider == .nativeApple || $0.provider == .fluidAudio
                 || $0.provider == .sherpaOnnx)
                 && transcriptionModelManager.isAvailableOnCurrentOS($0)
+                && selectedLocalLanguageFilter.includes($0)
         }
+        return ModelCatalogOrdering.localModelsByPerformance(models)
     }
 
     private func confirmDeleteLocalModel(_ model: any TranscriptionModel) {
