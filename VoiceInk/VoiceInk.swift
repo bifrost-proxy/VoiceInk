@@ -401,12 +401,7 @@ struct VoiceInkApp: App {
         didShowLaunchReminders = true
 
         if !AXIsProcessTrusted() {
-            NotificationManager.shared.showNotification(
-                title: String(localized: "Accessibility permission is not provided"),
-                type: .warning,
-                duration: 7.0,
-                actionButton: (String(localized: "Open Settings"), Self.openAccessibilitySettings)
-            )
+            AccessibilityShortcutPermissionPrompt.showIfNeeded()
             return
         }
 
@@ -417,12 +412,6 @@ struct VoiceInkApp: App {
                 duration: 7.0,
                 actionButton: (String(localized: "Manage Modes"), ModeSetupNavigator.openModesSettings)
             )
-        }
-    }
-
-    private static func openAccessibilitySettings() {
-        Task { @MainActor in
-            _ = await PrivacyPermissionResetService.requestAccessibilityAuthorization()
         }
     }
 
