@@ -49,6 +49,7 @@ enum AppDefaults {
 
             // UI & Behavior
             "IsMenuBarOnly": false,
+            UpdateManager.automaticallyChecksKey: true,
             AppAppearancePreference.userDefaultsKey: AppAppearancePreference.system.rawValue,
             AppLanguagePreference.userDefaultsKey: AppLanguagePreference.systemValue,
             // Shortcuts

@@ -13,6 +13,7 @@ struct SettingsView: View {
     @ObservedObject private var mediaController = MediaController.shared
     @ObservedObject private var playbackController = PlaybackController.shared
     @ObservedObject private var cloudSync = CloudConfigurationSyncService.shared
+    @ObservedObject private var updater = UpdateManager.shared
     @AppStorage("hasCompletedOnboardingV2") private var hasCompletedOnboardingV2 = true
     @AppStorage("restoreClipboardAfterPaste") private var restoreClipboardAfterPaste = true
     @AppStorage("clipboardRestoreDelay") private var clipboardRestoreDelay = 2.0
@@ -332,6 +333,77 @@ struct SettingsView: View {
             Section("Diagnostics") {
                 DiagnosticsSettingsView()
             }
+
+            Section {
+                LabeledContent("Installed Version") {
+                    Text("Version \(Self.appVersion) (\(Self.appBuild))")
+                        .foregroundStyle(.secondary)
+                }
+
+                Toggle(
+                    "Auto-check Updates",
+                    isOn: Binding(
+                        get: { updater.automaticallyChecksForUpdates },
+                        set: { updater.automaticallyChecksForUpdates = $0 }
+                    )
+                )
+
+                if updater.isBusy {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text(updater.statusText)
+                            Spacer()
+                            if let percentage = updater.progressPercentage {
+                                Text("\(percentage)%")
+                                    .monospacedDigit()
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+
+                        if let progress = updater.progressFraction {
+                            ProgressView(value: progress)
+                                .progressViewStyle(.linear)
+                        } else {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
+                    }
+                } else if let release = updater.availableRelease {
+                    LabeledContent {
+                        Button {
+                            updater.installAvailableUpdate()
+                        } label: {
+                            Text("Update to VoiceInk \(release.version)")
+                        }
+                    } label: {
+                        Text("VoiceInk \(release.version) is available.")
+                    }
+                } else {
+                    HStack {
+                        Button("Check for Updates") {
+                            Task { _ = await updater.checkForUpdates() }
+                        }
+                        Spacer()
+                        if let message = updater.lastCheckMessage {
+                            Text(message)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+
+                }
+
+                if case .failed(let message) = updater.activity {
+                    Text(message)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+            } header: {
+                Text("Updates")
+            } footer: {
+                Text(
+                    "When enabled, VoiceInk checks for a new version at launch and once every hour. Downloaded updates are verified before VoiceInk installs and restarts automatically."
+                )
+            }
         }
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
@@ -356,6 +428,14 @@ struct SettingsView: View {
         keyCode: UInt16(kVK_Escape),
         modifierFlags: []
     )
+
+    private static var appVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "Unknown"
+    }
+
+    private static var appBuild: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "Unknown"
+    }
 
     @ViewBuilder
     private func shortcutModePicker(binding: Binding<RecordingShortcutManager.Mode>) -> some View {
