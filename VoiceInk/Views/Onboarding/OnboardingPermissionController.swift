@@ -139,8 +139,11 @@ final class OnboardingPermissionController {
 
     private func handleMicrophoneAction() {
         if status(for: .microphone).requiresSettings {
-            openPrivacySettings(.microphone)
-            startPollingPermissionStatus()
+            Task { @MainActor [weak self] in
+                _ = await PrivacyPermissionResetService.requestMicrophoneAuthorization()
+                self?.refreshPermissionStatuses()
+                self?.startPollingPermissionStatus()
+            }
             return
         }
 
@@ -158,12 +161,7 @@ final class OnboardingPermissionController {
         Task { @MainActor [weak self] in
             guard let self else { return }
 
-            _ = await PrivacyPermissionResetService.resetAuthorization(for: .accessibility)
-            let options: NSDictionary = [
-                kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true
-            ]
-            AXIsProcessTrustedWithOptions(options)
-            openPrivacySettings(.accessibility)
+            _ = await PrivacyPermissionResetService.requestAccessibilityAuthorization()
             startPollingPermissionStatus()
         }
     }
@@ -175,14 +173,9 @@ final class OnboardingPermissionController {
         Task { @MainActor [weak self] in
             guard let self else { return }
 
-            _ = await PrivacyPermissionResetService.resetAuthorization(for: .screenRecording)
-            let isGranted = await ScreenCaptureService.requestScreenCapturePermissionRegistration()
+            _ = await PrivacyPermissionResetService.requestScreenRecordingAuthorization()
             refreshPermissionStatuses()
             startPollingPermissionStatus()
-
-            if !isGranted {
-                openPrivacySettings(.screenRecording)
-            }
         }
     }
 
@@ -219,8 +212,4 @@ final class OnboardingPermissionController {
         }
     }
 
-    private func openPrivacySettings(_ pane: PrivacySettingsPane) {
-        guard let url = URL(string: pane.urlString) else { return }
-        NSWorkspace.shared.open(url)
-    }
 }

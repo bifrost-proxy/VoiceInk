@@ -1,3 +1,6 @@
+import AVFoundation
+import AppKit
+import ApplicationServices
 import Foundation
 import SwiftUI
 
@@ -202,7 +205,7 @@ enum PrivacySettingsPane: Sendable {
     var tccService: String? {
         switch self {
         case .microphone:
-            return nil
+            return "Microphone"
         case .accessibility:
             return "Accessibility"
         case .screenRecording:
@@ -217,6 +220,17 @@ struct PrivacyPermissionResetCommand: Equatable, Sendable {
 }
 
 enum PrivacyPermissionResetService {
+    static func registrationIdentifierKey(for pane: PrivacySettingsPane) -> String {
+        switch pane {
+        case .microphone:
+            return "MicrophonePermissionRegistrationIdentifier"
+        case .accessibility:
+            return "AccessibilityPermissionRegistrationIdentifier"
+        case .screenRecording:
+            return "ScreenRecordingPermissionRegistrationIdentifier"
+        }
+    }
+
     static func command(
         for pane: PrivacySettingsPane,
         bundleIdentifier: String = Bundle.main.bundleIdentifier ?? "com.prakashjoshipax.VoiceInk"
@@ -264,5 +278,135 @@ enum PrivacyPermissionResetService {
 
             return nil
         }.value
+    }
+
+    static func applicationRegistrationIdentifier(bundle: Bundle = .main) -> String {
+        let version = bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
+        let build = bundle.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown"
+        return "\(version)-\(build)"
+    }
+
+    static func shouldAutomaticallyRequestPermission(
+        isGranted: Bool,
+        hasCompletedOnboarding: Bool,
+        currentRegistrationIdentifier: String,
+        lastRequestedRegistrationIdentifier: String?
+    ) -> Bool {
+        !isGranted
+            && hasCompletedOnboarding
+            && currentRegistrationIdentifier != lastRequestedRegistrationIdentifier
+    }
+
+    @MainActor
+    static func requestMicrophoneAuthorization(openSettingsWhenNeeded: Bool = true) async -> String? {
+        let resetError = await resetAuthorization(for: .microphone)
+        let isGranted = await AVCaptureDevice.requestAccess(for: .audio)
+
+        if !isGranted,
+            openSettingsWhenNeeded,
+            let url = URL(string: PrivacySettingsPane.microphone.urlString)
+        {
+            NSWorkspace.shared.open(url)
+        }
+
+        return resetError
+    }
+
+    @MainActor
+    static func requestAccessibilityAuthorization(openSettings: Bool = true) async -> String? {
+        let resetError = await resetAuthorization(for: .accessibility)
+        let options: NSDictionary = [
+            kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true
+        ]
+        AXIsProcessTrustedWithOptions(options)
+
+        if openSettings,
+            let url = URL(string: PrivacySettingsPane.accessibility.urlString)
+        {
+            NSWorkspace.shared.open(url)
+        }
+
+        return resetError
+    }
+
+    @MainActor
+    static func requestScreenRecordingAuthorization(openSettingsWhenNeeded: Bool = true) async -> String? {
+        let resetError = await resetAuthorization(for: .screenRecording)
+        let isGranted = await ScreenCaptureService.requestScreenCapturePermissionRegistration()
+
+        if !isGranted,
+            openSettingsWhenNeeded,
+            let url = URL(string: PrivacySettingsPane.screenRecording.urlString)
+        {
+            NSWorkspace.shared.open(url)
+        }
+
+        return resetError
+    }
+}
+
+@MainActor
+enum StartupPermissionAuditService {
+    private static var isRunning = false
+
+    static func auditIfNeeded(
+        hasCompletedOnboarding: Bool,
+        defaults: UserDefaults = .standard
+    ) async {
+        guard hasCompletedOnboarding, !isRunning else { return }
+        isRunning = true
+        defer { isRunning = false }
+
+        let currentIdentifier = PrivacyPermissionResetService.applicationRegistrationIdentifier()
+
+        if AVCaptureDevice.authorizationStatus(for: .audio) != .authorized {
+            let pane = PrivacySettingsPane.microphone
+            guard shouldRequest(pane, currentIdentifier: currentIdentifier, defaults: defaults) else { return }
+            markRequested(pane, currentIdentifier: currentIdentifier, defaults: defaults)
+            _ = await PrivacyPermissionResetService.requestMicrophoneAuthorization()
+
+            guard AVCaptureDevice.authorizationStatus(for: .audio) == .authorized else { return }
+        }
+
+        if !AXIsProcessTrusted() {
+            let pane = PrivacySettingsPane.accessibility
+            guard shouldRequest(pane, currentIdentifier: currentIdentifier, defaults: defaults) else { return }
+            markRequested(pane, currentIdentifier: currentIdentifier, defaults: defaults)
+            _ = await PrivacyPermissionResetService.requestAccessibilityAuthorization()
+            return
+        }
+
+        if !CGPreflightScreenCaptureAccess() {
+            let pane = PrivacySettingsPane.screenRecording
+            guard shouldRequest(pane, currentIdentifier: currentIdentifier, defaults: defaults) else { return }
+            markRequested(pane, currentIdentifier: currentIdentifier, defaults: defaults)
+            _ = await PrivacyPermissionResetService.requestScreenRecordingAuthorization()
+        }
+    }
+
+    private static func shouldRequest(
+        _ pane: PrivacySettingsPane,
+        currentIdentifier: String,
+        defaults: UserDefaults
+    ) -> Bool {
+        let lastRequestedIdentifier = defaults.string(
+            forKey: PrivacyPermissionResetService.registrationIdentifierKey(for: pane))
+        return PrivacyPermissionResetService.shouldAutomaticallyRequestPermission(
+            isGranted: false,
+            hasCompletedOnboarding: true,
+            currentRegistrationIdentifier: currentIdentifier,
+            lastRequestedRegistrationIdentifier: lastRequestedIdentifier
+        )
+    }
+
+    private static func markRequested(
+        _ pane: PrivacySettingsPane,
+        currentIdentifier: String,
+        defaults: UserDefaults
+    ) {
+        defaults.set(
+            currentIdentifier,
+            forKey: PrivacyPermissionResetService.registrationIdentifierKey(for: pane)
+        )
     }
 }

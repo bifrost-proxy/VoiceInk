@@ -57,6 +57,10 @@ class ModeShortcutManager {
         }
     }
 
+    func refreshAfterAccessibilityAuthorization() {
+        refreshModeShortcuts()
+    }
+
     private func refreshModeShortcuts() {
         let shortcuts = ModeManager.shared.enabledConfigurations.reduce(into: [ShortcutAction: Shortcut]()) {
             result, config in

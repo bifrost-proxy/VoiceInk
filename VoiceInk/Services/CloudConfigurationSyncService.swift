@@ -81,6 +81,9 @@ final class CloudConfigurationSyncService: ObservableObject {
         "hasCompletedOnboardingV2",
         "hasPreparedOnboardingV2",
         "AccessibilityPermissionRequested",
+        "AccessibilityPermissionRegistrationIdentifier",
+        "MicrophonePermissionRegistrationIdentifier",
+        "ScreenRecordingPermissionRegistrationIdentifier",
         "ScreenRecordingPermissionRequested",
         // Hardware selections are not portable between devices.
         "lastUsedMicrophoneDeviceID",

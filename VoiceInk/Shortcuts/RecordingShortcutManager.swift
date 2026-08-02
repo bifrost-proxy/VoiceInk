@@ -47,6 +47,7 @@ class RecordingShortcutManager: ObservableObject {
     private let modeShortcutManager: ModeShortcutManager
     private let shortcutMonitor = ShortcutMonitor()
     private var shortcutChangeObserver: NSObjectProtocol?
+    private var appDidBecomeActiveObserver: NSObjectProtocol?
     private let shortcutModeHandler: RecordingShortcutModeHandler
     private let primaryRecordingShortcutModeSource: RecordingShortcutModeSource
 
@@ -156,6 +157,17 @@ class RecordingShortcutManager: ObservableObject {
             }
         }
 
+        appDidBecomeActiveObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                guard AXIsProcessTrusted() else { return }
+                self?.refreshShortcutMonitoringAfterAccessibilityAuthorization()
+            }
+        }
+
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 100_000_000)
             self.refreshShortcutMonitoring()
@@ -167,6 +179,12 @@ class RecordingShortcutManager: ObservableObject {
 
         refreshShortcutMonitor()
         setupMiddleClickMonitoring()
+    }
+
+    private func refreshShortcutMonitoringAfterAccessibilityAuthorization() {
+        refreshShortcutMonitoring()
+        modeShortcutManager.refreshAfterAccessibilityAuthorization()
+        recorderPanelShortcutManager.refreshAfterAccessibilityAuthorization()
     }
 
     private func setupMiddleClickMonitoring() {
@@ -323,6 +341,9 @@ class RecordingShortcutManager: ObservableObject {
     deinit {
         if let shortcutChangeObserver {
             NotificationCenter.default.removeObserver(shortcutChangeObserver)
+        }
+        if let appDidBecomeActiveObserver {
+            NotificationCenter.default.removeObserver(appDidBecomeActiveObserver)
         }
 
         MainActor.assumeIsolated {

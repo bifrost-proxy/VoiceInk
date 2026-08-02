@@ -61,7 +61,45 @@ struct VoiceInkTests {
             PrivacyPermissionResetService.command(
                 for: .microphone,
                 bundleIdentifier: bundleIdentifier
-            ) == nil
+            ) == PrivacyPermissionResetCommand(
+                executable: "/usr/bin/tccutil",
+                arguments: ["reset", "Microphone", bundleIdentifier]
+            )
+        )
+    }
+
+    @Test func adHocPermissionRegistrationIsRequestedOncePerInstalledBuild() {
+        #expect(
+            PrivacyPermissionResetService.shouldAutomaticallyRequestPermission(
+                isGranted: false,
+                hasCompletedOnboarding: true,
+                currentRegistrationIdentifier: "2.2.3-7",
+                lastRequestedRegistrationIdentifier: "2.2.2-6"
+            )
+        )
+        #expect(
+            !PrivacyPermissionResetService.shouldAutomaticallyRequestPermission(
+                isGranted: false,
+                hasCompletedOnboarding: true,
+                currentRegistrationIdentifier: "2.2.3-7",
+                lastRequestedRegistrationIdentifier: "2.2.3-7"
+            )
+        )
+        #expect(
+            !PrivacyPermissionResetService.shouldAutomaticallyRequestPermission(
+                isGranted: true,
+                hasCompletedOnboarding: true,
+                currentRegistrationIdentifier: "2.2.3-7",
+                lastRequestedRegistrationIdentifier: "2.2.2-6"
+            )
+        )
+        #expect(
+            !PrivacyPermissionResetService.shouldAutomaticallyRequestPermission(
+                isGranted: false,
+                hasCompletedOnboarding: false,
+                currentRegistrationIdentifier: "2.2.3-7",
+                lastRequestedRegistrationIdentifier: nil
+            )
         )
     }
 

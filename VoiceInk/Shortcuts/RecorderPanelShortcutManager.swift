@@ -52,6 +52,10 @@ final class RecorderPanelShortcutManager: ObservableObject {
         }
     }
 
+    func refreshAfterAccessibilityAuthorization() {
+        refreshVisibleShortcuts()
+    }
+
     private var canUseModeShortcuts: Bool {
         !ModeManager.shared.enabledConfigurations.isEmpty
     }

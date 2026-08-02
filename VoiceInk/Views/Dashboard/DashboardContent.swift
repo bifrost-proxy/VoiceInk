@@ -313,15 +313,7 @@ struct DashboardContent: View {
 
     private func openAccessibilitySettings() {
         Task { @MainActor in
-            _ = await PrivacyPermissionResetService.resetAuthorization(for: .accessibility)
-            let options: NSDictionary = [
-                kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true
-            ]
-            AXIsProcessTrustedWithOptions(options)
-
-            if let url = URL(string: PrivacySettingsPane.accessibility.urlString) {
-                NSWorkspace.shared.open(url)
-            }
+            _ = await PrivacyPermissionResetService.requestAccessibilityAuthorization()
         }
     }
 
