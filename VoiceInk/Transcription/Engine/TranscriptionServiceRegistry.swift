@@ -79,6 +79,7 @@ class TranscriptionServiceRegistry {
         if let modelName,
             FluidAudioModelManager.isSenseVoiceModel(named: modelName)
                 || FluidAudioModelManager.isParaformerZhModel(named: modelName)
+                || FluidAudioModelManager.isParakeetCtcZhCnModel(named: modelName)
         {
             logger.notice("Keeping realtime preview model loaded: \(modelName, privacy: .public)")
             return

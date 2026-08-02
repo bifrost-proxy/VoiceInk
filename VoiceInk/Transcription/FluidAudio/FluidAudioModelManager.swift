@@ -35,6 +35,7 @@ class FluidAudioModelManager: ObservableObject {
 
     private enum FluidAudioModelKind {
         case parakeet(AsrModelVersion)
+        case parakeetCtcZhCn
         case parakeetUnified
         case nemotron(NemotronVariant)
         case senseVoice
@@ -47,6 +48,10 @@ class FluidAudioModelManager: ObservableObject {
 
     nonisolated static func isParakeetUnifiedModel(named modelName: String) -> Bool {
         modelName == "parakeet-unified-0.6b"
+    }
+
+    nonisolated static func isParakeetCtcZhCnModel(named modelName: String) -> Bool {
+        modelName == ParakeetCtcZhCnManager.modelName
     }
 
     nonisolated static let parakeetUnifiedPrecision: UnifiedEncoderPrecision = .int8
@@ -114,6 +119,7 @@ class FluidAudioModelManager: ObservableObject {
     nonisolated private static func modelKind(for modelName: String) -> FluidAudioModelKind {
         if isSenseVoiceModel(named: modelName) { return .senseVoice }
         if isParaformerZhModel(named: modelName) { return .paraformerZh }
+        if isParakeetCtcZhCnModel(named: modelName) { return .parakeetCtcZhCn }
 
         if let nemotronVariant = NemotronVariant(modelName: modelName) {
             return .nemotron(nemotronVariant)
@@ -165,6 +171,8 @@ class FluidAudioModelManager: ObservableObject {
 
     func isFluidAudioModelDownloaded(named modelName: String) -> Bool {
         switch Self.modelKind(for: modelName) {
+        case .parakeetCtcZhCn:
+            return ParakeetCtcZhCnModelStore.modelsExist(at: Self.parakeetCtcZhCnCacheDirectory())
         case .senseVoice:
             return SenseVoiceModels.modelsExist(at: Self.senseVoiceCacheDirectory(), precision: .int8)
         case .paraformerZh:
@@ -221,6 +229,20 @@ class FluidAudioModelManager: ObservableObject {
 
         do {
             switch Self.modelKind(for: modelName) {
+            case .parakeetCtcZhCn:
+                try await ParakeetCtcZhCnModelStore.download(
+                    to: Self.parakeetCtcZhCnCacheDirectory()
+                ) { [weak self] fraction, _ in
+                    Task { @MainActor [weak self] in
+                        self?.updateDirectDownloadProgress(
+                            fraction,
+                            for: modelName,
+                            downloadID: downloadID
+                        )
+                    }
+                }
+                beginModelPreparation(for: modelName, downloadID: downloadID)
+                _ = try ParakeetCtcZhCnManager.load(from: Self.parakeetCtcZhCnCacheDirectory())
             case .senseVoice:
                 let directory = try await SenseVoiceModels.download(
                     precision: .int8,
@@ -358,6 +380,8 @@ class FluidAudioModelManager: ObservableObject {
 
     private func cacheDirectory(for modelName: String) -> URL {
         switch Self.modelKind(for: modelName) {
+        case .parakeetCtcZhCn:
+            return Self.parakeetCtcZhCnCacheDirectory()
         case .senseVoice:
             return Self.senseVoiceCacheDirectory()
         case .paraformerZh:
@@ -412,6 +436,11 @@ class FluidAudioModelManager: ObservableObject {
     nonisolated static func parakeetUnifiedCacheDirectory() -> URL {
         fluidAudioModelsRootDirectory()
             .appendingPathComponent(Repo.parakeetUnified.folderName, isDirectory: true)
+    }
+
+    nonisolated static func parakeetCtcZhCnCacheDirectory() -> URL {
+        fluidAudioModelsRootDirectory()
+            .appendingPathComponent(ParakeetCtcZhCnManager.repositoryFolderName, isDirectory: true)
     }
 
     nonisolated static func senseVoiceCacheDirectory() -> URL {

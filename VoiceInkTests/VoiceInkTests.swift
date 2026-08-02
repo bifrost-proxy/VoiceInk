@@ -157,6 +157,7 @@ struct VoiceInkTests {
     @Test func bundledChineseASRModelsAreDownloadableAndSelectable() {
         let models = TranscriptionModelRegistry.models
         let expectedNames = [
+            "parakeet-ctc-0.6b-zh-cn",
             "sensevoice-small",
             "paraformer-large-zh",
             "qwen3-asr-0.6b-int8",
@@ -175,6 +176,7 @@ struct VoiceInkTests {
 
     @Test func bufferedLocalModelsExposeRealtimePreview() {
         let expectedNames = [
+            "parakeet-ctc-0.6b-zh-cn",
             "sensevoice-small",
             "paraformer-large-zh",
             "qwen3-asr-0.6b-int8",
@@ -184,8 +186,6 @@ struct VoiceInkTests {
             let model = TranscriptionModelRegistry.models.first { $0.name == name }
             #expect(model?.supportsStreaming == true, "Missing realtime preview support: \(name)")
         }
-
-        #expect(TranscriptionModelRegistry.models.contains { $0.name == "parakeet-ctc-0.6b-zh-cn" } == false)
 
         let provider = BufferedOnDeviceStreamingProvider(
             backend: .funASR(FluidAudioTranscriptionService())

@@ -47,8 +47,10 @@ class FluidAudioTranscriptionService: TranscriptionService {
     private var nemotronAsrManager: StreamingNemotronMultilingualAsrManager?
     private var senseVoiceManager: SenseVoiceManager?
     private var paraformerManager: ParaformerManager?
+    private var parakeetCtcZhCnManager: ParakeetCtcZhCnManager?
     private var senseVoiceLoadingTask: Task<SenseVoiceManager, Error>?
     private var paraformerLoadingTask: Task<ParaformerManager, Error>?
+    private var parakeetCtcZhCnLoadingTask: Task<ParakeetCtcZhCnManager, Error>?
     private var activeVersion: AsrModelVersion?
     private var activeNemotronModelName: String?
     private var cachedModels: AsrModels?
@@ -72,8 +74,10 @@ class FluidAudioTranscriptionService: TranscriptionService {
     private func cleanupLoadedManagers() async {
         senseVoiceLoadingTask?.cancel()
         paraformerLoadingTask?.cancel()
+        parakeetCtcZhCnLoadingTask?.cancel()
         senseVoiceLoadingTask = nil
         paraformerLoadingTask = nil
+        parakeetCtcZhCnLoadingTask = nil
 
         await unifiedAsrManager?.cleanup()
         await nemotronAsrManager?.cleanup()
@@ -84,6 +88,7 @@ class FluidAudioTranscriptionService: TranscriptionService {
         asrManager = nil
         senseVoiceManager = nil
         paraformerManager = nil
+        parakeetCtcZhCnManager = nil
         activeVersion = nil
         activeNemotronModelName = nil
     }
@@ -173,6 +178,29 @@ class FluidAudioTranscriptionService: TranscriptionService {
         }
     }
 
+    private func ensureParakeetCtcZhCnLoaded() async throws {
+        if parakeetCtcZhCnManager != nil { return }
+        if let parakeetCtcZhCnLoadingTask {
+            parakeetCtcZhCnManager = try await parakeetCtcZhCnLoadingTask.value
+            return
+        }
+
+        await cleanupLoadedManagers()
+        let task = Task {
+            try ParakeetCtcZhCnManager.load(
+                from: FluidAudioModelManager.parakeetCtcZhCnCacheDirectory()
+            )
+        }
+        parakeetCtcZhCnLoadingTask = task
+        do {
+            parakeetCtcZhCnManager = try await task.value
+            parakeetCtcZhCnLoadingTask = nil
+        } catch {
+            parakeetCtcZhCnLoadingTask = nil
+            throw error
+        }
+    }
+
     // Returns cached models or loads from disk; deduplicates concurrent loads
     func getOrLoadModels(for version: AsrModelVersion) async throws -> AsrModels {
         if let cached = cachedModels, cached.version == version {
@@ -218,6 +246,10 @@ class FluidAudioTranscriptionService: TranscriptionService {
     }
 
     func loadModel(for model: FluidAudioModel) async throws {
+        if FluidAudioModelManager.isParakeetCtcZhCnModel(named: model.name) {
+            try await ensureParakeetCtcZhCnLoaded()
+            return
+        }
         if FluidAudioModelManager.isSenseVoiceModel(named: model.name) {
             try await ensureSenseVoiceLoaded()
             return
@@ -242,6 +274,12 @@ class FluidAudioTranscriptionService: TranscriptionService {
     func transcribe(audioURL: URL, model: any TranscriptionModel, context: TranscriptionRequestContext) async throws
         -> String
     {
+        if FluidAudioModelManager.isParakeetCtcZhCnModel(named: model.name) {
+            try await ensureParakeetCtcZhCnLoaded()
+            let samples = try loadAudioSamples(from: audioURL)
+            return try await transcribeParakeetCtcZhCnLongForm(samples)
+        }
+
         if FluidAudioModelManager.isSenseVoiceModel(named: model.name) {
             try await ensureSenseVoiceLoaded()
             guard let senseVoiceManager else { throw ASRError.notInitialized }
@@ -321,6 +359,10 @@ class FluidAudioTranscriptionService: TranscriptionService {
     }
 
     func prepareBufferedStreamingPreview(named modelName: String) async throws {
+        if FluidAudioModelManager.isParakeetCtcZhCnModel(named: modelName) {
+            try await ensureParakeetCtcZhCnLoaded()
+            return
+        }
         if FluidAudioModelManager.isSenseVoiceModel(named: modelName) {
             try await ensureSenseVoiceLoaded()
             return
@@ -333,6 +375,10 @@ class FluidAudioTranscriptionService: TranscriptionService {
     }
 
     func transcribeBufferedStreamingPreview(samples: [Float], modelName: String) async throws -> String {
+        if FluidAudioModelManager.isParakeetCtcZhCnModel(named: modelName) {
+            try await ensureParakeetCtcZhCnLoaded()
+            return try await transcribeParakeetCtcZhCnLongForm(samples)
+        }
         if FluidAudioModelManager.isSenseVoiceModel(named: modelName) {
             try await ensureSenseVoiceLoaded()
             guard let senseVoiceManager else { throw ASRError.notInitialized }
@@ -355,6 +401,30 @@ class FluidAudioTranscriptionService: TranscriptionService {
 
     private func loadAudioSamples(from audioURL: URL) throws -> [Float] {
         try audioConverter.resampleAudioFile(audioURL)
+    }
+
+    private func transcribeParakeetCtcZhCnLongForm(_ samples: [Float]) async throws -> String {
+        guard let parakeetCtcZhCnManager else { throw ASRError.notInitialized }
+
+        let windowSamples = 240_000
+        let overlapSamples = 16_000
+        guard samples.count > windowSamples else {
+            let text = try await parakeetCtcZhCnManager.transcribe(audio: samples)
+            return TextNormalizer.shared.normalizeSentence(text)
+        }
+
+        var assembler = IncrementalTranscriptAssembler()
+        var offset = 0
+        while offset < samples.count {
+            let end = min(offset + windowSamples, samples.count)
+            let text = try await parakeetCtcZhCnManager.transcribe(
+                audio: Array(samples[offset..<end])
+            )
+            _ = assembler.finalize(TextNormalizer.shared.normalizeSentence(text))
+            guard end < samples.count else { break }
+            offset = end - overlapSamples
+        }
+        return assembler.finalizedText
     }
 
     static func prepareSenseVoiceSamples(_ samples: [Float]) -> [Float] {

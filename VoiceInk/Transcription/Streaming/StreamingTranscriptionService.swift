@@ -293,8 +293,16 @@ class StreamingTranscriptionService {
 
             if FluidAudioModelManager.isSenseVoiceModel(named: model.name)
                 || FluidAudioModelManager.isParaformerZhModel(named: model.name)
+                || FluidAudioModelManager.isParakeetCtcZhCnModel(named: model.name)
             {
-                return BufferedOnDeviceStreamingProvider(backend: .funASR(fluidAudioService))
+                let configuration: BufferedOnDeviceStreamingProvider.Configuration =
+                    FluidAudioModelManager.isParakeetCtcZhCnModel(named: model.name)
+                    ? .fastPreview
+                    : .default
+                return BufferedOnDeviceStreamingProvider(
+                    backend: .funASR(fluidAudioService),
+                    configuration: configuration
+                )
             }
             return FluidAudioStreamingProvider(fluidAudioService: fluidAudioService)
         }
