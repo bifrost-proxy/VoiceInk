@@ -25,7 +25,7 @@ class TranscriptionPipeline {
     private let modelContext: ModelContext
     private let serviceRegistry: TranscriptionServiceRegistry
     private let enhancementService: AIEnhancementService?
-    private let delivery = TranscriptionDelivery()
+    private let delivery: TranscriptionDelivery
     private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "TranscriptionPipeline")
 
     init(
@@ -36,6 +36,7 @@ class TranscriptionPipeline {
         self.modelContext = modelContext
         self.serviceRegistry = serviceRegistry
         self.enhancementService = enhancementService
+        self.delivery = TranscriptionDelivery(modelContext: modelContext)
     }
 
     /// Run the full pipeline for a given transcription record.

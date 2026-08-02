@@ -173,6 +173,43 @@ struct VoiceInkTests {
         }
     }
 
+    @Test func postPasteTextChangeCapturesInsertedAndRemovedText() throws {
+        let insertion = try #require(
+            PostPasteTextChange.between("Hello world", "Hello VoiceInk world")
+        )
+        #expect(insertion.oldRange == NSRange(location: 6, length: 0))
+        #expect(insertion.removedText.isEmpty)
+        #expect(insertion.insertedText == "VoiceInk ")
+
+        let replacement = try #require(
+            PostPasteTextChange.between("Send the old draft", "Send the final draft")
+        )
+        #expect(replacement.removedText == "old")
+        #expect(replacement.insertedText == "final")
+    }
+
+    @Test func postPasteTextChangeKeepsTrackedRangeAligned() throws {
+        let insertionBefore = try #require(
+            PostPasteTextChange.between("PrefixVoiceInk", "Long PrefixVoiceInk")
+        )
+        let shifted = insertionBefore.applying(
+            to: NSRange(location: 6, length: 8),
+            newTextUTF16Count: "Long PrefixVoiceInk".utf16.count
+        )
+        #expect(!shifted.affected)
+        #expect(shifted.range == NSRange(location: 11, length: 8))
+
+        let editInside = try #require(
+            PostPasteTextChange.between("VoiceInk", "Voice Ink")
+        )
+        let expanded = editInside.applying(
+            to: NSRange(location: 0, length: 8),
+            newTextUTF16Count: "Voice Ink".utf16.count
+        )
+        #expect(expanded.affected)
+        #expect(expanded.range == NSRange(location: 0, length: 9))
+    }
+
     @MainActor
     @Test func starterAndOnboardingModelsSupportChinese() {
         let starter = TranscriptionModelRegistry.models.first {

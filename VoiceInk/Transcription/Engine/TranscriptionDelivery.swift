@@ -1,9 +1,15 @@
 import Foundation
+import SwiftData
 import os
 
 @MainActor
 final class TranscriptionDelivery {
     private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "TranscriptionDelivery")
+    private let postPasteEditTracker: PostPasteEditTracker
+
+    init(modelContext: ModelContext) {
+        self.postPasteEditTracker = PostPasteEditTracker(modelContext: modelContext)
+    }
 
     struct Request {
         let transcription: Transcription
@@ -46,7 +52,12 @@ final class TranscriptionDelivery {
         }
 
         if let text = request.text {
-            await paste(text, output: request.output, actions: actions)
+            await paste(
+                text,
+                transcription: request.transcription,
+                output: request.output,
+                actions: actions
+            )
         } else {
             await actions.dismiss()
         }
@@ -153,17 +164,31 @@ final class TranscriptionDelivery {
         String(format: "%.3f", duration)
     }
 
-    private func paste(_ text: String, output: OutputRuntimeConfiguration, actions: Actions) async {
+    private func paste(
+        _ text: String,
+        transcription: Transcription,
+        output: OutputRuntimeConfiguration,
+        actions: Actions
+    ) async {
         let appendSpace = UserDefaults.standard.bool(forKey: "AppendTrailingSpace")
         let pastedText = text + (appendSpace ? " " : "")
         SoundManager.shared.playStopSound()
         await actions.dismiss()
 
+        let trackingPreparation = postPasteEditTracker.prepare(
+            transcription: transcription,
+            deliveredText: pastedText
+        )
         let pasteTask = CursorPaster.startPasteAtCursor(pastedText)
 
         let autoSendKey = output.outputMode == .paste ? output.autoSendKey : .none
         Task { @MainActor in
-            _ = await pasteTask.value
+            let pasteResult = await pasteTask.value
+            await postPasteEditTracker.completePaste(
+                preparation: trackingPreparation,
+                result: pasteResult,
+                autoSent: autoSendKey.isEnabled
+            )
 
             if autoSendKey.isEnabled {
                 try? await Task.sleep(nanoseconds: 500_000_000)

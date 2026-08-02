@@ -16,6 +16,7 @@ struct SettingsView: View {
     @AppStorage("hasCompletedOnboardingV2") private var hasCompletedOnboardingV2 = true
     @AppStorage("restoreClipboardAfterPaste") private var restoreClipboardAfterPaste = true
     @AppStorage("clipboardRestoreDelay") private var clipboardRestoreDelay = 2.0
+    @AppStorage(PostPasteEditTracker.userDefaultsKey) private var trackPostPasteEdits = true
     @AppStorage(PasteMethod.userDefaultsKey) private var pasteMethodRawValue = PasteMethod.standard.rawValue
     @AppStorage(AppAppearancePreference.userDefaultsKey) private var appAppearancePreference = AppAppearancePreference
         .system
@@ -186,6 +187,15 @@ struct SettingsView: View {
                         return
                     }
                     PasteMethod.setCurrent(method)
+                }
+
+                Toggle(isOn: $trackPostPasteEdits) {
+                    HStack(spacing: 4) {
+                        Text("Track Edits After Paste")
+                        InfoTip(
+                            "For up to two minutes after a VoiceInk paste, watch only the target text field and save user edits with that transcription. Secure fields are always skipped. Data stays in local transcription history."
+                        )
+                    }
                 }
             }
 

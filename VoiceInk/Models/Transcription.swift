@@ -25,6 +25,17 @@ final class Transcription {
     var enhancementDuration: TimeInterval?
     var aiRequestSystemMessage: String?
     var aiRequestUserMessage: String?
+    var deliveredText: String?
+    var finalEditedText: String?
+    var pasteTargetApplicationName: String?
+    var pasteTargetBundleIdentifier: String?
+    var pasteTargetWindowTitle: String?
+    var pasteTargetElementRole: String?
+    var pasteTargetElementIdentifier: String?
+    var pasteTrackingStatus: String?
+    var pasteStartedAt: Date?
+    var pasteTrackingFinishedAt: Date?
+    var postPasteEditHistoryData: Data?
     @Attribute(originalName: "powerModeName")
     var modeName: String?
     @Attribute(originalName: "powerModeEmoji")

@@ -26,10 +26,32 @@ struct TranscriptionDetailView: View {
 
                     if let enhancedText = transcription.enhancedText {
                         MessageBubble(
-                            label: "Enhanced",
+                            label: "Enhanced Output",
                             text: enhancedText,
                             isEnhanced: true
                         )
+                    }
+
+                    if let deliveredText = transcription.deliveredText {
+                        MessageBubble(
+                            label: "Delivered to App",
+                            text: deliveredText,
+                            isEnhanced: true
+                        )
+                    }
+
+                    if transcription.hasPostPasteEdits,
+                        let finalEditedText = transcription.finalEditedText
+                    {
+                        MessageBubble(
+                            label: "Final Text in App",
+                            text: finalEditedText,
+                            isEnhanced: true
+                        )
+                    }
+
+                    if transcription.pasteTrackingStatusValue != nil {
+                        PostPasteEditHistoryView(transcription: transcription)
                     }
                 }
                 .padding(16)
