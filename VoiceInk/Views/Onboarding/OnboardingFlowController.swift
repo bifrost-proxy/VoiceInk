@@ -322,8 +322,10 @@ final class OnboardingFlowController {
     }
 
     func refreshAPIVerification() {
-        coordinator.isSelectedAPIProviderVerified = APIKeyManager.shared.hasAPIKey(
-            forProvider: coordinator.selectedOnboardingProvider.rawValue
+        let provider = coordinator.selectedOnboardingProvider
+        coordinator.isSelectedAPIProviderVerified = provider.isVerificationConfigured(
+            hasAPIKey: APIKeyManager.shared.hasAPIKey(forProvider: provider.rawValue),
+            model: provider.defaultModel
         )
 
         if coordinator.isSelectedAPIProviderVerified {

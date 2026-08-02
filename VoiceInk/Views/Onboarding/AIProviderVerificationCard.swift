@@ -9,6 +9,7 @@ struct AIProviderVerificationCard: View {
     let onVerificationChanged: () -> Void
 
     @State private var apiKey = ""
+    @State private var arkModelID = ""
     @State private var isVerifying = false
     @State private var verificationMessage: String?
     @State private var verificationDetailMessage: String?
@@ -19,8 +20,19 @@ struct AIProviderVerificationCard: View {
         apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private var isSelectedProviderConnected: Bool {
+    private var trimmedArkModelID: String {
+        arkModelID.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var hasSavedAPIKey: Bool {
         APIKeyManager.shared.hasAPIKey(forProvider: selectedProvider.rawValue)
+    }
+
+    private var isSelectedProviderConnected: Bool {
+        selectedProvider.isVerificationConfigured(
+            hasAPIKey: hasSavedAPIKey,
+            model: selectedProvider == .ark ? aiService.selectedModel(for: .ark) : selectedProvider.defaultModel
+        )
     }
 
     private var shouldShowAPIKeyEntry: Bool {
@@ -32,7 +44,14 @@ struct AIProviderVerificationCard: View {
             providerSummary
 
             if shouldShowAPIKeyEntry {
-                apiKeyField
+                if !hasSavedAPIKey {
+                    apiKeyField
+                } else if selectedProvider == .ark {
+                    savedAPIKeySummary
+                }
+                if selectedProvider == .ark {
+                    arkModelField
+                }
                 verificationFooter
             } else {
                 verifiedProviderSummary
@@ -49,6 +68,12 @@ struct AIProviderVerificationCard: View {
         }
         .onChange(of: apiKey) { _, _ in
             guard !apiKey.isEmpty else { return }
+            verificationSucceeded = false
+            verificationMessage = nil
+            verificationDetailMessage = nil
+        }
+        .onChange(of: arkModelID) { _, _ in
+            guard selectedProvider == .ark else { return }
             verificationSucceeded = false
             verificationMessage = nil
             verificationDetailMessage = nil
@@ -142,6 +167,43 @@ struct AIProviderVerificationCard: View {
         }
     }
 
+    private var savedAPIKeySummary: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "checkmark.shield.fill")
+                .foregroundColor(AppTheme.Status.positive)
+            Text("Ark API key is saved securely.")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundColor(AppTheme.Text.secondary)
+        }
+    }
+
+    private var arkModelField: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Ark model or inference endpoint ID")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(AppTheme.Text.primary)
+                Text("Enter a model ID or an ep-... inference endpoint ID.")
+                    .font(.system(size: 11))
+                    .foregroundColor(AppTheme.Text.secondary)
+            }
+
+            TextField("Model ID or inference endpoint ID", text: $arkModelID)
+                .textFieldStyle(.plain)
+                .font(.system(size: 13, design: .monospaced))
+                .padding(.horizontal, 12)
+                .frame(height: 38)
+                .background(
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .fill(AppTheme.Surface.control)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .stroke(AppTheme.Border.control.opacity(0.45), lineWidth: 1)
+                )
+        }
+    }
+
     private var verificationFooter: some View {
         HStack(alignment: .center, spacing: 12) {
             statusLine
@@ -222,7 +284,9 @@ struct AIProviderVerificationCard: View {
     }
 
     private var canVerify: Bool {
-        !trimmedAPIKey.isEmpty && !isVerifying
+        let hasUsableKey = !trimmedAPIKey.isEmpty || hasSavedAPIKey
+        let hasRequiredModel = selectedProvider != .ark || !trimmedArkModelID.isEmpty
+        return hasUsableKey && hasRequiredModel && !isVerifying
     }
 
     private var apiKeyPlaceholder: String {
@@ -234,6 +298,11 @@ struct AIProviderVerificationCard: View {
     }
 
     private func refreshVerificationState() {
+        if selectedProvider == .ark {
+            arkModelID = aiService.selectedModel(for: .ark)
+        } else {
+            arkModelID = ""
+        }
         verificationSucceeded = isSelectedProviderConnected
         verificationMessage =
             verificationSucceeded
@@ -248,6 +317,7 @@ struct AIProviderVerificationCard: View {
 
     private func handleProviderChange() {
         apiKey = ""
+        arkModelID = selectedProvider == .ark ? aiService.selectedModel(for: .ark) : ""
         isVerifying = false
         isSwitchingProvider = false
         refreshVerificationState()
@@ -255,7 +325,10 @@ struct AIProviderVerificationCard: View {
     }
 
     private func verifyAPIKey() {
-        let key = trimmedAPIKey
+        let key =
+            !trimmedAPIKey.isEmpty
+            ? trimmedAPIKey
+            : (APIKeyManager.shared.getAPIKey(forProvider: selectedProvider.rawValue) ?? "")
         guard !key.isEmpty else { return }
 
         isVerifying = true
@@ -265,7 +338,7 @@ struct AIProviderVerificationCard: View {
 
         Task {
             let provider = selectedProvider
-            let modelName = provider.defaultModel
+            let modelName = provider == .ark ? trimmedArkModelID : provider.defaultModel
             let result = await aiService.verifyAPIKey(key, for: provider, model: modelName)
 
             await MainActor.run {
@@ -280,7 +353,9 @@ struct AIProviderVerificationCard: View {
                 verificationSucceeded = result.isValid
 
                 if result.isValid {
-                    guard APIKeyManager.shared.saveAPIKey(key, forProvider: provider.rawValue) else {
+                    let keyIsSaved =
+                        hasSavedAPIKey || APIKeyManager.shared.saveAPIKey(key, forProvider: provider.rawValue)
+                    guard keyIsSaved else {
                         verificationSucceeded = false
                         verificationMessage = String(
                             localized: "The key worked, but VoiceInk could not save it securely.")
@@ -294,6 +369,7 @@ struct AIProviderVerificationCard: View {
                     aiService.apiKey = key
                     aiService.isAPIKeyValid = true
                     apiKey = ""
+                    arkModelID = provider == .ark ? modelName : ""
                     verificationMessage = String(
                         format: String(localized: "%@ connection verified."), provider.rawValue)
                     verificationDetailMessage = nil

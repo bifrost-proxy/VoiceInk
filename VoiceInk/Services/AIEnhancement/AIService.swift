@@ -176,6 +176,14 @@ enum AIProvider: String, CaseIterable {
             return true
         }
     }
+
+    func isVerificationConfigured(hasAPIKey: Bool, model: String) -> Bool {
+        guard !requiresAPIKey || hasAPIKey else { return false }
+        if self == .ark {
+            return !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        return true
+    }
 }
 
 struct OllamaRefreshResult {
@@ -242,7 +250,10 @@ class AIService: ObservableObject {
             } else if provider == .localCLI {
                 return localCLIService.isConfigured
             } else if provider.requiresAPIKey {
-                return APIKeyManager.shared.hasAPIKey(forProvider: provider.rawValue)
+                return provider.isVerificationConfigured(
+                    hasAPIKey: APIKeyManager.shared.hasAPIKey(forProvider: provider.rawValue),
+                    model: selectedModel(for: provider)
+                )
             }
             return false
         }

@@ -103,7 +103,7 @@ run:
 
 # Build the same ad-hoc-signed universal ZIP published by the tag workflow.
 release:
-	@./scripts/release.sh --version "$(or $(VERSION),2.2.0)" $(RELEASE_ARGS)
+	@./scripts/release.sh --version "$(or $(VERSION),2.2.1)" $(RELEASE_ARGS)
 
 # Cleanup
 clean:

@@ -15,6 +15,10 @@ struct VoiceInkTests {
         #expect(AIProvider.ark.baseURL == "https://ark.cn-beijing.volces.com/api/v3/chat/completions")
         #expect(AIProvider.ark.requiresAPIKey)
         #expect(AIProvider.ark.supportsEnhancement)
+        #expect(!AIProvider.ark.isVerificationConfigured(hasAPIKey: true, model: ""))
+        #expect(!AIProvider.ark.isVerificationConfigured(hasAPIKey: false, model: "ep-example"))
+        #expect(AIProvider.ark.isVerificationConfigured(hasAPIKey: true, model: "ep-example"))
+        #expect(AIProvider.openAI.isVerificationConfigured(hasAPIKey: true, model: ""))
     }
 
     @Test func adHocPermissionResetCommandsTargetOnlyVoiceInk() {
