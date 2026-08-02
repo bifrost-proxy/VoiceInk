@@ -2735,6 +2735,22 @@
         }
       }
     },
+    "Chinese" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Chinesisch"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "中文"
+          }
+        }
+      }
+    },
     "All settings" : {
       "localizations" : {
         "de" : {
@@ -6241,6 +6257,38 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "已下载"
+          }
+        }
+      }
+    },
+    "Official link" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Offizielle Seite"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "官方链接"
+          }
+        }
+      }
+    },
+    "More languages" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Weitere Sprachen"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "更多语言"
           }
         }
       }

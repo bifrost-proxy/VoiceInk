@@ -49,7 +49,10 @@ enum TranscriptionModelRegistry {
                 accuracy: 0.91,
                 ramUsage: 1.0,
                 supportsStreaming: true,
-                supportedLanguages: ["zh-CN": "Mandarin Chinese"]
+                supportedLanguages: [
+                    "zh-CN": "Mandarin Chinese",
+                    "en": "English",
+                ]
             ),
             FluidAudioModel(
                 name: "parakeet-unified-0.6b",

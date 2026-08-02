@@ -122,50 +122,56 @@ struct FluidAudioModelCardView: View {
     }
 
     private var actionSection: some View {
-        HStack(spacing: 8) {
-            if isDownloaded && !isDownloading {
-                modelStatusPill("Downloaded", systemImage: "checkmark.circle")
-            } else {
-                Button(action: {
-                    Task {
-                        await fluidAudioModelManager.downloadFluidAudioModel(model)
+        VStack(alignment: .trailing, spacing: 6) {
+            HStack(spacing: 8) {
+                if isDownloaded && !isDownloading {
+                    modelStatusPill("Downloaded", systemImage: "checkmark.circle")
+                } else {
+                    Button(action: {
+                        Task {
+                            await fluidAudioModelManager.downloadFluidAudioModel(model)
+                        }
+                    }) {
+                        HStack(spacing: 4) {
+                            Text(LocalizedStringKey(isDownloading ? "Downloading..." : "Download"))
+                            Image(systemName: "arrow.down.circle")
+                        }
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(Capsule().fill(AppTheme.Accent.primary))
                     }
-                }) {
-                    HStack(spacing: 4) {
-                        Text(LocalizedStringKey(isDownloading ? "Downloading..." : "Download"))
-                        Image(systemName: "arrow.down.circle")
-                    }
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(.white)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                    .background(Capsule().fill(AppTheme.Accent.primary))
+                    .buttonStyle(.plain)
+                    .disabled(isDownloading)
                 }
-                .buttonStyle(.plain)
-                .disabled(isDownloading)
+
+                if isDownloaded && !isDownloading {
+                    Menu {
+                        Button(action: {
+                            fluidAudioModelManager.deleteFluidAudioModel(model)
+                        }) {
+                            Label("Delete Model", systemImage: "trash")
+                        }
+
+                        Button {
+                            fluidAudioModelManager.showFluidAudioModelInFinder(model)
+                        } label: {
+                            Label("Show in Finder", systemImage: "folder")
+                        }
+
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                            .font(.system(size: 14))
+                    }
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .frame(width: 20, height: 20)
+                }
             }
 
-            if isDownloaded && !isDownloading {
-                Menu {
-                    Button(action: {
-                        fluidAudioModelManager.deleteFluidAudioModel(model)
-                    }) {
-                        Label("Delete Model", systemImage: "trash")
-                    }
-
-                    Button {
-                        fluidAudioModelManager.showFluidAudioModelInFinder(model)
-                    } label: {
-                        Label("Show in Finder", systemImage: "folder")
-                    }
-
-                } label: {
-                    Image(systemName: "ellipsis.circle")
-                        .font(.system(size: 14))
-                }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .frame(width: 20, height: 20)
+            if let officialSourceURL = model.officialSourceURL {
+                ModelOfficialSourceLink(url: officialSourceURL)
             }
         }
     }

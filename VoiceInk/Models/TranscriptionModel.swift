@@ -46,6 +46,7 @@ protocol TranscriptionModel: Identifiable, Hashable {
     var supportedLanguages: [String: String] { get }
 
     var supportsStreaming: Bool { get }
+    var officialSourceURL: URL? { get }
 }
 
 extension TranscriptionModel {
@@ -66,6 +67,43 @@ extension TranscriptionModel {
     }
 
     var supportsStreaming: Bool { false }
+
+    var officialSourceURL: URL? {
+        ModelOfficialSourceCatalog.url(for: self)
+    }
+}
+
+/// Official model pages for the downloadable models bundled with VoiceInk.
+///
+/// These URLs intentionally point to the original model author or the official
+/// distributor of the exact converted artifact, never to an unrelated mirror.
+enum ModelOfficialSourceCatalog {
+    private static let sourceURLsByModelName: [String: String] = [
+        "parakeet-tdt-0.6b-v2": "https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2",
+        "parakeet-tdt-0.6b-v3": "https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3",
+        "parakeet-ctc-0.6b-zh-cn": "https://huggingface.co/FluidInference/parakeet-ctc-0.6b-zh-cn-coreml",
+        "parakeet-unified-0.6b": "https://huggingface.co/nvidia/parakeet-unified-en-0.6b",
+        "nemotron-latin-0.6b": "https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b",
+        "nemotron-multilingual-0.6b": "https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b",
+        "sensevoice-small": "https://huggingface.co/FunAudioLLM/SenseVoiceSmall",
+        "paraformer-large-zh": "https://modelscope.cn/models/iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
+        "qwen3-asr-0.6b-int8": "https://huggingface.co/Qwen/Qwen3-ASR-0.6B",
+        "sherpa-zipformer-ctc-zh-int8": "https://k2-fsa.github.io/sherpa/onnx/pretrained_models/offline-ctc/icefall/zipformer.html",
+    ]
+
+    private static let whisperSourceURL = URL(string: "https://github.com/openai/whisper")
+
+    static func url(for model: any TranscriptionModel) -> URL? {
+        if let urlString = sourceURLsByModelName[model.name] {
+            return URL(string: urlString)
+        }
+
+        if model.provider == .whisper, model is WhisperModel {
+            return whisperSourceURL
+        }
+
+        return nil
+    }
 }
 
 // A new struct for Apple's native models
