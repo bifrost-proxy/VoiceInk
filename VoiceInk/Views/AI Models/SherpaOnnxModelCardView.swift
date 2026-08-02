@@ -16,7 +16,11 @@ struct SherpaOnnxModelCardView: View {
                 HStack(spacing: 12) {
                     ModelLanguageSupportButton(model: model)
                     Label(model.size, systemImage: "internaldrive")
-                    Text("本地 · sherpa-onnx")
+                    HStack(spacing: 3) {
+                        Text("Speed")
+                        progressDotsWithNumber(value: model.speed * 10)
+                    }
+                    .fixedSize(horizontal: true, vertical: false)
                 }
                 .font(.system(size: 11))
                 .foregroundColor(Color(.secondaryLabelColor))

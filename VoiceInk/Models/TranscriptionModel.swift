@@ -124,6 +124,7 @@ struct SherpaOnnxModel: TranscriptionModel {
     let description: String
     let provider: ModelProvider = .sherpaOnnx
     let size: String
+    let speed: Double
     let archiveURL: URL
     let archiveSHA256: String
     let extractedDirectoryName: String

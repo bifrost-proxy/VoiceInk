@@ -325,13 +325,7 @@ class FluidAudioTranscriptionService: TranscriptionService {
             await nemotronAsrManager.setLanguage(languageHint)
             await nemotronAsrManager.reset()
 
-            var speechAudio = try loadAudioSamples(from: audioURL)
-            let trailingSilenceSamples = 16_000
-            let maxSingleChunkSamples = 240_000
-            if speechAudio.count + trailingSilenceSamples <= maxSingleChunkSamples {
-                speechAudio += [Float](repeating: 0, count: trailingSilenceSamples)
-            }
-
+            let speechAudio = try loadAudioSamples(from: audioURL)
             _ = try await nemotronAsrManager.process(samples: speechAudio)
             let text = try await nemotronAsrManager.finish()
             return TextNormalizer.shared.normalizeSentence(text)

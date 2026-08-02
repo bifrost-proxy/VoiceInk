@@ -29,7 +29,10 @@ final class BufferedOnDeviceStreamingProvider: StreamingTranscriptionProvider {
             pauseWindowOverlapSamples: 3_200,
             silenceProbeSamples: 9_600,
             silenceRMSLimit: 0.0018,
-            finalizesAtPause: true
+            // Keep pauses provisional. Finalizing on a brief quiet interval
+            // changes later decoding context and can produce a very different
+            // final sentence even for short recordings.
+            finalizesAtPause: false
         )
 
         /// The CTC model is non-autoregressive and fast enough to refresh a
@@ -64,6 +67,7 @@ final class BufferedOnDeviceStreamingProvider: StreamingTranscriptionProvider {
 
     private var audioBuffer: [Float] = []
     private var lastTranscribedSampleCount = 0
+    private var latestDecodedText: String?
     private var transcriptAssembler = IncrementalTranscriptAssembler()
     private var modelName: String?
     private var transcriptionTask: Task<Void, Never>?
@@ -116,13 +120,13 @@ final class BufferedOnDeviceStreamingProvider: StreamingTranscriptionProvider {
         transcriptionTask = nil
 
         if let cachedFinalText = takeCoveredFinalText() {
-            logger.notice("Finalized the latest incremental preview without re-decoding audio")
+            logger.notice("Finalized the latest fully covered window without re-decoding audio")
             eventsContinuation?.yield(.committed(text: cachedFinalText))
             return
         }
 
-        // Resolve any complete phrase boundaries that arrived between the last
-        // preview and stop, then decode only the remaining uncovered tail.
+        // Refresh only the bounded, unconfirmed window at stop. Previously
+        // finalized windows are not decoded again.
         while true {
             let beforeCount = bufferLock.withLock { audioBuffer.count }
             await runTranscriptionPass(force: true, commit: false)
@@ -223,8 +227,11 @@ final class BufferedOnDeviceStreamingProvider: StreamingTranscriptionProvider {
             }
 
             let cumulativeText = bufferLock.withLock { () -> String in
+                latestDecodedText = text
                 if shouldFinalizeWindow {
-                    let finalized = transcriptAssembler.finalize(text)
+                    let finalized = commit
+                        ? transcriptAssembler.finalizeAuthoritative(text)
+                        : transcriptAssembler.finalize(text)
                     let overlap: Int
                     if reachedWindowLimit && !commit {
                         overlap = min(configuration.forcedWindowOverlapSamples, decodedSampleCount)
@@ -240,6 +247,7 @@ final class BufferedOnDeviceStreamingProvider: StreamingTranscriptionProvider {
                         audioBuffer.removeFirst(samplesToRemove)
                     }
                     lastTranscribedSampleCount = overlap
+                    latestDecodedText = nil
                     return finalized
                 }
 
@@ -263,7 +271,7 @@ final class BufferedOnDeviceStreamingProvider: StreamingTranscriptionProvider {
             logger.error("Buffered preview pass failed: \(error, privacy: .public)")
             if commit {
                 let fallbackText = bufferLock.withLock {
-                    transcriptAssembler.finalize("")
+                    transcriptAssembler.finalizeAuthoritative("")
                 }
                 eventsContinuation?.yield(.committed(text: fallbackText))
             }
@@ -274,6 +282,7 @@ final class BufferedOnDeviceStreamingProvider: StreamingTranscriptionProvider {
         bufferLock.withLock {
             audioBuffer = []
             lastTranscribedSampleCount = 0
+            latestDecodedText = nil
             transcriptAssembler.reset()
         }
     }
@@ -282,14 +291,15 @@ final class BufferedOnDeviceStreamingProvider: StreamingTranscriptionProvider {
         bufferLock.withLock {
             guard !audioBuffer.isEmpty,
                 lastTranscribedSampleCount == audioBuffer.count,
-                !transcriptAssembler.partialText.isEmpty
+                let latestDecodedText
             else {
                 return nil
             }
 
-            let finalText = transcriptAssembler.finalize("")
+            let finalText = transcriptAssembler.finalizeAuthoritative(latestDecodedText)
             audioBuffer.removeAll()
             lastTranscribedSampleCount = 0
+            self.latestDecodedText = nil
             return finalText
         }
     }

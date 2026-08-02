@@ -24,6 +24,9 @@ struct TranscriptionRealtimeSupportTests {
         #expect(TranscriptionRealtimeSupport.mode(for: paraformer) == .slidingWindow)
         #expect(TranscriptionRealtimeSupport.mode(for: qwen3) == .slidingWindow)
         #expect(TranscriptionRealtimeSupport.mode(for: whisper) == .batchOnly)
+
+        let qwenModel = try #require(qwen3 as? SherpaOnnxModel)
+        #expect(qwenModel.speed == 0.97)
     }
 
     @Test func streamingCloudModelsUseNativeStreaming() {
@@ -54,6 +57,10 @@ struct TranscriptionRealtimeSupportTests {
         #expect(configuration.minimumNewSamples == 8_000)
         #expect(configuration.maximumSegmentSamples == 240_000)
         #expect(!configuration.finalizesAtPause)
+    }
+
+    @Test func bufferedPreviewKeepsBriefPausesProvisional() {
+        #expect(!BufferedOnDeviceStreamingProvider.Configuration.default.finalizesAtPause)
     }
 
     @Test func bufferedRealtimeMigrationPreservesChineseCtcSelection() {
