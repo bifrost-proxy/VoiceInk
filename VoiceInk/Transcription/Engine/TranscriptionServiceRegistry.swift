@@ -75,7 +75,14 @@ class TranscriptionServiceRegistry {
         configuration.isRealtimeEnabled
     }
 
-    func cleanup() async {
+    func cleanup(preservingFluidAudioModelNamed modelName: String? = nil) async {
+        if let modelName,
+            FluidAudioModelManager.isSenseVoiceModel(named: modelName)
+                || FluidAudioModelManager.isParaformerZhModel(named: modelName)
+        {
+            logger.notice("Keeping realtime preview model loaded: \(modelName, privacy: .public)")
+            return
+        }
         await fluidAudioTranscriptionService.cleanup()
     }
 }

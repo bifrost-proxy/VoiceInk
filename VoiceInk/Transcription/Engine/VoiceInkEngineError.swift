@@ -3,6 +3,7 @@ import Foundation
 enum VoiceInkEngineError: Error, Identifiable {
     case modelLoadFailed
     case transcriptionFailed
+    case noSpeechDetected
     case whisperCoreFailed
     case unzipFailed
     case unknownError
@@ -17,6 +18,8 @@ extension VoiceInkEngineError: LocalizedError {
             return String(localized: "Failed to load the transcription model.")
         case .transcriptionFailed:
             return String(localized: "Failed to transcribe the audio.")
+        case .noSpeechDetected:
+            return String(localized: "No recognizable speech was detected. Please try again.")
         case .whisperCoreFailed:
             return String(localized: "The core transcription engine failed.")
         case .unzipFailed:
@@ -33,6 +36,8 @@ extension VoiceInkEngineError: LocalizedError {
         case .transcriptionFailed:
             return String(
                 localized: "Check the default model try again. If the problem persists, try a different model.")
+        case .noSpeechDetected:
+            return String(localized: "Speak clearly and keep holding the recording shortcut until you finish.")
         case .whisperCoreFailed:
             return String(
                 localized:

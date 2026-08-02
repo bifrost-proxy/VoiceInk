@@ -8,12 +8,15 @@ class FluidAudioTranscriptionService: TranscriptionService {
     private var nemotronAsrManager: StreamingNemotronMultilingualAsrManager?
     private var senseVoiceManager: SenseVoiceManager?
     private var paraformerManager: ParaformerManager?
+    private var senseVoiceLoadingTask: Task<SenseVoiceManager, Error>?
+    private var paraformerLoadingTask: Task<ParaformerManager, Error>?
     private var activeVersion: AsrModelVersion?
     private var activeNemotronModelName: String?
     private var cachedModels: AsrModels?
     private var loadingTask: (version: AsrModelVersion, task: Task<AsrModels, Error>)?
     private let audioConverter = AudioConverter()
     private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "FluidAudioTranscriptionService")
+    private static let senseVoiceTrailingSilenceSamples = 8_000
 
     private func version(for model: any TranscriptionModel) -> AsrModelVersion {
         FluidAudioModelManager.asrVersion(for: model.name)
@@ -27,6 +30,11 @@ class FluidAudioTranscriptionService: TranscriptionService {
     }
 
     private func cleanupLoadedManagers() async {
+        senseVoiceLoadingTask?.cancel()
+        paraformerLoadingTask?.cancel()
+        senseVoiceLoadingTask = nil
+        paraformerLoadingTask = nil
+
         await unifiedAsrManager?.cleanup()
         await nemotronAsrManager?.cleanup()
         await asrManager?.cleanup()
@@ -83,18 +91,46 @@ class FluidAudioTranscriptionService: TranscriptionService {
 
     private func ensureSenseVoiceLoaded() async throws {
         if senseVoiceManager != nil { return }
+        if let senseVoiceLoadingTask {
+            senseVoiceManager = try await senseVoiceLoadingTask.value
+            return
+        }
         await cleanupLoadedManagers()
-        let models = try SenseVoiceModels.load(
-            from: FluidAudioModelManager.senseVoiceCacheDirectory(), precision: .int8)
-        senseVoiceManager = SenseVoiceManager(models: models)
+        let task = Task {
+            let models = try SenseVoiceModels.load(
+                from: FluidAudioModelManager.senseVoiceCacheDirectory(), precision: .int8)
+            return SenseVoiceManager(models: models)
+        }
+        senseVoiceLoadingTask = task
+        do {
+            senseVoiceManager = try await task.value
+            senseVoiceLoadingTask = nil
+        } catch {
+            senseVoiceLoadingTask = nil
+            throw error
+        }
     }
 
     private func ensureParaformerLoaded() async throws {
         if paraformerManager != nil { return }
+        if let paraformerLoadingTask {
+            paraformerManager = try await paraformerLoadingTask.value
+            return
+        }
         await cleanupLoadedManagers()
-        let models = try ParaformerModels.load(
-            from: FluidAudioModelManager.paraformerZhCacheDirectory(), precision: .int8)
-        paraformerManager = ParaformerManager(models: models)
+        let task = Task {
+            let models = try ParaformerModels.load(
+                from: FluidAudioModelManager.paraformerZhCacheDirectory(), precision: .int8)
+            return ParaformerManager(models: models)
+        }
+        paraformerLoadingTask = task
+        do {
+            paraformerManager = try await task.value
+            paraformerLoadingTask = nil
+        } catch {
+            paraformerLoadingTask = nil
+            throw error
+        }
     }
 
     // Returns cached models or loads from disk; deduplicates concurrent loads
@@ -169,7 +205,10 @@ class FluidAudioTranscriptionService: TranscriptionService {
         if FluidAudioModelManager.isSenseVoiceModel(named: model.name) {
             try await ensureSenseVoiceLoaded()
             guard let senseVoiceManager else { throw ASRError.notInitialized }
-            let text = try await senseVoiceManager.transcribe(audioURL: audioURL)
+            let samples = try loadAudioSamples(from: audioURL)
+            let text = try await senseVoiceManager.transcribe(
+                audio: Self.prepareSenseVoiceSamples(samples)
+            )
             return TextNormalizer.shared.normalizeSentence(text)
         }
 
@@ -254,7 +293,9 @@ class FluidAudioTranscriptionService: TranscriptionService {
         if FluidAudioModelManager.isSenseVoiceModel(named: modelName) {
             try await ensureSenseVoiceLoaded()
             guard let senseVoiceManager else { throw ASRError.notInitialized }
-            let text = try await senseVoiceManager.transcribe(audio: samples)
+            let text = try await senseVoiceManager.transcribe(
+                audio: Self.prepareSenseVoiceSamples(samples)
+            )
             return TextNormalizer.shared.normalizeSentence(text)
         }
         if FluidAudioModelManager.isParaformerZhModel(named: modelName) {
@@ -268,6 +309,10 @@ class FluidAudioTranscriptionService: TranscriptionService {
 
     private func loadAudioSamples(from audioURL: URL) throws -> [Float] {
         try audioConverter.resampleAudioFile(audioURL)
+    }
+
+    static func prepareSenseVoiceSamples(_ samples: [Float]) -> [Float] {
+        samples + [Float](repeating: 0, count: senseVoiceTrailingSilenceSamples)
     }
 
     // Releases ASR resources but preserves cached models for reuse

@@ -119,6 +119,12 @@ final class StreamingTranscriptionSession: TranscriptionSession {
             throw VoiceInkEngineError.transcriptionFailed
         }
 
+        // A buffered local model may still be loading when the user releases the shortcut.
+        // Let startup finish so queued audio can drain instead of treating it as disconnected.
+        if let startupTask {
+            await startupTask.value
+        }
+
         if !streamingFailed {
             do {
                 let start = Date()
@@ -129,7 +135,10 @@ final class StreamingTranscriptionSession: TranscriptionSession {
                     logger.notice(
                         "Streaming transcript received elapsed=\(Date().timeIntervalSince(start), format: .fixed(precision: 3), privacy: .public)s chars=\(text.count, privacy: .public)"
                     )
-                    return text
+                    if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        return text
+                    }
+                    logger.warning("Streaming returned an empty transcript; retrying the complete audio file")
                 case .requiresBatchFallback:
                     logger.notice("Streaming provider requested full batch transcription")
                 }

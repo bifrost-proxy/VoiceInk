@@ -150,6 +150,20 @@ struct VoiceInkTests {
         }
 
         #expect(TranscriptionModelRegistry.models.contains { $0.name == "parakeet-ctc-0.6b-zh-cn" } == false)
+
+        let provider = BufferedOnDeviceStreamingProvider(
+            backend: .funASR(FluidAudioTranscriptionService())
+        )
+        if case .finalizeStreaming = provider.stopDisposition {
+            #expect(Bool(true))
+        } else {
+            #expect(Bool(false), "Buffered previews must finalize their last non-empty result")
+        }
+
+        let samples: [Float] = [0.1, -0.2, 0.3]
+        let prepared = FluidAudioTranscriptionService.prepareSenseVoiceSamples(samples)
+        #expect(Array(prepared.prefix(samples.count)) == samples)
+        #expect(prepared.count == samples.count + 8_000)
     }
 
     @MainActor

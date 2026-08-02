@@ -120,6 +120,9 @@ class TranscriptionPipeline {
             }
 
             text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else {
+                throw VoiceInkEngineError.noSpeechDetected
+            }
 
             if !assistant.isFollowUp,
                 let processedText = triggerWordModeSelection(text)
@@ -249,6 +252,16 @@ class TranscriptionPipeline {
                     NotificationManager.shared.showNotification(
                         title: errorDescription,
                         type: .error,
+                        duration: 5.0
+                    )
+                }
+            }
+
+            if case VoiceInkEngineError.noSpeechDetected = error {
+                await MainActor.run {
+                    NotificationManager.shared.showNotification(
+                        title: errorDescription,
+                        type: .warning,
                         duration: 5.0
                     )
                 }

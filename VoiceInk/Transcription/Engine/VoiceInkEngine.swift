@@ -782,7 +782,16 @@ class VoiceInkEngine: NSObject, ObservableObject {
         activeRecordingStartID = nil
         activeRecordingUseCase = .newSession
         await whisperModelManager.cleanupResources()
-        await serviceRegistry.cleanup()
+        let retainedRealtimeModelName: String?
+        if let configuration = currentSessionTranscriptionConfiguration,
+            configuration.isRealtimeEnabled,
+            configuration.model.provider == .fluidAudio
+        {
+            retainedRealtimeModelName = configuration.model.name
+        } else {
+            retainedRealtimeModelName = nil
+        }
+        await serviceRegistry.cleanup(preservingFluidAudioModelNamed: retainedRealtimeModelName)
         logger.notice("cleanupResources: completed")
     }
 

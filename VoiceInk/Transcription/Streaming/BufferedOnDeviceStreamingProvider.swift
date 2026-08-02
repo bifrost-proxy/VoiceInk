@@ -15,19 +15,20 @@ final class BufferedOnDeviceStreamingProvider: StreamingTranscriptionProvider {
         category: "BufferedOnDeviceStreaming"
     )
     private let backend: Backend
-    private let minimumSamples = 24_000
-    private let minimumNewSamples = 16_000
+    private let minimumSamples = 12_000
+    private let minimumNewSamples = 8_000
     private let trailingSilenceSamples = 3_200
     private let bufferLock = NSLock()
 
     private var audioBuffer: [Float] = []
     private var lastTranscribedSampleCount = 0
+    private var latestNonEmptyText = ""
     private var modelName: String?
     private var transcriptionTask: Task<Void, Never>?
     private var eventsContinuation: AsyncStream<StreamingTranscriptionEvent>.Continuation?
 
     private(set) var transcriptionEvents: AsyncStream<StreamingTranscriptionEvent>
-    var stopDisposition: StreamingStopDisposition { .useBatchFallback }
+    var stopDisposition: StreamingStopDisposition { .finalizeStreaming }
 
     init(backend: Backend) {
         self.backend = backend
@@ -67,7 +68,11 @@ final class BufferedOnDeviceStreamingProvider: StreamingTranscriptionProvider {
     }
 
     func commit() async throws {
-        // stopDisposition always requests a final pass over the complete audio file.
+        transcriptionTask?.cancel()
+        await transcriptionTask?.value
+        transcriptionTask = nil
+
+        await runTranscriptionPass(force: true, commit: true)
     }
 
     func disconnect() async {
@@ -91,18 +96,20 @@ final class BufferedOnDeviceStreamingProvider: StreamingTranscriptionProvider {
                     break
                 }
                 guard !Task.isCancelled else { break }
-                await self?.runTranscriptionPass()
+                await self?.runTranscriptionPass(force: false, commit: false)
             }
         }
     }
 
-    private func runTranscriptionPass() async {
+    private func runTranscriptionPass(force: Bool, commit: Bool) async {
         guard let modelName else { return }
 
         guard let snapshot = bufferLock.withLock({ () -> (samples: [Float], sampleCount: Int)? in
             let sampleCount = audioBuffer.count
-            guard sampleCount >= minimumSamples,
-                sampleCount - lastTranscribedSampleCount >= minimumNewSamples
+            guard sampleCount > 0 else { return nil }
+            guard force
+                || (sampleCount >= minimumSamples
+                    && sampleCount - lastTranscribedSampleCount >= minimumNewSamples)
             else {
                 return nil
             }
@@ -129,18 +136,28 @@ final class BufferedOnDeviceStreamingProvider: StreamingTranscriptionProvider {
                 )
             }
 
-            guard !Task.isCancelled else { return }
-            bufferLock.withLock {
+            guard force || !Task.isCancelled else { return }
+            let committedText = bufferLock.withLock { () -> String in
                 lastTranscribedSampleCount = snapshot.sampleCount
+                let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty {
+                    latestNonEmptyText = trimmed
+                }
+                return trimmed.isEmpty ? latestNonEmptyText : trimmed
             }
-            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty {
-                eventsContinuation?.yield(.partial(text: trimmed))
+            if commit {
+                eventsContinuation?.yield(.committed(text: committedText))
+            } else if !committedText.isEmpty {
+                eventsContinuation?.yield(.partial(text: committedText))
             }
         } catch is CancellationError {
             return
         } catch {
             logger.error("Buffered preview pass failed: \(error, privacy: .public)")
+            if commit {
+                let fallbackText = bufferLock.withLock { latestNonEmptyText }
+                eventsContinuation?.yield(.committed(text: fallbackText))
+            }
         }
     }
 
@@ -148,6 +165,7 @@ final class BufferedOnDeviceStreamingProvider: StreamingTranscriptionProvider {
         bufferLock.withLock {
             audioBuffer = []
             lastTranscribedSampleCount = 0
+            latestNonEmptyText = ""
         }
     }
 }
