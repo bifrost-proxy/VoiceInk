@@ -64,7 +64,13 @@ struct ModelCatalogPresentationTests {
         #expect(cpu.displayName.contains("INT8"))
         #expect(mlx.displayName.contains("MLX Streaming"))
         let mlxPerformance = ModelCatalogOrdering.performance(for: mlx)
+        let cpuPerformance = ModelCatalogOrdering.performance(for: cpu)
+        #expect(cpuPerformance.accuracy == 0.96)
         #expect(mlxPerformance.speed == 0.95)
-        #expect(mlxPerformance.accuracy == 0.90)
+        #expect(mlxPerformance.accuracy == 0.96)
+
+        let paraformer = try #require(models.first { $0.name == "paraformer-large-zh" })
+        let qwenOrder = ModelCatalogOrdering.localModelsByPerformance([paraformer, mlx])
+        #expect(qwenOrder.map(\.name) == [mlx.name, paraformer.name])
     }
 }

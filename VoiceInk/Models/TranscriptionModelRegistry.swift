@@ -132,9 +132,7 @@ enum TranscriptionModelRegistry {
                 // M4 Max local benchmark: 0.269 s median warm batch and
                 // 7.3x realtime native streaming throughput.
                 speed: 0.95,
-                // Local 2-second energy-endpointed stream/batch consistency.
-                // The card labels this separately from upstream WER.
-                accuracy: 0.90,
+                accuracy: 0.96,
                 repositoryID: "Qwen/Qwen3-ASR-0.6B",
                 revision: "5eb144179a02acc5e5ba31e748d22b0cf3e303b0",
                 supportedLanguages: LanguageDictionary.qwen3ASR

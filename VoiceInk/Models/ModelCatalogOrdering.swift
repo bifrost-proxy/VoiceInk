@@ -34,7 +34,7 @@ enum ModelCatalogOrdering {
         case let model as WhisperModel:
             return Performance(speed: model.speed, accuracy: model.accuracy)
         case let model as SherpaOnnxModel:
-            return Performance(speed: model.speed, accuracy: nil)
+            return Performance(speed: model.speed, accuracy: model.accuracy)
         case let model as QwenMLXModel:
             return Performance(speed: model.speed, accuracy: model.accuracy)
         case let model as CloudModel:

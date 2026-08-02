@@ -40,7 +40,7 @@ struct QwenMLXModelCardView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Label("30 种语言 · 22 种中文方言 · 自动语言识别", systemImage: "character.bubble")
                     Label("M4 Max 实测：热态批量 0.27 秒 · 原生流式 7.3× 实时", systemImage: "speedometer")
-                    Label("准确率参考：上游 vLLM 流式平均 WER 4.40 · 本地 MLX 一致性 0.90", systemImage: "checkmark.seal")
+                    Label("准确率 9.6 · 上游 vLLM 流式平均 WER 4.40 · 本地 MLX 一致性 0.90", systemImage: "checkmark.seal")
                 }
                 .font(.system(size: 10))
                 .foregroundStyle(.tertiary)

@@ -171,6 +171,7 @@ struct SherpaOnnxModel: TranscriptionModel {
     let kind: SherpaOnnxModelKind
     let supportedLanguages: [String: String]
     var supportsStreaming: Bool { kind == .qwen3Asr }
+    var accuracy: Double? { kind == .qwen3Asr ? 0.96 : nil }
 
     var isMultilingualModel: Bool { supportedLanguages.count > 1 }
 }
