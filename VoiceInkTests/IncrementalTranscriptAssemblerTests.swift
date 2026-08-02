@@ -23,6 +23,10 @@ struct IncrementalTranscriptAssemblerTests {
             assembler.finalize("实时性有点差就是每次说完话")
                 == "效果如何你能懂感觉实时性有点差就是每次说完话"
         )
+        #expect(
+            IncrementalTranscriptAssembler.merge("看一下不太对劲刚", "刚我搞了几次")
+                == "看一下不太对劲刚我搞了几次"
+        )
     }
 
     @Test func shorterDecodeDoesNotEraseTheLatestHypothesis() {
@@ -65,6 +69,37 @@ struct IncrementalTranscriptAssemblerTests {
                 probeSamples: 9_600,
                 rmsLimit: 0.0018
             )
+        )
+    }
+
+    @Test func pauseBoundaryIsFoundAfterSpeechResumes() {
+        let speech = [Float](repeating: 0.02, count: 24_000)
+        let pause = [Float](repeating: 0.0005, count: 11_000)
+        let resumedSpeech = [Float](repeating: 0.02, count: 4_000)
+
+        let boundary = BufferedOnDeviceStreamingProvider.pauseBoundary(
+            in: speech + pause + resumedSpeech,
+            minimumSegmentSamples: 24_000,
+            probeSamples: 9_600,
+            rmsLimit: 0.0018
+        )
+
+        #expect(boundary != nil)
+        #expect(boundary! >= 33_600)
+        #expect(boundary! <= 35_100)
+    }
+
+    @Test func leadingSilenceDoesNotCreateAnEmptyPhrase() {
+        let leadingSilence = [Float](repeating: 0.0005, count: 30_000)
+        let speech = [Float](repeating: 0.02, count: 10_000)
+
+        #expect(
+            BufferedOnDeviceStreamingProvider.pauseBoundary(
+                in: leadingSilence + speech,
+                minimumSegmentSamples: 24_000,
+                probeSamples: 9_600,
+                rmsLimit: 0.0018
+            ) == nil
         )
     }
 }

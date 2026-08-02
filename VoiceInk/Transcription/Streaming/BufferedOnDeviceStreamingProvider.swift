@@ -18,8 +18,12 @@ final class BufferedOnDeviceStreamingProvider: StreamingTranscriptionProvider {
     private let minimumSamples = 12_000
     private let minimumNewSamples = 12_000
     private let minimumSegmentSamples = 24_000
-    private let maximumSegmentSamples = 192_000
+    // SenseVoice may not have emitted the end of an uninterrupted sentence at
+    // twelve seconds. Prefer natural pauses and keep a larger bounded window so
+    // a forced rollover does not permanently discard the rest of a long phrase.
+    private let maximumSegmentSamples = 480_000
     private let forcedWindowOverlapSamples = 16_000
+    private let pauseWindowOverlapSamples = 3_200
     private let silenceProbeSamples = 9_600
     private let silenceRMSLimit: Float = 0.0018
     private let bufferLock = NSLock()
@@ -76,25 +80,26 @@ final class BufferedOnDeviceStreamingProvider: StreamingTranscriptionProvider {
         await transcriptionTask?.value
         transcriptionTask = nil
 
-        if let cachedFinalText = bufferLock.withLock({ () -> String? in
-            guard !audioBuffer.isEmpty,
-                lastTranscribedSampleCount == audioBuffer.count,
-                !transcriptAssembler.partialText.isEmpty
-            else {
-                return nil
-            }
-
-            let finalText = transcriptAssembler.finalize("")
-            audioBuffer.removeAll()
-            lastTranscribedSampleCount = 0
-            return finalText
-        }) {
+        if let cachedFinalText = takeCoveredFinalText() {
             logger.notice("Finalized the latest incremental preview without re-decoding audio")
             eventsContinuation?.yield(.committed(text: cachedFinalText))
             return
         }
 
-        await runTranscriptionPass(force: true, commit: true)
+        // Resolve any complete phrase boundaries that arrived between the last
+        // preview and stop, then decode only the remaining uncovered tail.
+        while true {
+            let beforeCount = bufferLock.withLock { audioBuffer.count }
+            await runTranscriptionPass(force: true, commit: false)
+            let afterCount = bufferLock.withLock { audioBuffer.count }
+            if afterCount >= beforeCount { break }
+        }
+
+        if let finalText = takeCoveredFinalText() {
+            eventsContinuation?.yield(.committed(text: finalText))
+        } else {
+            await runTranscriptionPass(force: true, commit: true)
+        }
     }
 
     func disconnect() async {
@@ -148,13 +153,19 @@ final class BufferedOnDeviceStreamingProvider: StreamingTranscriptionProvider {
             return
         }
 
-        let reachedWindowLimit = snapshot.sampleCount >= maximumSegmentSamples
-        let endedAtPause = snapshot.sampleCount >= minimumSegmentSamples
-            && Self.isTrailingSilence(
-                in: snapshot.samples,
-                probeSamples: silenceProbeSamples,
-                rmsLimit: silenceRMSLimit
-            )
+        let pauseBoundary = Self.pauseBoundary(
+            in: snapshot.samples,
+            minimumSegmentSamples: minimumSegmentSamples,
+            probeSamples: silenceProbeSamples,
+            rmsLimit: silenceRMSLimit
+        )
+        let endedAtPause = pauseBoundary != nil
+        let reachedWindowLimit = pauseBoundary == nil && snapshot.sampleCount >= maximumSegmentSamples
+        let decodedSampleCount = pauseBoundary
+            ?? (reachedWindowLimit ? maximumSegmentSamples : snapshot.sampleCount)
+        let samplesToDecode = decodedSampleCount == snapshot.sampleCount
+            ? snapshot.samples
+            : Array(snapshot.samples.prefix(decodedSampleCount))
         let shouldFinalizeWindow = commit || reachedWindowLimit || endedAtPause
 
         do {
@@ -162,12 +173,12 @@ final class BufferedOnDeviceStreamingProvider: StreamingTranscriptionProvider {
             switch backend {
             case .funASR(let service):
                 text = try await service.transcribeBufferedStreamingPreview(
-                    samples: snapshot.samples,
+                    samples: samplesToDecode,
                     modelName: modelName
                 )
             case .qwen3ASR(let service):
                 text = try await service.transcribeBufferedStreamingPreview(
-                    samples: snapshot.samples,
+                    samples: samplesToDecode,
                     modelName: modelName
                 )
             }
@@ -175,10 +186,17 @@ final class BufferedOnDeviceStreamingProvider: StreamingTranscriptionProvider {
             let cumulativeText = bufferLock.withLock { () -> String in
                 if shouldFinalizeWindow {
                     let finalized = transcriptAssembler.finalize(text)
-                    let overlap = reachedWindowLimit && !commit
-                        ? min(forcedWindowOverlapSamples, snapshot.sampleCount)
-                        : 0
-                    let samplesToRemove = snapshot.sampleCount - overlap
+                    let overlap: Int
+                    if reachedWindowLimit && !commit {
+                        overlap = min(forcedWindowOverlapSamples, decodedSampleCount)
+                    } else if endedAtPause && !commit {
+                        // Retain 200 ms of the detected quiet interval so the
+                        // next phrase never starts exactly on a clipped onset.
+                        overlap = min(pauseWindowOverlapSamples, decodedSampleCount)
+                    } else {
+                        overlap = 0
+                    }
+                    let samplesToRemove = decodedSampleCount - overlap
                     if samplesToRemove > 0, audioBuffer.count >= samplesToRemove {
                         audioBuffer.removeFirst(samplesToRemove)
                     }
@@ -197,7 +215,7 @@ final class BufferedOnDeviceStreamingProvider: StreamingTranscriptionProvider {
             if shouldFinalizeWindow {
                 let reason = commit ? "stop" : (endedAtPause ? "pause" : "window-limit")
                 logger.notice(
-                    "Incremental window finalized reason=\(reason, privacy: .public) samples=\(snapshot.sampleCount, privacy: .public) cumulativeChars=\(cumulativeText.count, privacy: .public)"
+                    "Incremental window finalized reason=\(reason, privacy: .public) samples=\(decodedSampleCount, privacy: .public) cumulativeChars=\(cumulativeText.count, privacy: .public)"
                 )
             }
         } catch is CancellationError {
@@ -219,6 +237,69 @@ final class BufferedOnDeviceStreamingProvider: StreamingTranscriptionProvider {
             lastTranscribedSampleCount = 0
             transcriptAssembler.reset()
         }
+    }
+
+    private func takeCoveredFinalText() -> String? {
+        bufferLock.withLock {
+            guard !audioBuffer.isEmpty,
+                lastTranscribedSampleCount == audioBuffer.count,
+                !transcriptAssembler.partialText.isEmpty
+            else {
+                return nil
+            }
+
+            let finalText = transcriptAssembler.finalize("")
+            audioBuffer.removeAll()
+            lastTranscribedSampleCount = 0
+            return finalText
+        }
+    }
+
+    /// Returns the end of the latest complete quiet interval. Looking across
+    /// the whole new snapshot avoids missing a pause merely because speech
+    /// resumed before the next 700 ms preview tick.
+    static func pauseBoundary(
+        in samples: [Float],
+        minimumSegmentSamples: Int,
+        probeSamples: Int,
+        rmsLimit: Float
+    ) -> Int? {
+        guard minimumSegmentSamples > 0,
+            probeSamples > 0,
+            samples.count >= max(minimumSegmentSamples, probeSamples)
+        else {
+            return nil
+        }
+
+        let energyLimit = rmsLimit * rmsLimit * Float(probeSamples)
+        let speechAmplitudeLimit = max(rmsLimit * 3, 0.005)
+        let minimumAudibleSamples = 800
+        var audiblePrefix = [Int](repeating: 0, count: samples.count + 1)
+        for index in samples.indices {
+            audiblePrefix[index + 1] = audiblePrefix[index]
+                + (abs(samples[index]) >= speechAmplitudeLimit ? 1 : 0)
+        }
+        var energy = samples.prefix(probeSamples).reduce(Float.zero) { $0 + $1 * $1 }
+        var latestBoundary: Int?
+
+        for end in probeSamples...samples.count {
+            let windowStart = end - probeSamples
+            let audibleBeforePause = audiblePrefix[windowStart]
+            let audibleAfterPause = audiblePrefix[samples.count] - audiblePrefix[end]
+            if end >= minimumSegmentSamples,
+                energy <= energyLimit,
+                audibleBeforePause >= minimumAudibleSamples,
+                audibleAfterPause >= minimumAudibleSamples
+            {
+                latestBoundary = end
+            }
+            guard end < samples.count else { break }
+            let outgoing = samples[end - probeSamples]
+            let incoming = samples[end]
+            energy += incoming * incoming - outgoing * outgoing
+        }
+
+        return latestBoundary
     }
 
     static func isTrailingSilence(in samples: [Float], probeSamples: Int, rmsLimit: Float) -> Bool {

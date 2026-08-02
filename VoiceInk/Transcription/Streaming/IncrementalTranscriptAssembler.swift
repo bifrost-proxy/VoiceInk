@@ -64,6 +64,12 @@ struct IncrementalTranscriptAssembler {
             }
         }
 
+        // A one-character overlap is too ambiguous for English, but is common
+        // at a Chinese phrase boundary (for example: "刚" + "刚我...").
+        if left.last == right.first, left.last?.isASCII == false {
+            return existing + String(right.dropFirst())
+        }
+
         return join(existing, incoming)
     }
 

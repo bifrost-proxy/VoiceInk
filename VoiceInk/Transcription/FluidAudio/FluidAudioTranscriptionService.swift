@@ -2,6 +2,45 @@ import FluidAudio
 import Foundation
 import os.log
 
+/// FluidAudio's offline FunASR managers share mutable Core ML inference state.
+/// Keep inference calls serialized so app-launch prewarming cannot overlap the
+/// first realtime preview and corrupt either result.
+private actor FunASRInferenceGate {
+    private var isHeld = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func perform<T>(_ operation: () async throws -> T) async throws -> T {
+        await acquire()
+        do {
+            let value = try await operation()
+            release()
+            return value
+        } catch {
+            release()
+            throw error
+        }
+    }
+
+    private func acquire() async {
+        if !isHeld {
+            isHeld = true
+            return
+        }
+
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
+    }
+
+    private func release() {
+        if waiters.isEmpty {
+            isHeld = false
+        } else {
+            waiters.removeFirst().resume()
+        }
+    }
+}
+
 class FluidAudioTranscriptionService: TranscriptionService {
     private var asrManager: AsrManager?
     private var unifiedAsrManager: UnifiedAsrManager?
@@ -17,6 +56,7 @@ class FluidAudioTranscriptionService: TranscriptionService {
     private let audioConverter = AudioConverter()
     private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "FluidAudioTranscriptionService")
     private static let senseVoiceTrailingSilenceSamples = 8_000
+    private static let funASRInferenceGate = FunASRInferenceGate()
 
     private func version(for model: any TranscriptionModel) -> AsrModelVersion {
         FluidAudioModelManager.asrVersion(for: model.name)
@@ -206,16 +246,19 @@ class FluidAudioTranscriptionService: TranscriptionService {
             try await ensureSenseVoiceLoaded()
             guard let senseVoiceManager else { throw ASRError.notInitialized }
             let samples = try loadAudioSamples(from: audioURL)
-            let text = try await senseVoiceManager.transcribe(
-                audio: Self.prepareSenseVoiceSamples(samples)
-            )
+            let preparedSamples = Self.prepareSenseVoiceSamples(samples)
+            let text = try await Self.funASRInferenceGate.perform {
+                try await senseVoiceManager.transcribe(audio: preparedSamples)
+            }
             return TextNormalizer.shared.normalizeSentence(text)
         }
 
         if FluidAudioModelManager.isParaformerZhModel(named: model.name) {
             try await ensureParaformerLoaded()
             guard let paraformerManager else { throw ASRError.notInitialized }
-            let text = try await paraformerManager.transcribe(audioURL: audioURL)
+            let text = try await Self.funASRInferenceGate.perform {
+                try await paraformerManager.transcribe(audioURL: audioURL)
+            }
             return TextNormalizer.shared.normalizeSentence(text)
         }
 
@@ -293,15 +336,18 @@ class FluidAudioTranscriptionService: TranscriptionService {
         if FluidAudioModelManager.isSenseVoiceModel(named: modelName) {
             try await ensureSenseVoiceLoaded()
             guard let senseVoiceManager else { throw ASRError.notInitialized }
-            let text = try await senseVoiceManager.transcribe(
-                audio: Self.prepareSenseVoiceSamples(samples)
-            )
+            let preparedSamples = Self.prepareSenseVoiceSamples(samples)
+            let text = try await Self.funASRInferenceGate.perform {
+                try await senseVoiceManager.transcribe(audio: preparedSamples)
+            }
             return TextNormalizer.shared.normalizeSentence(text)
         }
         if FluidAudioModelManager.isParaformerZhModel(named: modelName) {
             try await ensureParaformerLoaded()
             guard let paraformerManager else { throw ASRError.notInitialized }
-            let text = try await paraformerManager.transcribe(audio: samples)
+            let text = try await Self.funASRInferenceGate.perform {
+                try await paraformerManager.transcribe(audio: samples)
+            }
             return TextNormalizer.shared.normalizeSentence(text)
         }
         throw ASRError.processingFailed("Unsupported buffered FluidAudio model: \(modelName)")
