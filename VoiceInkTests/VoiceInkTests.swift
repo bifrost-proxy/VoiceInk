@@ -11,6 +11,21 @@ import Testing
 
 struct VoiceInkTests {
 
+    @MainActor
+    @Test func cloudConfigurationSyncExcludesSecretsAndDeviceState() {
+        #expect(CloudConfigurationSyncService.isEligiblePreferenceKey("Volcengine ArkSelectedModel"))
+        #expect(CloudConfigurationSyncService.isEligiblePreferenceKey("modeConfigurationsV2"))
+        #expect(CloudConfigurationSyncService.isEligiblePreferenceKey("customPrompts"))
+        #expect(CloudConfigurationSyncService.isEligiblePreferenceKey("Shortcut_primaryRecording"))
+
+        #expect(!CloudConfigurationSyncService.isEligiblePreferenceKey("LocalKeychain_openAIAPIKey"))
+        #expect(!CloudConfigurationSyncService.isEligiblePreferenceKey("selectedAudioDeviceUID"))
+        #expect(!CloudConfigurationSyncService.isEligiblePreferenceKey("hasCompletedOnboardingV2"))
+        #expect(!CloudConfigurationSyncService.isEligiblePreferenceKey("onboardingStage"))
+        #expect(!CloudConfigurationSyncService.isEligiblePreferenceKey("NSWindow Frame main"))
+        #expect(!CloudConfigurationSyncService.isEligiblePreferenceKey("CloudConfigurationSync.deviceID"))
+    }
+
     @Test func volcanoArkUsesOpenAICompatibleChatEndpoint() {
         #expect(AIProvider.ark.baseURL == "https://ark.cn-beijing.volces.com/api/v3/chat/completions")
         #expect(AIProvider.ark.requiresAPIKey)

@@ -90,6 +90,13 @@ class TranscriptionModelManager: ObservableObject {
         }
     }
 
+    func reloadFromSynchronizedDefaults() {
+        currentTranscriptionModel = nil
+        refreshAllAvailableModels()
+        loadCurrentTranscriptionModel()
+        objectWillChange.send()
+    }
+
     // MARK: - Set default model
 
     func setDefaultTranscriptionModel(_ model: any TranscriptionModel) {

@@ -12,6 +12,7 @@ struct SettingsView: View {
     @EnvironmentObject private var enhancementService: AIEnhancementService
     @ObservedObject private var mediaController = MediaController.shared
     @ObservedObject private var playbackController = PlaybackController.shared
+    @ObservedObject private var cloudSync = CloudConfigurationSyncService.shared
     @AppStorage("hasCompletedOnboardingV2") private var hasCompletedOnboardingV2 = true
     @AppStorage("restoreClipboardAfterPaste") private var restoreClipboardAfterPaste = true
     @AppStorage("clipboardRestoreDelay") private var clipboardRestoreDelay = 2.0
@@ -239,6 +240,48 @@ struct SettingsView: View {
                 Button("Reset Onboarding") {
                     showResetOnboardingAlert = true
                 }
+            }
+
+            Section {
+                LabeledContent("iCloud Sync") {
+                    HStack(spacing: 8) {
+                        if cloudSync.state == .syncing {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
+                        Text(cloudSync.statusText)
+                            .foregroundStyle(cloudSync.errorText == nil ? Color.secondary : Color.red)
+                    }
+                }
+
+                if let lastSyncedAt = cloudSync.lastSyncedAt {
+                    LabeledContent("Last Synced") {
+                        Text(lastSyncedAt, format: .dateTime.year().month().day().hour().minute().second())
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                if let errorText = cloudSync.errorText {
+                    Text(errorText)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+
+                HStack {
+                    Button("Sync Now") {
+                        cloudSync.syncNow()
+                    }
+                    Button("Show Sync File") {
+                        cloudSync.revealConfigurationFile()
+                    }
+                    .disabled(cloudSync.configurationFileURL == nil)
+                }
+            } header: {
+                Text("iCloud")
+            } footer: {
+                Text(
+                    "Model selections and definitions, prompts, modes, dictionary entries, shortcuts, and most preferences sync automatically through iCloud Drive. API keys, permissions, device selections, downloaded model files, history, audio, and usage statistics stay on this Mac."
+                )
             }
 
             Section {

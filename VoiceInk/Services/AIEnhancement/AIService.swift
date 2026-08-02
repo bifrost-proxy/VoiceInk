@@ -374,6 +374,27 @@ class AIService: ObservableObject {
         }
     }
 
+    func reloadFromSynchronizedDefaults() {
+        selectedModels.removeAll()
+        loadSavedModelSelections()
+        loadSavedOpenRouterModels()
+        customBaseURL = userDefaults.string(forKey: "customProviderBaseURL") ?? ""
+        customModel = userDefaults.string(forKey: "customProviderModel") ?? ""
+
+        if let savedProvider = userDefaults.string(forKey: "selectedAIProvider"),
+            let provider = AIProvider(rawValue: savedProvider)
+        {
+            if selectedProvider != provider {
+                selectedProvider = provider
+            } else {
+                reloadSelectedProviderConfiguration()
+            }
+        } else {
+            reloadSelectedProviderConfiguration()
+        }
+        objectWillChange.send()
+    }
+
     private func loadSavedModelSelections() {
         for provider in AIProvider.allCases {
             let key = "\(provider.rawValue)SelectedModel"

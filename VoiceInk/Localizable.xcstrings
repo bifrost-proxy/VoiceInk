@@ -19048,6 +19048,106 @@
         }
       }
     },
+    "iCloud" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "iCloud"
+          }
+        }
+      }
+    },
+    "iCloud Sync" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "iCloud 同步"
+          }
+        }
+      }
+    },
+    "Last Synced" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "上次同步"
+          }
+        }
+      }
+    },
+    "Model selections and definitions, prompts, modes, dictionary entries, shortcuts, and most preferences sync automatically through iCloud Drive. API keys, permissions, device selections, downloaded model files, history, audio, and usage statistics stay on this Mac." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "模型选择与定义、提示词、模式、词典、快捷键和绝大多数偏好设置会通过 iCloud Drive 自动同步。API 密钥、权限、设备选择、已下载的模型文件、历史记录、音频和使用统计仅保留在本机。"
+          }
+        }
+      }
+    },
+    "Show Sync File" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "显示同步文件"
+          }
+        }
+      }
+    },
+    "Sync Error" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "同步错误"
+          }
+        }
+      }
+    },
+    "Sync Now" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "立即同步"
+          }
+        }
+      }
+    },
+    "Syncing" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在同步"
+          }
+        }
+      }
+    },
+    "Up to Date" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已是最新"
+          }
+        }
+      }
+    },
+    "Waiting for iCloud Drive" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在等待 iCloud Drive"
+          }
+        }
+      }
+    },
     "Save & Verify" : {
       "localizations" : {
         "zh-Hans" : {

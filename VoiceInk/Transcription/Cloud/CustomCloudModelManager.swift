@@ -73,6 +73,11 @@ class CustomCloudModelManager: ObservableObject {
         }
     }
 
+    func reloadFromSynchronizedDefaults() {
+        customModels = []
+        loadCustomModels()
+    }
+
     func saveCustomModels() {
         do {
             let data = try JSONEncoder().encode(customModels)

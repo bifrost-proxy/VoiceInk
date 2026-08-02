@@ -12,6 +12,7 @@ extension Notification.Name {
     static let showMainWindowRequested = Notification.Name("showMainWindowRequested")
     static let modeConfigurationApplied = Notification.Name("modeConfigurationApplied")
     static let modeConfigurationsDidChange = Notification.Name("ModeConfigurationsDidChange")
+    static let cloudConfigurationDidChange = Notification.Name("cloudConfigurationDidChange")
     static let modeShortcutAvailabilityDidChange = Notification.Name("modeShortcutAvailabilityDidChange")
     static let transcriptionCreated = Notification.Name("transcriptionCreated")
     static let transcriptionCompleted = Notification.Name("transcriptionCompleted")

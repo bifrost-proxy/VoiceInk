@@ -305,6 +305,23 @@ class ModeManager: ObservableObject {
         }
     }
 
+    func reloadFromSynchronizedDefaults() {
+        let previousEnabledConfigIds = enabledConfigurationIds
+        configurations = []
+        loadConfigurations()
+
+        if let activeConfigIdString = UserDefaults.standard.string(forKey: activeConfigIdKey),
+            let activeConfigId = UUID(uuidString: activeConfigIdString)
+        {
+            activeConfiguration = configurations.first { $0.id == activeConfigId }
+        } else {
+            activeConfiguration = nil
+        }
+
+        postShortcutAvailabilityChangeIfNeeded(previousEnabledConfigIds: previousEnabledConfigIds)
+        NotificationCenter.default.post(name: .modeConfigurationsDidChange, object: nil)
+    }
+
     func saveConfigurations() {
         if let data = try? JSONEncoder().encode(configurations) {
             UserDefaults.standard.set(data, forKey: configKey)

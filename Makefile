@@ -77,7 +77,7 @@ local: check setup
 		echo "Run with: open ~/Downloads/VoiceInk.app"; \
 		echo ""; \
 		echo "Limitations of local builds:"; \
-		echo "  - No iCloud dictionary sync"; \
+		echo "  - Configuration sync uses iCloud Drive (no Team ID required)"; \
 		echo "  - No automatic updates (pull new code and rebuild to update)"; \
 	else \
 		echo "Error: Could not find built VoiceInk.app at $$APP_PATH"; \
@@ -103,7 +103,7 @@ run:
 
 # Build the same ad-hoc-signed universal ZIP published by the tag workflow.
 release:
-	@./scripts/release.sh --version "$(or $(VERSION),2.2.1)" $(RELEASE_ARGS)
+	@./scripts/release.sh --version "$(or $(VERSION),2.2.2)" $(RELEASE_ARGS)
 
 # Cleanup
 clean:

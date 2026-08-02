@@ -209,6 +209,11 @@ final class CustomAIProviderManager: ObservableObject {
         }
     }
 
+    func reloadFromSynchronizedDefaults() {
+        providers = []
+        loadProviders()
+    }
+
     private func saveProviders() {
         do {
             let data = try JSONEncoder().encode(providers)

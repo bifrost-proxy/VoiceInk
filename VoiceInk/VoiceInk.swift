@@ -42,6 +42,7 @@ struct VoiceInkApp: App {
         AppLanguagePreference.applyStored()
         AppAppearancePreference.applyStored()
         OnboardingV2Migration.prepareIfNeeded()
+        CloudConfigurationSyncService.shared.preparePreferencesForLaunch()
 
         let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "Initialization")
         // Keep existing model order stable; append new models after synced entities.
@@ -157,6 +158,15 @@ struct VoiceInkApp: App {
         _prewarmService = StateObject(wrappedValue: prewarmService)
 
         appDelegate.menuBarManager = menuBarManager
+
+        CloudConfigurationSyncService.shared.start(modelContext: resolvedContainer.mainContext) {
+            ModeManager.shared.reloadFromSynchronizedDefaults()
+            CustomAIProviderManager.shared.reloadFromSynchronizedDefaults()
+            CustomCloudModelManager.shared.reloadFromSynchronizedDefaults()
+            aiService.reloadFromSynchronizedDefaults()
+            enhancementService.reloadFromSynchronizedDefaults()
+            transcriptionModelManager.reloadFromSynchronizedDefaults()
+        }
 
         // Ensure no lingering recording state from previous runs
         Task {

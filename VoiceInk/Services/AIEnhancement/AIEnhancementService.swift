@@ -542,6 +542,17 @@ class AIEnhancementService: ObservableObject {
             UserDefaults.standard.set(encoded, forKey: "customPrompts")
         }
     }
+
+    func reloadFromSynchronizedDefaults() {
+        if let savedPromptsData = UserDefaults.standard.data(forKey: "customPrompts"),
+            let decodedPrompts = try? JSONDecoder().decode([CustomPrompt].self, from: savedPromptsData)
+        {
+            customPrompts = decodedPrompts
+        } else {
+            customPrompts = []
+        }
+        repairModePromptSelections()
+    }
 }
 
 enum EnhancementError: Error {
