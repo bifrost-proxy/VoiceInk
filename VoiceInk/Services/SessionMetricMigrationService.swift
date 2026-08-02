@@ -60,8 +60,12 @@ final class SessionMetricMigrationService {
                 logger.error("Stats migration failed: \(error, privacy: .public)")
             }
 
+            let didInsertMetrics = insertedCount > 0
             await MainActor.run {
                 SessionMetricMigrationService.shared.isStatsMigrationRunning = false
+                if didInsertMetrics {
+                    DashboardStatsCache.shared.markStale()
+                }
                 NotificationCenter.default.post(name: .sessionMetricsDidChange, object: nil)
             }
         }
@@ -130,8 +134,12 @@ final class SessionMetricMigrationService {
                 logger.error("Enhancement token backfill failed: \(error, privacy: .public)")
             }
 
+            let didUpdateMetrics = updatedCount > 0
             await MainActor.run {
                 SessionMetricMigrationService.shared.isTokenBackfillRunning = false
+                if didUpdateMetrics {
+                    DashboardStatsCache.shared.markStale()
+                }
                 NotificationCenter.default.post(name: .sessionMetricsDidChange, object: nil)
             }
         }
