@@ -60,7 +60,7 @@ struct FluidAudioModelCardView: View {
 
     private var metadataSection: some View {
         HStack(spacing: 12) {
-            Label(model.language, systemImage: "globe")
+            ModelLanguageSupportButton(model: model)
             Label(model.size, systemImage: "internaldrive")
             HStack(spacing: 3) {
                 Text("Speed")

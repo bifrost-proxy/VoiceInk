@@ -11,7 +11,7 @@ struct SherpaOnnxModelCardView: View {
                     .font(.system(size: 13, weight: .semibold))
 
                 HStack(spacing: 12) {
-                    Label(model.language, systemImage: "globe")
+                    ModelLanguageSupportButton(model: model)
                     Label(model.size, systemImage: "internaldrive")
                     Text("本地 · sherpa-onnx")
                 }

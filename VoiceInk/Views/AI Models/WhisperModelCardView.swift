@@ -47,9 +47,7 @@ struct WhisperModelCardView: View {
     private var metadataSection: some View {
         HStack(spacing: 12) {
             // Language
-            Label(model.language, systemImage: "globe")
-                .font(.system(size: 11))
-                .foregroundColor(Color(.secondaryLabelColor))
+            ModelLanguageSupportButton(model: model)
                 .lineLimit(1)
 
             // Size
@@ -172,12 +170,14 @@ struct ImportedWhisperModelCardView: View {
                     Spacer()
                 }
 
-                Text("Imported local model")
-                    .font(.system(size: 11))
-                    .foregroundColor(Color(.secondaryLabelColor))
-                    .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.top, 4)
+                HStack(spacing: 12) {
+                    ModelLanguageSupportButton(model: model)
+                    Label("Imported local model", systemImage: "internaldrive")
+                }
+                .font(.system(size: 11))
+                .foregroundColor(Color(.secondaryLabelColor))
+                .lineLimit(1)
+                .padding(.top, 4)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 

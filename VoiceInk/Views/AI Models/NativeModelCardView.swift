@@ -41,9 +41,7 @@ struct NativeAppleModelCardView: View {
                 .lineLimit(1)
 
             // Language
-            Label(model.language, systemImage: "globe")
-                .font(.system(size: 11))
-                .foregroundColor(Color(.secondaryLabelColor))
+            ModelLanguageSupportButton(model: model)
                 .lineLimit(1)
 
             // On-Device

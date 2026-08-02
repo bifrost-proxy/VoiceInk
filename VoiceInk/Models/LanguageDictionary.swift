@@ -147,6 +147,19 @@ enum LanguageDictionary {
         "ko": "Korean",
     ]
 
+    /// Qwen3-ASR's 30 officially supported languages. Its 22 Chinese dialects
+    /// are display-only capabilities and live in ModelLanguageSupportCatalog.
+    static let qwen3ASR: [String: String] = {
+        let codes: Set<String> = [
+            "ar", "cs", "da", "de", "el", "en", "es", "fa", "fi", "fil",
+            "fr", "hi", "hu", "id", "it", "ja", "ko", "mk", "ms", "nl",
+            "pl", "pt", "ro", "ru", "sv", "th", "tr", "vi", "yue", "zh",
+        ]
+        var languages = all.filter { codes.contains($0.key) }
+        languages["auto"] = "Auto-detect"
+        return languages
+    }()
+
     private static func languages(matching codes: Set<String>) -> [String: String] {
         all.filter { codes.contains($0.key) }
     }

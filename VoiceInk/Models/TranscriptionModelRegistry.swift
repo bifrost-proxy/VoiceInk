@@ -104,7 +104,7 @@ enum TranscriptionModelRegistry {
                 archiveSHA256: "393f8a14e2f5fb96746aaab342997a40641001fbd5bf9592a080a8329178ee96",
                 extractedDirectoryName: "sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25",
                 kind: .qwen3Asr,
-                supportedLanguages: LanguageDictionary.all
+                supportedLanguages: LanguageDictionary.qwen3ASR
             ),
             SherpaOnnxModel(
                 name: "sherpa-zipformer-ctc-zh-int8",

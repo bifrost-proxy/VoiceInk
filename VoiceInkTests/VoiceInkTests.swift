@@ -164,6 +164,13 @@ struct VoiceInkTests {
         let prepared = FluidAudioTranscriptionService.prepareSenseVoiceSamples(samples)
         #expect(Array(prepared.prefix(samples.count)) == samples)
         #expect(prepared.count == samples.count + 8_000)
+
+        let qwen3 = TranscriptionModelRegistry.models.first { $0.name == "qwen3-asr-0.6b-int8" }
+        #expect(qwen3 != nil)
+        if let qwen3 {
+            #expect(qwen3.supportedLanguages.count == 31) // 30 languages plus auto-detect.
+            #expect(ModelLanguageSupportCatalog.languageCount(for: qwen3) == 52)
+        }
     }
 
     @MainActor
