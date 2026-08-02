@@ -120,6 +120,7 @@ class StreamingTranscriptionService {
     private var committedSegments: [String] = []
     private let modelContext: ModelContext
     private let fluidAudioService: FluidAudioTranscriptionService?
+    private let sherpaOnnxService: SherpaOnnxTranscriptionService?
     private var onPartialTranscript: ((String) -> Void)?
     private let metrics = StreamingMetrics()
     private var stopStartedAt: Date?
@@ -128,10 +129,12 @@ class StreamingTranscriptionService {
 
     init(
         modelContext: ModelContext, fluidAudioService: FluidAudioTranscriptionService? = nil,
+        sherpaOnnxService: SherpaOnnxTranscriptionService? = nil,
         onPartialTranscript: ((String) -> Void)? = nil
     ) {
         self.modelContext = modelContext
         self.fluidAudioService = fluidAudioService
+        self.sherpaOnnxService = sherpaOnnxService
         self.onPartialTranscript = onPartialTranscript
     }
 
@@ -287,7 +290,21 @@ class StreamingTranscriptionService {
                     "FluidAudioTranscriptionService required for FluidAudio streaming. Ensure it is passed to StreamingTranscriptionService."
                 )
             }
+
+            if FluidAudioModelManager.isSenseVoiceModel(named: model.name)
+                || FluidAudioModelManager.isParaformerZhModel(named: model.name)
+            {
+                return BufferedOnDeviceStreamingProvider(backend: .funASR(fluidAudioService))
+            }
             return FluidAudioStreamingProvider(fluidAudioService: fluidAudioService)
+        }
+        if model.provider == .sherpaOnnx {
+            guard let sherpaOnnxService else {
+                fatalError(
+                    "SherpaOnnxTranscriptionService required for sherpa-onnx streaming previews."
+                )
+            }
+            return BufferedOnDeviceStreamingProvider(backend: .qwen3ASR(sherpaOnnxService))
         }
         guard let cloudProvider = CloudProviderRegistry.provider(for: model.provider),
             let streamingProvider = cloudProvider.makeStreamingProvider(modelContext: modelContext)

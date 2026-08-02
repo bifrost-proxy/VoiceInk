@@ -39,7 +39,6 @@ class FluidAudioModelManager: ObservableObject {
         case nemotron(NemotronVariant)
         case senseVoice
         case paraformerZh
-        case parakeetCtcZhCn
     }
 
     nonisolated static func asrVersion(for modelName: String) -> AsrModelVersion {
@@ -108,10 +107,6 @@ class FluidAudioModelManager: ObservableObject {
         modelName == "paraformer-large-zh"
     }
 
-    nonisolated static func isParakeetCtcZhCnModel(named modelName: String) -> Bool {
-        modelName == "parakeet-ctc-0.6b-zh-cn"
-    }
-
     nonisolated static func requiresRealtime(named modelName: String) -> Bool {
         isNemotronModel(named: modelName)
     }
@@ -119,7 +114,6 @@ class FluidAudioModelManager: ObservableObject {
     nonisolated private static func modelKind(for modelName: String) -> FluidAudioModelKind {
         if isSenseVoiceModel(named: modelName) { return .senseVoice }
         if isParaformerZhModel(named: modelName) { return .paraformerZh }
-        if isParakeetCtcZhCnModel(named: modelName) { return .parakeetCtcZhCn }
 
         if let nemotronVariant = NemotronVariant(modelName: modelName) {
             return .nemotron(nemotronVariant)
@@ -175,8 +169,6 @@ class FluidAudioModelManager: ObservableObject {
             return SenseVoiceModels.modelsExist(at: Self.senseVoiceCacheDirectory(), precision: .int8)
         case .paraformerZh:
             return ParaformerModels.modelsExist(at: Self.paraformerZhCacheDirectory(), precision: .int8)
-        case .parakeetCtcZhCn:
-            return ParakeetCtcZhCnModels.modelsExist(at: Self.parakeetCtcZhCnCacheDirectory())
         case .nemotron(let variant):
             return Self.nemotronRequiredFilesExist(in: Self.nemotronCacheDirectory(for: variant))
         case .parakeetUnified:
@@ -243,18 +235,6 @@ class FluidAudioModelManager: ObservableObject {
                 )
                 beginModelPreparation(for: modelName, downloadID: downloadID)
                 _ = try ParaformerModels.load(from: directory, precision: .int8)
-            case .parakeetCtcZhCn:
-                try await ParakeetCtcZhCnModels.download(
-                    to: Self.parakeetCtcZhCnCacheDirectory(),
-                    progress: { fraction in
-                        Task { @MainActor [weak self] in
-                            self?.updateDirectDownloadProgress(
-                                fraction, for: modelName, downloadID: downloadID)
-                        }
-                    }
-                )
-                beginModelPreparation(for: modelName, downloadID: downloadID)
-                _ = try ParakeetCtcZhCnModels.load(from: Self.parakeetCtcZhCnCacheDirectory())
             case .parakeetUnified:
                 try await ModelHub.download(
                     .parakeetUnified,
@@ -382,8 +362,6 @@ class FluidAudioModelManager: ObservableObject {
             return Self.senseVoiceCacheDirectory()
         case .paraformerZh:
             return Self.paraformerZhCacheDirectory()
-        case .parakeetCtcZhCn:
-            return Self.parakeetCtcZhCnCacheDirectory()
         case .nemotron(let variant):
             return Self.nemotronCacheDirectory(for: variant)
         case .parakeetUnified:
@@ -444,11 +422,6 @@ class FluidAudioModelManager: ObservableObject {
     nonisolated static func paraformerZhCacheDirectory() -> URL {
         fluidAudioModelsRootDirectory()
             .appendingPathComponent(Repo.paraformerLargeZh.folderName, isDirectory: true)
-    }
-
-    nonisolated static func parakeetCtcZhCnCacheDirectory() -> URL {
-        fluidAudioModelsRootDirectory()
-            .appendingPathComponent("parakeet-ctc-0.6b-zh-cn-coreml", isDirectory: true)
     }
 
     // Matches the cache root used by FluidAudio's Unified managers.

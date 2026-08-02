@@ -129,7 +129,7 @@ struct SherpaOnnxModel: TranscriptionModel {
     let extractedDirectoryName: String
     let kind: SherpaOnnxModelKind
     let supportedLanguages: [String: String]
-    let supportsStreaming = false
+    var supportsStreaming: Bool { kind == .qwen3Asr }
 
     var isMultilingualModel: Bool { supportedLanguages.count > 1 }
 }

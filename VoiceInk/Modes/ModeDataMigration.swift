@@ -22,6 +22,12 @@ extension ModeManager {
             var config = configurations[index]
             var changedConfig = false
 
+            if config.selectedTranscriptionModelName == "parakeet-ctc-0.6b-zh-cn" {
+                config.selectedTranscriptionModelName = StarterModeFactory.defaultTranscriptionModelName
+                config.isRealtimeTranscriptionEnabled = true
+                changedConfig = true
+            }
+
             if config.selectedTranscriptionModelName == nil {
                 config.selectedTranscriptionModelName = UserDefaults.standard.string(
                     forKey: "CurrentTranscriptionModel")
@@ -58,6 +64,13 @@ extension ModeManager {
 
         if didChange {
             saveConfigurations()
+        }
+
+        if UserDefaults.standard.string(forKey: "CurrentTranscriptionModel") == "parakeet-ctc-0.6b-zh-cn" {
+            UserDefaults.standard.set(
+                StarterModeFactory.defaultTranscriptionModelName,
+                forKey: "CurrentTranscriptionModel"
+            )
         }
 
         migrateLegacyShortcutStorageIfNeeded()

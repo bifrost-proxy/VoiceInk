@@ -8,7 +8,6 @@ class FluidAudioTranscriptionService: TranscriptionService {
     private var nemotronAsrManager: StreamingNemotronMultilingualAsrManager?
     private var senseVoiceManager: SenseVoiceManager?
     private var paraformerManager: ParaformerManager?
-    private var parakeetCtcZhCnManager: ParakeetCtcZhCnManager?
     private var activeVersion: AsrModelVersion?
     private var activeNemotronModelName: String?
     private var cachedModels: AsrModels?
@@ -37,7 +36,6 @@ class FluidAudioTranscriptionService: TranscriptionService {
         asrManager = nil
         senseVoiceManager = nil
         paraformerManager = nil
-        parakeetCtcZhCnManager = nil
         activeVersion = nil
         activeNemotronModelName = nil
     }
@@ -99,14 +97,6 @@ class FluidAudioTranscriptionService: TranscriptionService {
         paraformerManager = ParaformerManager(models: models)
     }
 
-    private func ensureParakeetCtcZhCnLoaded() async throws {
-        if parakeetCtcZhCnManager != nil { return }
-        await cleanupLoadedManagers()
-        let models = try ParakeetCtcZhCnModels.load(
-            from: FluidAudioModelManager.parakeetCtcZhCnCacheDirectory())
-        parakeetCtcZhCnManager = ParakeetCtcZhCnManager(models: models)
-    }
-
     // Returns cached models or loads from disk; deduplicates concurrent loads
     func getOrLoadModels(for version: AsrModelVersion) async throws -> AsrModels {
         if let cached = cachedModels, cached.version == version {
@@ -160,10 +150,6 @@ class FluidAudioTranscriptionService: TranscriptionService {
             try await ensureParaformerLoaded()
             return
         }
-        if FluidAudioModelManager.isParakeetCtcZhCnModel(named: model.name) {
-            try await ensureParakeetCtcZhCnLoaded()
-            return
-        }
         if FluidAudioModelManager.isNemotronModel(named: model.name) {
             // Realtime Nemotron uses a dedicated streaming manager; batch loads lazily in transcribe().
             return
@@ -191,13 +177,6 @@ class FluidAudioTranscriptionService: TranscriptionService {
             try await ensureParaformerLoaded()
             guard let paraformerManager else { throw ASRError.notInitialized }
             let text = try await paraformerManager.transcribe(audioURL: audioURL)
-            return TextNormalizer.shared.normalizeSentence(text)
-        }
-
-        if FluidAudioModelManager.isParakeetCtcZhCnModel(named: model.name) {
-            try await ensureParakeetCtcZhCnLoaded()
-            guard let parakeetCtcZhCnManager else { throw ASRError.notInitialized }
-            let text = try await parakeetCtcZhCnManager.transcribe(audioURL: audioURL)
             return TextNormalizer.shared.normalizeSentence(text)
         }
 
@@ -257,6 +236,34 @@ class FluidAudioTranscriptionService: TranscriptionService {
         )
 
         return TextNormalizer.shared.normalizeSentence(result.text)
+    }
+
+    func prepareBufferedStreamingPreview(named modelName: String) async throws {
+        if FluidAudioModelManager.isSenseVoiceModel(named: modelName) {
+            try await ensureSenseVoiceLoaded()
+            return
+        }
+        if FluidAudioModelManager.isParaformerZhModel(named: modelName) {
+            try await ensureParaformerLoaded()
+            return
+        }
+        throw ASRError.processingFailed("Unsupported buffered FluidAudio model: \(modelName)")
+    }
+
+    func transcribeBufferedStreamingPreview(samples: [Float], modelName: String) async throws -> String {
+        if FluidAudioModelManager.isSenseVoiceModel(named: modelName) {
+            try await ensureSenseVoiceLoaded()
+            guard let senseVoiceManager else { throw ASRError.notInitialized }
+            let text = try await senseVoiceManager.transcribe(audio: samples)
+            return TextNormalizer.shared.normalizeSentence(text)
+        }
+        if FluidAudioModelManager.isParaformerZhModel(named: modelName) {
+            try await ensureParaformerLoaded()
+            guard let paraformerManager else { throw ASRError.notInitialized }
+            let text = try await paraformerManager.transcribe(audio: samples)
+            return TextNormalizer.shared.normalizeSentence(text)
+        }
+        throw ASRError.processingFailed("Unsupported buffered FluidAudio model: \(modelName)")
     }
 
     private func loadAudioSamples(from audioURL: URL) throws -> [Float] {

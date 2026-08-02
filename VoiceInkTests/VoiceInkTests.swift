@@ -108,7 +108,6 @@ struct VoiceInkTests {
         let expectedNames = [
             "sensevoice-small",
             "paraformer-large-zh",
-            "parakeet-ctc-0.6b-zh-cn",
             "qwen3-asr-0.6b-int8",
             "sherpa-zipformer-ctc-zh-int8",
             "ggml-small",
@@ -121,6 +120,21 @@ struct VoiceInkTests {
             #expect(model?.supportedLanguages.keys.contains(where: { $0.hasPrefix("zh") }) == true)
             #expect(model?.language != "English", "Chinese ASR model is mislabeled as English: \(name)")
         }
+    }
+
+    @Test func bufferedLocalModelsExposeRealtimePreview() {
+        let expectedNames = [
+            "sensevoice-small",
+            "paraformer-large-zh",
+            "qwen3-asr-0.6b-int8",
+        ]
+
+        for name in expectedNames {
+            let model = TranscriptionModelRegistry.models.first { $0.name == name }
+            #expect(model?.supportsStreaming == true, "Missing realtime preview support: \(name)")
+        }
+
+        #expect(TranscriptionModelRegistry.models.contains { $0.name == "parakeet-ctc-0.6b-zh-cn" } == false)
     }
 
     @MainActor

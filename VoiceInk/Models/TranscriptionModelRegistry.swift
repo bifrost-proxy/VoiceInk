@@ -76,37 +76,29 @@ enum TranscriptionModelRegistry {
             FluidAudioModel(
                 name: "sensevoice-small",
                 displayName: "FunASR SenseVoice Small",
-                description: "支持中文、粤语、英语、日语和韩语的本地多语言语音识别模型",
+                description: "支持中文、粤语、英语、日语和韩语，并可在录音中实时预览",
                 size: "约 230 MB",
                 speed: 0.96,
                 accuracy: 0.90,
                 ramUsage: 0.8,
+                supportsStreaming: true,
                 supportedLanguages: LanguageDictionary.senseVoice
             ),
             FluidAudioModel(
                 name: "paraformer-large-zh",
                 displayName: "FunASR Paraformer Large (中文)",
-                description: "面向普通话优化的本地 Paraformer 语音识别模型",
+                description: "面向普通话优化，并可在录音中实时预览",
                 size: "约 480 MB",
                 speed: 0.95,
                 accuracy: 0.93,
                 ramUsage: 1.0,
-                supportedLanguages: ["zh-CN": "Mandarin Chinese"]
-            ),
-            FluidAudioModel(
-                name: "parakeet-ctc-0.6b-zh-cn",
-                displayName: "Parakeet CTC 0.6B (中文)",
-                description: "面向普通话优化的 Parakeet CTC 0.6B Core ML 模型",
-                size: "约 600 MB",
-                speed: 0.94,
-                accuracy: 0.91,
-                ramUsage: 1.0,
+                supportsStreaming: true,
                 supportedLanguages: ["zh-CN": "Mandarin Chinese"]
             ),
             SherpaOnnxModel(
                 name: "qwen3-asr-0.6b-int8",
                 displayName: "Qwen3-ASR 0.6B (INT8)",
-                description: "Qwen3-ASR 的 sherpa-onnx 本地量化版本，支持中文、方言及多语言",
+                description: "Qwen3-ASR 的 sherpa-onnx 本地量化版本，支持中文、方言、多语言及实时预览",
                 size: "838 MB",
                 archiveURL: URL(string: "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25.tar.bz2")!,
                 archiveSHA256: "393f8a14e2f5fb96746aaab342997a40641001fbd5bf9592a080a8329178ee96",
