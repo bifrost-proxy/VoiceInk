@@ -14,6 +14,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         )
         menuBarManager?.applyActivationPolicy()
         auditPrivacyPermissionsIfNeeded()
+        UpdateManager.shared.start()
+
+        if ProcessInfo.processInfo.environment["VOICEINK_UPDATE_ROLLBACK"] == "1" {
+            DispatchQueue.main.async {
+                let alert = NSAlert()
+                alert.messageText = String(localized: "Update Failed")
+                alert.informativeText = String(
+                    localized: "VoiceInk restored the previous version because the update could not start correctly."
+                )
+                alert.addButton(withTitle: String(localized: "OK"))
+                NSApp.activate(ignoringOtherApps: true)
+                alert.runModal()
+            }
+        }
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {

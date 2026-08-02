@@ -35,6 +35,8 @@ struct VoiceInkApp: App {
     @StateObject private var prewarmService: ModelPrewarmService
 
     init() {
+        UpdateInstaller.markUpdateLaunchHealthyIfNeeded()
+
         // Disable HTTP response caching — prevents API responses from being stored in Cache.db
         URLCache.shared = URLCache(memoryCapacity: 0, diskCapacity: 0)
 

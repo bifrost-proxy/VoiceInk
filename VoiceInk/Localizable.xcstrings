@@ -19301,6 +19301,214 @@
           }
         }
       }
+    },
+    "An update operation is already in progress." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ein Updatevorgang läuft bereits."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "更新操作已在进行中。"
+          }
+        }
+      }
+    },
+    "Checking for Updates…" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Updates werden gesucht …"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在检查更新…"
+          }
+        }
+      }
+    },
+    "Downloading VoiceInk…" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "VoiceInk wird heruntergeladen …"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在下载 VoiceInk…"
+          }
+        }
+      }
+    },
+    "Installed Version" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Installierte Version"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "当前版本"
+          }
+        }
+      }
+    },
+    "Installing and Restarting…" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Installation und Neustart …"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在安装并重启…"
+          }
+        }
+      }
+    },
+    "Preparing Update…" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Update wird vorbereitet …"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在准备更新…"
+          }
+        }
+      }
+    },
+    "Update Failed" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Update fehlgeschlagen"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "更新失败"
+          }
+        }
+      }
+    },
+    "Update to VoiceInk %@" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Auf VoiceInk %@ aktualisieren"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "更新到 VoiceInk %@"
+          }
+        }
+      }
+    },
+    "Updates" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Updates"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "软件更新"
+          }
+        }
+      }
+    },
+    "Verifying Update…" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Update wird überprüft …"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在验证更新…"
+          }
+        }
+      }
+    },
+    "VoiceInk %@ is available." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "VoiceInk %@ ist verfügbar."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "VoiceInk %@ 现已可用。"
+          }
+        }
+      }
+    },
+    "VoiceInk restored the previous version because the update could not start correctly." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "VoiceInk hat die vorherige Version wiederhergestellt, weil das Update nicht korrekt gestartet werden konnte."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "更新后的应用未能正常启动，VoiceInk 已恢复到之前的版本。"
+          }
+        }
+      }
+    },
+    "When enabled, VoiceInk checks for a new version at launch and once every hour. Downloaded updates are verified before VoiceInk installs and restarts automatically." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wenn aktiviert, sucht VoiceInk beim Start und einmal pro Stunde nach einer neuen Version. Heruntergeladene Updates werden geprüft, bevor VoiceInk sie installiert und automatisch neu startet."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "开启后，VoiceInk 会在启动时及每小时检查一次新版本。下载的更新通过验证后，VoiceInk 会自动安装并重启。"
+          }
+        }
+      }
     }
   },
   "version" : "1.1"
