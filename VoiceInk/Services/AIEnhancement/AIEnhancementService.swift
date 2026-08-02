@@ -40,13 +40,7 @@ class AIEnhancementService: ObservableObject {
         self.screenCaptureService = ScreenCaptureService()
         self.customVocabularyService = CustomVocabularyService.shared
 
-        if let savedPromptsData = UserDefaults.standard.data(forKey: "customPrompts"),
-            let decodedPrompts = try? JSONDecoder().decode([CustomPrompt].self, from: savedPromptsData)
-        {
-            self.customPrompts = decodedPrompts
-        } else {
-            self.customPrompts = []
-        }
+        self.customPrompts = Self.loadPrompts(from: UserDefaults.standard)
 
         repairModePromptSelections()
 
@@ -523,13 +517,26 @@ class AIEnhancementService: ObservableObject {
             let hasInvalidPrompt = selectedPrompt.map { !availablePromptIds.contains($0) } ?? false
             let hasMissingPrompt = selectedPrompt == nil
             let shouldAssignPrompt = updatedConfigurations[index].isAIEnhancementEnabled && hasMissingPrompt
+            var didUpdateMode = false
 
-            guard hasInvalidPrompt || shouldAssignPrompt else {
-                continue
+            if hasInvalidPrompt || shouldAssignPrompt {
+                updatedConfigurations[index].selectedPrompt = fallbackPromptId
+                didUpdateMode = true
             }
 
-            updatedConfigurations[index].selectedPrompt = fallbackPromptId
-            didUpdateModes = true
+            let selectedProvider = updatedConfigurations[index].selectedAIProvider.flatMap(AIProvider.init(rawValue:))
+            let hasConnectedProvider = selectedProvider.map { aiService.connectedProviders.contains($0) } ?? false
+            if updatedConfigurations[index].isAIEnhancementEnabled,
+                !hasConnectedProvider,
+                let provider = inferredProvider(for: updatedConfigurations[index])
+            {
+                updatedConfigurations[index].selectedAIProvider = provider.rawValue
+                didUpdateMode = true
+            }
+
+            if didUpdateMode {
+                didUpdateModes = true
+            }
         }
 
         if didUpdateModes {
@@ -543,14 +550,30 @@ class AIEnhancementService: ObservableObject {
         }
     }
 
-    func reloadFromSynchronizedDefaults() {
-        if let savedPromptsData = UserDefaults.standard.data(forKey: "customPrompts"),
+    static func loadPrompts(from defaults: UserDefaults) -> [CustomPrompt] {
+        if let savedPromptsData = defaults.data(forKey: "customPrompts"),
             let decodedPrompts = try? JSONDecoder().decode([CustomPrompt].self, from: savedPromptsData)
         {
-            customPrompts = decodedPrompts
-        } else {
-            customPrompts = []
+            return decodedPrompts
         }
+
+        return PromptTemplates.seedPrompts
+    }
+
+    private func inferredProvider(for configuration: ModeConfig) -> AIProvider? {
+        let connectedProviders = aiService.connectedProviders
+        guard let modelName = configuration.selectedAIModel, !modelName.isEmpty else {
+            return connectedProviders.first
+        }
+
+        return connectedProviders.first { provider in
+            aiService.selectedModel(for: provider) == modelName
+                || aiService.availableModels(for: provider).contains(modelName)
+        } ?? connectedProviders.first
+    }
+
+    func reloadFromSynchronizedDefaults() {
+        customPrompts = Self.loadPrompts(from: UserDefaults.standard)
         repairModePromptSelections()
     }
 }

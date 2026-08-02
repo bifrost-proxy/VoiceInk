@@ -96,6 +96,7 @@ final class CloudConfigurationSyncService: ObservableObject {
         "HasCompletedStatsMigration",
         "HasCompletedStatsTokenBackfillV3",
         "streaming-keys-migrated",
+        "buffered-local-realtime-migrated-v1",
         "AppleLanguages",
         "AppLanguagePreferenceManagedAppleLanguages",
         "SUHasLaunchedBefore",

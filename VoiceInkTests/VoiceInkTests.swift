@@ -21,6 +21,7 @@ struct VoiceInkTests {
         #expect(!CloudConfigurationSyncService.isEligiblePreferenceKey("LocalKeychain_openAIAPIKey"))
         #expect(!CloudConfigurationSyncService.isEligiblePreferenceKey("selectedAudioDeviceUID"))
         #expect(!CloudConfigurationSyncService.isEligiblePreferenceKey("hasCompletedOnboardingV2"))
+        #expect(!CloudConfigurationSyncService.isEligiblePreferenceKey("buffered-local-realtime-migrated-v1"))
         #expect(!CloudConfigurationSyncService.isEligiblePreferenceKey("onboardingStage"))
         #expect(!CloudConfigurationSyncService.isEligiblePreferenceKey("NSWindow Frame main"))
         #expect(!CloudConfigurationSyncService.isEligiblePreferenceKey("CloudConfigurationSync.deviceID"))
@@ -34,6 +35,20 @@ struct VoiceInkTests {
         #expect(!AIProvider.ark.isVerificationConfigured(hasAPIKey: false, model: "ep-example"))
         #expect(AIProvider.ark.isVerificationConfigured(hasAPIKey: true, model: "ep-example"))
         #expect(AIProvider.openAI.isVerificationConfigured(hasAPIKey: true, model: ""))
+    }
+
+    @MainActor
+    @Test func missingPromptStorageRestoresBuiltInPrompts() throws {
+        let suiteName = "VoiceInkTests.MissingPrompts"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+
+        let restored = AIEnhancementService.loadPrompts(from: defaults)
+        #expect(restored.first?.id == PromptTemplates.defaultPromptId)
+
+        defaults.set(try JSONEncoder().encode([CustomPrompt]()), forKey: "customPrompts")
+        #expect(AIEnhancementService.loadPrompts(from: defaults).isEmpty)
+        defaults.removePersistentDomain(forName: suiteName)
     }
 
     @Test func adHocPermissionResetCommandsTargetOnlyVoiceInk() {

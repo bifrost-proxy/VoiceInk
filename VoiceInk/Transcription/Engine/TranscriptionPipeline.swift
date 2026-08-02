@@ -169,10 +169,27 @@ class TranscriptionPipeline {
                     !shouldRespondInRecorder && isSkipShortEnhancementEnabled
                     && WordCounter.count(in: text) <= shortEnhancementWordThreshold
 
+                let enhancementIsConfigured = resolvedEnhancementConfiguration.map { configuration in
+                    enhancementService?.isConfigured(for: configuration) == true
+                } == true
+
+                if let resolvedEnhancementConfiguration,
+                    resolvedEnhancementConfiguration.isEnabled,
+                    !enhancementIsConfigured
+                {
+                    logger.warning(
+                        "AI enhancement skipped because the selected mode is not fully configured"
+                    )
+                    NotificationManager.shared.showNotification(
+                        title: String(localized: "AI Enhancement is not enabled or configured"),
+                        type: .warning
+                    )
+                }
+
                 if let enhancementService,
                     let resolvedEnhancementConfiguration,
                     resolvedEnhancementConfiguration.isEnabled,
-                    enhancementService.isConfigured(for: resolvedEnhancementConfiguration),
+                    enhancementIsConfigured,
                     !shouldSkipEnhancement
                 {
                     if shouldCancel() {
