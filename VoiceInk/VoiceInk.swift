@@ -22,7 +22,6 @@ struct VoiceInkApp: App {
     @StateObject private var enhancementService: AIEnhancementService
     @StateObject private var activeWindowService = ActiveWindowService.shared
     @AppStorage("hasCompletedOnboardingV2") private var hasCompletedOnboardingV2 = false
-    @AppStorage("enableAnnouncements") private var enableAnnouncements = true
     @State private var showMenuBarIcon = true
     @State private var didShowLaunchReminders = false
 
@@ -290,10 +289,6 @@ struct VoiceInkApp: App {
                         .environmentObject(enhancementService)
                         .modelContainer(container)
                         .onAppear {
-                            if enableAnnouncements {
-                                AnnouncementsService.shared.start()
-                            }
-
                             showLaunchRemindersIfNeeded()
 
                             // Run due audio-only cleanup and schedule future checks when transcript cleanup is not managing retention.
@@ -328,7 +323,6 @@ struct VoiceInkApp: App {
                             }
                         )
                         .onDisappear {
-                            AnnouncementsService.shared.stop()
                             whisperModelManager.unloadModel()
 
                             // Stop the automatic audio cleanup process

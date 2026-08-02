@@ -14863,22 +14863,6 @@
         }
       }
     },
-    "Show Announcements" : {
-      "localizations" : {
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ankündigungen anzeigen"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "显示公告"
-          }
-        }
-      }
-    },
     "Show Dock Icon" : {
       "localizations" : {
         "de" : {

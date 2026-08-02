@@ -13,7 +13,6 @@ struct SettingsView: View {
     @ObservedObject private var mediaController = MediaController.shared
     @ObservedObject private var playbackController = PlaybackController.shared
     @AppStorage("hasCompletedOnboardingV2") private var hasCompletedOnboardingV2 = true
-    @AppStorage("enableAnnouncements") private var enableAnnouncements = true
     @AppStorage("restoreClipboardAfterPaste") private var restoreClipboardAfterPaste = true
     @AppStorage("clipboardRestoreDelay") private var clipboardRestoreDelay = 2.0
     @AppStorage(PasteMethod.userDefaultsKey) private var pasteMethodRawValue = PasteMethod.standard.rawValue
@@ -236,15 +235,6 @@ struct SettingsView: View {
                 Toggle("Hide Dock Icon", isOn: $menuBarManager.isMenuBarOnly)
 
                 LaunchAtLogin.Toggle(String(localized: "Launch at Login"))
-
-                Toggle("Show Announcements", isOn: $enableAnnouncements)
-                    .onChange(of: enableAnnouncements) { _, newValue in
-                        if newValue {
-                            AnnouncementsService.shared.start()
-                        } else {
-                            AnnouncementsService.shared.stop()
-                        }
-                    }
 
                 Button("Reset Onboarding") {
                     showResetOnboardingAlert = true
