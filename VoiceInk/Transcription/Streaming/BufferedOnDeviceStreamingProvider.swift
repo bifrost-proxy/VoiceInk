@@ -20,8 +20,8 @@ final class BufferedOnDeviceStreamingProvider: StreamingTranscriptionProvider {
     private let minimumSegmentSamples = 24_000
     private let maximumSegmentSamples = 192_000
     private let forcedWindowOverlapSamples = 16_000
-    private let silenceProbeSamples = 4_800
-    private let silenceRMSLimit: Float = 0.0025
+    private let silenceProbeSamples = 9_600
+    private let silenceRMSLimit: Float = 0.0018
     private let bufferLock = NSLock()
 
     private var audioBuffer: [Float] = []
@@ -221,7 +221,7 @@ final class BufferedOnDeviceStreamingProvider: StreamingTranscriptionProvider {
         }
     }
 
-    private static func isTrailingSilence(in samples: [Float], probeSamples: Int, rmsLimit: Float) -> Bool {
+    static func isTrailingSilence(in samples: [Float], probeSamples: Int, rmsLimit: Float) -> Bool {
         guard probeSamples > 0, samples.count >= probeSamples else { return false }
         let tail = samples.suffix(probeSamples)
         let energy = tail.reduce(Float.zero) { $0 + $1 * $1 }

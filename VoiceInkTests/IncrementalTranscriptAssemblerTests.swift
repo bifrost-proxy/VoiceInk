@@ -43,4 +43,28 @@ struct IncrementalTranscriptAssemblerTests {
                 == "Hello realtime world again"
         )
     }
+
+    @Test func pauseDetectionRequiresTheWholeProbeWindowToBeQuiet() {
+        #expect(
+            BufferedOnDeviceStreamingProvider.isTrailingSilence(
+                in: [Float](repeating: 0.001, count: 9_600),
+                probeSamples: 9_600,
+                rmsLimit: 0.0018
+            )
+        )
+        #expect(
+            !BufferedOnDeviceStreamingProvider.isTrailingSilence(
+                in: [Float](repeating: 0.003, count: 9_600),
+                probeSamples: 9_600,
+                rmsLimit: 0.0018
+            )
+        )
+        #expect(
+            !BufferedOnDeviceStreamingProvider.isTrailingSilence(
+                in: [Float](repeating: 0, count: 9_599),
+                probeSamples: 9_600,
+                rmsLimit: 0.0018
+            )
+        )
+    }
 }
