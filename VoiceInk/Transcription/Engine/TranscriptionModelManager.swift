@@ -26,6 +26,9 @@ class TranscriptionModelManager: ObservableObject {
         SherpaOnnxModelManager.shared.onModelDeleted = { [weak self] modelName in
             self?.handleModelDeleted(modelName)
         }
+        QwenMLXModelManager.shared.onModelDeleted = { [weak self] modelName in
+            self?.handleModelDeleted(modelName)
+        }
 
         // Wire up "models changed" callbacks so this manager rebuilds allAvailableModels.
         whisperModelManager.onModelsChanged = { [weak self] in
@@ -35,6 +38,9 @@ class TranscriptionModelManager: ObservableObject {
             self?.refreshAllAvailableModels()
         }
         SherpaOnnxModelManager.shared.onModelsChanged = { [weak self] in
+            self?.refreshAllAvailableModels()
+        }
+        QwenMLXModelManager.shared.onModelsChanged = { [weak self] in
             self?.refreshAllAvailableModels()
         }
     }
@@ -51,6 +57,9 @@ class TranscriptionModelManager: ObservableObject {
             case .sherpaOnnx:
                 guard let sherpaModel = model as? SherpaOnnxModel else { return false }
                 return SherpaOnnxModelManager.shared.isDownloaded(sherpaModel)
+            case .qwenMlx:
+                guard let qwenModel = model as? QwenMLXModel else { return false }
+                return QwenMLXModelManager.shared.isReady(qwenModel)
             case .nativeApple:
                 if #available(macOS 26, *) { return true } else { return false }
             case .custom:
@@ -68,6 +77,8 @@ class TranscriptionModelManager: ObservableObject {
         switch model.provider {
         case .nativeApple:
             if #available(macOS 26, *) { return true } else { return false }
+        case .qwenMlx:
+            return SystemArchitecture.isAppleSilicon
         default:
             return true
         }

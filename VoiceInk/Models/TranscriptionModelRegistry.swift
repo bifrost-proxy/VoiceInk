@@ -124,6 +124,21 @@ enum TranscriptionModelRegistry {
                 kind: .qwen3Asr,
                 supportedLanguages: LanguageDictionary.qwen3ASR
             ),
+            QwenMLXModel(
+                name: "qwen3-asr-0.6b-mlx-streaming",
+                displayName: "Qwen3-ASR 0.6B (MLX Streaming)",
+                description: "Apple Silicon Metal GPU 原生流式版本，支持中英等 30 种语言及 22 种中文方言；增量解码复用 KV Cache",
+                size: "约 1.9 GB + 运行时",
+                // M4 Max local benchmark: 0.269 s median warm batch and
+                // 7.3x realtime native streaming throughput.
+                speed: 0.95,
+                // Local 2-second energy-endpointed stream/batch consistency.
+                // The card labels this separately from upstream WER.
+                accuracy: 0.90,
+                repositoryID: "Qwen/Qwen3-ASR-0.6B",
+                revision: "5eb144179a02acc5e5ba31e748d22b0cf3e303b0",
+                supportedLanguages: LanguageDictionary.qwen3ASR
+            ),
             SherpaOnnxModel(
                 name: "sherpa-zipformer-ctc-zh-int8",
                 displayName: "sherpa-onnx Zipformer CTC (中文)",

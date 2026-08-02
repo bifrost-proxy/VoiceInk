@@ -4,6 +4,8 @@ import Foundation
 enum StreamingTranscriptionEvent {
     case sessionStarted
     case partial(text: String)
+    /// A revisable transcript plus its monotonic, already-stable prefix.
+    case snapshot(text: String, stableText: String)
     case committed(text: String)
     case error(Error)
 }

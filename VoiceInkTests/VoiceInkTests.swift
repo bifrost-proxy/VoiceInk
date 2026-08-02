@@ -432,6 +432,7 @@ struct VoiceInkTests {
             "sensevoice-small",
             "paraformer-large-zh",
             "qwen3-asr-0.6b-int8",
+            "qwen3-asr-0.6b-mlx-streaming",
             "sherpa-zipformer-ctc-zh-int8",
             "ggml-small",
             "ggml-medium",
@@ -482,6 +483,15 @@ struct VoiceInkTests {
         if let qwen3 {
             #expect(qwen3.supportedLanguages.count == 31) // 30 languages plus auto-detect.
             #expect(ModelLanguageSupportCatalog.languageCount(for: qwen3) == 52)
+        }
+
+        let qwen3MLX = TranscriptionModelRegistry.models.first {
+            $0.name == "qwen3-asr-0.6b-mlx-streaming"
+        }
+        #expect(qwen3MLX != nil)
+        if let qwen3MLX {
+            #expect(qwen3MLX.supportedLanguages.count == 31) // 30 languages plus auto-detect.
+            #expect(ModelLanguageSupportCatalog.languageCount(for: qwen3MLX) == 52)
         }
     }
 

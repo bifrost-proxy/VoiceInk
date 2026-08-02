@@ -429,6 +429,10 @@ private struct ModelProviderIdentity {
             displayName = "Parakeet"
             providerKey = "Parakeet"
             fallbackSystemImage = "waveform"
+        case .qwenMlx:
+            displayName = "Qwen MLX"
+            providerKey = "Qwen MLX"
+            fallbackSystemImage = "gpu"
         case .nativeApple:
             displayName = "Apple Speech"
             providerKey = "Native Apple"

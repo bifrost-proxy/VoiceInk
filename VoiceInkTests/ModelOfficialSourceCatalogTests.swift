@@ -4,7 +4,7 @@ import Testing
 
 struct ModelOfficialSourceCatalogTests {
     @Test func everyDownloadableBundledModelHasAnOfficialHTTPSPage() {
-        let downloadableProviders: Set<ModelProvider> = [.fluidAudio, .sherpaOnnx, .whisper]
+        let downloadableProviders: Set<ModelProvider> = [.fluidAudio, .sherpaOnnx, .qwenMlx, .whisper]
         let downloadableModels = TranscriptionModelRegistry.models.filter {
             downloadableProviders.contains($0.provider)
         }
@@ -24,6 +24,8 @@ struct ModelOfficialSourceCatalogTests {
 
         let qwen = try #require(models.first { $0.name == "qwen3-asr-0.6b-int8" })
         #expect(qwen.officialSourceURL?.path.hasPrefix("/Qwen/") == true)
+        let qwenMLX = try #require(models.first { $0.name == "qwen3-asr-0.6b-mlx-streaming" })
+        #expect(qwenMLX.officialSourceURL?.path.hasPrefix("/Qwen/") == true)
 
         let whisper = try #require(models.first { $0.name == "ggml-small" })
         #expect(whisper.officialSourceURL?.absoluteString == "https://github.com/openai/whisper")

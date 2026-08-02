@@ -22,11 +22,14 @@ struct ModelCatalogPresentationTests {
     @Test func languageCapabilitiesRecognizeChineseAndEnglishVariants() throws {
         let models = TranscriptionModelRegistry.models
         let qwen = try #require(models.first { $0.name == "qwen3-asr-0.6b-int8" })
+        let qwenMLX = try #require(models.first { $0.name == "qwen3-asr-0.6b-mlx-streaming" })
         let chineseCTC = try #require(models.first { $0.name == "parakeet-ctc-0.6b-zh-cn" })
         let englishOnly = try #require(models.first { $0.name == "parakeet-tdt-0.6b-v2" })
 
         #expect(ModelLanguageSupportCatalog.supportsChinese(qwen))
         #expect(ModelLanguageSupportCatalog.supportsEnglish(qwen))
+        #expect(ModelLanguageSupportCatalog.supportsChinese(qwenMLX))
+        #expect(ModelLanguageSupportCatalog.supportsEnglish(qwenMLX))
         #expect(ModelLanguageSupportCatalog.supportsChinese(chineseCTC))
         #expect(ModelLanguageSupportCatalog.supportsEnglish(chineseCTC))
         #expect(!ModelLanguageSupportCatalog.supportsChinese(englishOnly))
@@ -39,11 +42,29 @@ struct ModelCatalogPresentationTests {
                 String(localized: "More languages"),
             ].joined(separator: " · ")
         )
+        #expect(ModelLanguageSupportCatalog.summary(for: qwenMLX) == ModelLanguageSupportCatalog.summary(for: qwen))
+        #expect(ModelLanguageSupportCatalog.languageCount(for: qwenMLX) == 52)
+        #expect(ModelLanguageSupportCatalog.sections(for: qwenMLX).map(\.id) == ["languages", "dialects"])
         #expect(
             ModelLanguageSupportCatalog.summary(for: chineseCTC) == [
                 String(localized: "Chinese"),
                 String(localized: "English"),
             ].joined(separator: " · ")
         )
+    }
+
+    @Test func qwenCPUAndMLXAreSeparateCatalogChoices() throws {
+        let models = TranscriptionModelRegistry.models
+        let cpu = try #require(models.first { $0.name == "qwen3-asr-0.6b-int8" })
+        let mlx = try #require(models.first { $0.name == "qwen3-asr-0.6b-mlx-streaming" })
+
+        #expect(cpu is SherpaOnnxModel)
+        #expect(mlx is QwenMLXModel)
+        #expect(cpu.id != mlx.id)
+        #expect(cpu.displayName.contains("INT8"))
+        #expect(mlx.displayName.contains("MLX Streaming"))
+        let mlxPerformance = ModelCatalogOrdering.performance(for: mlx)
+        #expect(mlxPerformance.speed == 0.95)
+        #expect(mlxPerformance.accuracy == 0.90)
     }
 }

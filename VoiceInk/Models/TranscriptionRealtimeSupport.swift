@@ -30,6 +30,10 @@ enum TranscriptionRealtimeSupport {
             return .slidingWindow
         }
 
+        if model.provider == .qwenMlx {
+            return .nativeStreaming
+        }
+
         return .nativeStreaming
     }
 

@@ -399,7 +399,7 @@ struct ModelManagementView: View {
     private var localModels: [any TranscriptionModel] {
         let models = transcriptionModelManager.allAvailableModels.filter {
             ($0.provider == .whisper || $0.provider == .nativeApple || $0.provider == .fluidAudio
-                || $0.provider == .sherpaOnnx)
+                || $0.provider == .sherpaOnnx || $0.provider == .qwenMlx)
                 && transcriptionModelManager.isAvailableOnCurrentOS($0)
                 && selectedLocalLanguageFilter.includes($0)
         }
