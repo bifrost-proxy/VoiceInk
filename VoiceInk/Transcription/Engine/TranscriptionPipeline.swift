@@ -65,12 +65,15 @@ class TranscriptionPipeline {
         onDismiss: @escaping () async -> Void,
         assistant: AssistantHooks = .inactive
     ) async {
+        let processingStartedAt = Date()
         let model = transcriptionConfiguration.model
         var finalText: String?
         var didInsertSessionMetric = false
         var responseError: String?
         var outputForDelivery: OutputRuntimeConfiguration?
         var responseConfig: EnhancementRuntimeConfiguration?
+        var postProcessingDuration: TimeInterval?
+        var deliveryDuration: TimeInterval?
 
         func finishCanceledTranscription() async {
             await onCancel()
@@ -87,9 +90,15 @@ class TranscriptionPipeline {
                 duration: canceledDuration,
                 modelName: transcription.transcriptionModelName ?? model.displayName
             )
+            var performance = session?.performanceSnapshot
+                ?? TranscriptionPerformanceSnapshot(executionMode: "batch")
+            performance.totalProcessingDuration = Date().timeIntervalSince(processingStartedAt)
+            transcription.performanceSnapshot = performance
+            transcription.syncModifiedAt = Date()
 
             do {
                 try modelContext.save()
+                NotificationCenter.default.post(name: .transcriptionCompleted, object: transcription)
             } catch {
                 logger.error("Failed to save canceled transcription: \(error, privacy: .public)")
             }
@@ -114,6 +123,7 @@ class TranscriptionPipeline {
             }
             text = TranscriptionOutputFilter.filter(text)
             let transcriptionDuration = Date().timeIntervalSince(transcriptionStart)
+            let postProcessingStartedAt = Date()
 
             if shouldCancel() {
                 await finishCanceledTranscription()
@@ -155,6 +165,7 @@ class TranscriptionPipeline {
             transcription.modeName = modeMetadata.name
             transcription.modeEmoji = modeMetadata.emoji
             finalText = cleanedText
+            postProcessingDuration = Date().timeIntervalSince(postProcessingStartedAt)
 
             if !assistant.isFollowUp {
                 let shouldRespondInRecorder =
@@ -273,6 +284,16 @@ class TranscriptionPipeline {
         }
 
         func saveTranscriptionAndPostCompletion() {
+            var performance = session?.performanceSnapshot
+                ?? TranscriptionPerformanceSnapshot(executionMode: "batch")
+            performance.transcriptionDuration = transcription.transcriptionDuration
+            performance.postProcessingDuration = postProcessingDuration
+            performance.enhancementDuration = transcription.enhancementDuration
+            performance.deliveryDuration = deliveryDuration
+            performance.totalProcessingDuration = Date().timeIntervalSince(processingStartedAt)
+            transcription.performanceSnapshot = performance
+            transcription.syncModifiedAt = Date()
+
             if transcription.transcriptionStatus == TranscriptionStatus.completed.rawValue {
                 do {
                     didInsertSessionMetric = try SessionMetricRecorder.recordRecorderSession(
@@ -301,6 +322,7 @@ class TranscriptionPipeline {
             return
         }
 
+        let deliveryStartedAt = Date()
         await delivery.deliver(
             TranscriptionDelivery.Request(
                 transcription: transcription,
@@ -318,6 +340,7 @@ class TranscriptionPipeline {
                 failResponse: assistant.failResponse
             )
         )
+        deliveryDuration = Date().timeIntervalSince(deliveryStartedAt)
 
         saveTranscriptionAndPostCompletion()
     }

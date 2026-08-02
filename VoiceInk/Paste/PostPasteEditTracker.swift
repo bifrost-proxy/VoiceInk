@@ -402,6 +402,7 @@ final class PostPasteEditTracker {
     }
 
     private func saveChanges() {
+        activeSession?.transcription.syncModifiedAt = Date()
         do {
             try modelContext.save()
         } catch {

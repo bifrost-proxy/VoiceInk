@@ -36,6 +36,10 @@ final class Transcription {
     var pasteStartedAt: Date?
     var pasteTrackingFinishedAt: Date?
     var postPasteEditHistoryData: Data?
+    var performanceData: Data?
+    var syncOriginDeviceID: String?
+    var syncModifiedAt: Date?
+    var syncRevisionID: UUID?
     @Attribute(originalName: "powerModeName")
     var modeName: String?
     @Attribute(originalName: "powerModeEmoji")
@@ -74,6 +78,7 @@ final class Transcription {
         self.modeName = modeName
         self.modeEmoji = modeEmoji
         self.transcriptionStatus = transcriptionStatus.rawValue
+        self.syncModifiedAt = Date()
     }
 
     func markAsCanceledTranscription(

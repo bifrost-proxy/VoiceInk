@@ -611,6 +611,7 @@ struct AudioPlayerView: View {
                     transcription.enhancementDuration = enhancementDuration
                     transcription.aiRequestSystemMessage = enhancementService.lastSystemMessageSent
                     transcription.aiRequestUserMessage = enhancementService.lastUserMessageSent
+                    transcription.syncModifiedAt = Date()
                     try? modelContext.save()
 
                     isReEnhancing = false

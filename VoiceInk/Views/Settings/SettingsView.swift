@@ -13,6 +13,7 @@ struct SettingsView: View {
     @ObservedObject private var mediaController = MediaController.shared
     @ObservedObject private var playbackController = PlaybackController.shared
     @ObservedObject private var cloudSync = CloudConfigurationSyncService.shared
+    @ObservedObject private var usageSync = CloudUsageDataSyncService.shared
     @ObservedObject private var updater = UpdateManager.shared
     @AppStorage("hasCompletedOnboardingV2") private var hasCompletedOnboardingV2 = true
     @AppStorage("restoreClipboardAfterPaste") private var restoreClipboardAfterPaste = true
@@ -24,6 +25,9 @@ struct SettingsView: View {
     @AppStorage(AppLanguagePreference.userDefaultsKey) private var appLanguagePreference = AppLanguagePreference
         .systemValue
     @AppStorage(RecorderDisplaySettingsKeys.showLiveTranscript) private var showLiveTranscript = true
+    @AppStorage(CloudSyncSettingsKeys.configurationSyncEnabled) private var configurationSyncEnabled = true
+    @AppStorage(CloudSyncSettingsKeys.usageDataSyncEnabled) private var usageDataSyncEnabled = false
+    @AppStorage(CloudSyncSettingsKeys.usageAudioSyncEnabled) private var usageAudioSyncEnabled = false
     @State private var showResetOnboardingAlert = false
     @State private var showLanguageRestartAlert = false
     @State private var hasCancelRecordingShortcut = ShortcutStore.shortcut(for: .cancelRecorder) != nil
@@ -254,6 +258,11 @@ struct SettingsView: View {
             }
 
             Section {
+                Toggle("Sync Configuration", isOn: $configurationSyncEnabled)
+                    .onChange(of: configurationSyncEnabled) { _, enabled in
+                        cloudSync.setEnabled(enabled)
+                    }
+
                 LabeledContent("iCloud Sync") {
                     HStack(spacing: 8) {
                         if cloudSync.state == .syncing {
@@ -282,16 +291,70 @@ struct SettingsView: View {
                     Button("Sync Now") {
                         cloudSync.syncNow()
                     }
+                    .disabled(!configurationSyncEnabled)
                     Button("Show Sync File") {
                         cloudSync.revealConfigurationFile()
                     }
                     .disabled(cloudSync.configurationFileURL == nil)
                 }
+
+                Divider()
+
+                Toggle("Sync Usage Data", isOn: $usageDataSyncEnabled)
+                    .onChange(of: usageDataSyncEnabled) { _, enabled in
+                        usageSync.setEnabled(enabled)
+                    }
+
+                if usageDataSyncEnabled {
+                    Toggle("Include Source Audio", isOn: $usageAudioSyncEnabled)
+                        .onChange(of: usageAudioSyncEnabled) { _, enabled in
+                            usageSync.setAudioEnabled(enabled)
+                        }
+
+                    LabeledContent("Usage Data") {
+                        HStack(spacing: 8) {
+                            if usageSync.state == .syncing {
+                                ProgressView()
+                                    .controlSize(.small)
+                            }
+                            Text(usageSync.statusText)
+                                .foregroundStyle(usageSync.errorText == nil ? Color.secondary : Color.red)
+                        }
+                    }
+
+                    LabeledContent("Synchronized Records") {
+                        Text(usageSync.synchronizedRecordCount, format: .number)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    if let lastSyncedAt = usageSync.lastSyncedAt {
+                        LabeledContent("Usage Last Synced") {
+                            Text(lastSyncedAt, format: .dateTime.year().month().day().hour().minute().second())
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+
+                    if let errorText = usageSync.errorText {
+                        Text(errorText)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
+
+                    HStack {
+                        Button("Sync Usage Now") {
+                            usageSync.syncNow()
+                        }
+                        Button("Show Usage Data") {
+                            usageSync.revealUsageData()
+                        }
+                        .disabled(usageSync.usageDataDirectoryURL == nil)
+                    }
+                }
             } header: {
                 Text("iCloud")
             } footer: {
                 Text(
-                    "Model selections and definitions, prompts, modes, dictionary entries, shortcuts, and most preferences sync automatically through iCloud Drive. API keys, permissions, device selections, downloaded model files, history, audio, and usage statistics stay on this Mac."
+                    "Configuration sync is on by default. Usage data sync is opt-in and includes transcription history, corrections, reports, and every persisted transcription-stage performance measurement. Source audio requires a separate opt-in. API keys, permissions, device selections, and downloaded model files always stay on this Mac."
                 )
             }
 

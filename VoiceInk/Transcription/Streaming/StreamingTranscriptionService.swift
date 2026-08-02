@@ -126,6 +126,12 @@ class StreamingTranscriptionService {
     private var stopStartedAt: Date?
     private var firstPartialLogged = false
     private var firstCommitLogged = false
+    private var preparedAt: Date?
+    private var connectionDuration: TimeInterval?
+    private var firstPartialLatency: TimeInterval?
+    private var firstCommitLatency: TimeInterval?
+    private var drainDuration: TimeInterval?
+    private var finalizationDuration: TimeInterval?
 
     init(
         modelContext: ModelContext, fluidAudioService: FluidAudioTranscriptionService? = nil,
@@ -152,6 +158,23 @@ class StreamingTranscriptionService {
     /// Whether the streaming connection is fully established and actively sending.
     var isActive: Bool { state == .streaming || state == .committing }
 
+    var performanceSnapshot: TranscriptionPerformanceSnapshot {
+        var result = TranscriptionPerformanceSnapshot(executionMode: "streaming")
+        let counters = metrics.snapshot()
+        result.connectionDuration = connectionDuration
+        result.firstPartialLatency = firstPartialLatency
+        result.firstCommitLatency = firstCommitLatency
+        result.drainDuration = drainDuration
+        result.finalizationDuration = finalizationDuration
+        result.receivedChunks = counters.receivedChunks
+        result.receivedBytes = counters.receivedBytes
+        result.sentChunks = counters.sentChunks
+        result.sentBytes = counters.sentBytes
+        result.droppedChunks = counters.droppedChunks
+        result.droppedBytes = counters.droppedBytes
+        return result
+    }
+
     /// Resets session accounting before the recorder receives its audio
     /// callback. Local model loading is asynchronous, so doing this inside
     /// `startStreaming` could erase chunks already queued during cold start.
@@ -162,6 +185,12 @@ class StreamingTranscriptionService {
         firstPartialLogged = false
         firstCommitLogged = false
         stopStartedAt = nil
+        preparedAt = Date()
+        connectionDuration = nil
+        firstPartialLatency = nil
+        firstCommitLatency = nil
+        drainDuration = nil
+        finalizationDuration = nil
     }
 
     /// Start a streaming transcription session for the given model.
@@ -180,6 +209,7 @@ class StreamingTranscriptionService {
         )
 
         try await provider.connect(model: model, language: selectedLanguage)
+        connectionDuration = Date().timeIntervalSince(start)
 
         // If cancel() was called while we were awaiting the connection, tear down immediately.
         if state == .cancelled {
@@ -247,6 +277,7 @@ class StreamingTranscriptionService {
         // Wait for the server to acknowledge our commit (or timeout)
         let finalText = await waitForFinalCommit(signalStream: signalStream)
         if let stopStartedAt {
+            finalizationDuration = Date().timeIntervalSince(stopStartedAt)
             logger.notice(
                 "Streaming stop completed elapsed=\(Date().timeIntervalSince(stopStartedAt), format: .fixed(precision: 3), privacy: .public)s finalChars=\(finalText.count, privacy: .public)"
             )
@@ -365,6 +396,7 @@ class StreamingTranscriptionService {
         await sendTask?.value
         sendTask = nil
         let snapshot = metrics.snapshot()
+        drainDuration = Date().timeIntervalSince(start)
         logger.notice(
             "Streaming drain finished elapsed=\(Date().timeIntervalSince(start), format: .fixed(precision: 3), privacy: .public)s receivedChunks=\(snapshot.receivedChunks, privacy: .public) sentChunks=\(snapshot.sentChunks, privacy: .public) droppedChunks=\(snapshot.droppedChunks, privacy: .public) receivedBytes=\(snapshot.receivedBytes, privacy: .public) sentBytes=\(snapshot.sentBytes, privacy: .public) droppedBytes=\(snapshot.droppedBytes, privacy: .public)"
         )
@@ -384,6 +416,9 @@ class StreamingTranscriptionService {
                     await MainActor.run {
                         if !self.firstCommitLogged {
                             self.firstCommitLogged = true
+                            if let preparedAt = self.preparedAt {
+                                self.firstCommitLatency = Date().timeIntervalSince(preparedAt)
+                            }
                             let elapsed = self.stopStartedAt.map { Date().timeIntervalSince($0) } ?? 0
                             self.logger.notice(
                                 "Streaming first committed event chars=\(trimmed.count, privacy: .public) stopElapsed=\(elapsed, format: .fixed(precision: 3), privacy: .public)s"
@@ -405,6 +440,9 @@ class StreamingTranscriptionService {
                     await MainActor.run {
                         if !self.firstPartialLogged {
                             self.firstPartialLogged = true
+                            if let preparedAt = self.preparedAt {
+                                self.firstPartialLatency = Date().timeIntervalSince(preparedAt)
+                            }
                             self.logger.notice("Streaming first partial event chars=\(text.count, privacy: .public)")
                         }
                         if self.state == .streaming {

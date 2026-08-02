@@ -12,6 +12,12 @@ protocol TranscriptionSession: AnyObject {
 
     /// Cancel the session and clean up resources.
     func cancel()
+
+    var performanceSnapshot: TranscriptionPerformanceSnapshot? { get }
+}
+
+extension TranscriptionSession {
+    var performanceSnapshot: TranscriptionPerformanceSnapshot? { nil }
 }
 
 // MARK: - File-Based Session
@@ -43,6 +49,10 @@ final class FileTranscriptionSession: TranscriptionSession {
     func cancel() {
         // No-op for file-based transcription
     }
+
+    var performanceSnapshot: TranscriptionPerformanceSnapshot? {
+        TranscriptionPerformanceSnapshot(executionMode: "batch")
+    }
 }
 
 // MARK: - Streaming Session
@@ -66,6 +76,7 @@ final class StreamingTranscriptionSession: TranscriptionSession {
     private(set) var lastResolution: Resolution?
     private var startupTask: Task<Void, Never>?
     private var startupTaskID: UUID?
+    private var fallbackDuration: TimeInterval?
     private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "StreamingTranscriptionSession")
 
     init(streamingService: StreamingTranscriptionService, fallbackService: TranscriptionService) {
@@ -80,6 +91,7 @@ final class StreamingTranscriptionSession: TranscriptionSession {
         self.model = model
         self.context = context
         self.lastResolution = nil
+        self.fallbackDuration = nil
         logger.notice("Streaming session prepare model=\(model.displayName, privacy: .public)")
 
         streamingService.prepareForStart()
@@ -178,10 +190,28 @@ final class StreamingTranscriptionSession: TranscriptionSession {
             "Using batch fallback for \(model.displayName, privacy: .public) file=\(audioURL.lastPathComponent, privacy: .public)"
         )
         let text = try await fallbackService.transcribe(audioURL: audioURL, model: model, context: context)
+        fallbackDuration = Date().timeIntervalSince(fallbackStart)
         logger.notice(
             "Batch fallback completed elapsed=\(Date().timeIntervalSince(fallbackStart), format: .fixed(precision: 3), privacy: .public)s chars=\(text.count, privacy: .public)"
         )
         return text
+    }
+
+    var performanceSnapshot: TranscriptionPerformanceSnapshot? {
+        var snapshot = streamingService.performanceSnapshot
+        if let model {
+            switch TranscriptionRealtimeSupport.mode(for: model) {
+            case .nativeStreaming:
+                snapshot.executionMode = "nativeStreaming"
+            case .slidingWindow:
+                snapshot.executionMode = "slidingWindow"
+            case .batchOnly:
+                snapshot.executionMode = "batch"
+            }
+        }
+        snapshot.streamingResolution = lastResolution?.rawValue
+        snapshot.fallbackDuration = fallbackDuration
+        return snapshot
     }
 
     func cancel() {

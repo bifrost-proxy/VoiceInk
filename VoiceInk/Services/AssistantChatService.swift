@@ -70,6 +70,7 @@ final class AssistantChatService {
         transcription.aiRequestSystemMessage = response.systemPrompt
         transcription.aiRequestUserMessage = response.requestLog
         transcription.transcriptionStatus = TranscriptionStatus.completed.rawValue
+        transcription.syncModifiedAt = Date()
     }
 
     func saveTypedAssistantTurn(
