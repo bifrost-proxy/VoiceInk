@@ -2,6 +2,10 @@ import Testing
 @testable import VoiceInk
 
 struct TranscriptionRealtimeSupportTests {
+    @Test func sherpaRecognizerStaysWarmForLongSessions() {
+        #expect(SherpaOnnxTranscriptionService.idleRetention == .seconds(3_600))
+    }
+
     @Test func distinguishesNativeStreamingFromSlidingWindowsAndBatchModels() throws {
         let models = TranscriptionModelRegistry.models
 

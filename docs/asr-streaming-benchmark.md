@@ -60,4 +60,4 @@ The detailed private report is stored at:
 
 ## Model loading and memory lifetime
 
-The recorder callback is installed before asynchronous local-model initialization finishes, so cold-start PCM chunks queue instead of being discarded. When prewarm-on-wake is enabled, the selected sherpa-onnx/Qwen model now follows the same launch/wake prewarm path as other local runtimes. Its recognizer is reused while active and released after 10 minutes without inference; every preview or batch inference resets that idle timer. This avoids both first-recording initialization delay and indefinite Qwen residency.
+The recorder callback is installed before asynchronous local-model initialization finishes, so cold-start PCM chunks queue instead of being discarded. When prewarm-on-wake is enabled, the selected sherpa-onnx/Qwen model now follows the same launch/wake prewarm path as other local runtimes. Its recognizer is reused while active and released after 60 minutes without inference; every preview or batch inference resets that idle timer. This keeps the recognizer warm for long dictation and audiobook sessions without making Qwen residency indefinite.

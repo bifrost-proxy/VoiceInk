@@ -7,7 +7,7 @@ actor SherpaOnnxTranscriptionService: TranscriptionService {
     private var recognizer: SherpaOnnxOfflineRecognizer?
     private var activeModelName: String?
     private var idleReleaseTask: Task<Void, Never>?
-    private static let idleRetention: Duration = .seconds(600)
+    nonisolated static let idleRetention: Duration = .seconds(3_600)
 
     func transcribe(
         audioURL: URL,
