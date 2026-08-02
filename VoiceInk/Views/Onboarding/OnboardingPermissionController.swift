@@ -153,23 +153,32 @@ final class OnboardingPermissionController {
     }
 
     private func requestAccessibility() {
-        let options: NSDictionary = [
-            kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true
-        ]
-        AXIsProcessTrustedWithOptions(options)
-        openPrivacySettings(.accessibility)
-        startPollingPermissionStatus()
-    }
-
-    private func requestScreenRecording() {
-        coordinator.hasRequestedScreenRecording = true
-        startPollingPermissionStatus()
+        cancelRefreshTask()
 
         Task { @MainActor [weak self] in
             guard let self else { return }
 
+            _ = await PrivacyPermissionResetService.resetAuthorization(for: .accessibility)
+            let options: NSDictionary = [
+                kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true
+            ]
+            AXIsProcessTrustedWithOptions(options)
+            openPrivacySettings(.accessibility)
+            startPollingPermissionStatus()
+        }
+    }
+
+    private func requestScreenRecording() {
+        coordinator.hasRequestedScreenRecording = true
+        cancelRefreshTask()
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+
+            _ = await PrivacyPermissionResetService.resetAuthorization(for: .screenRecording)
             let isGranted = await ScreenCaptureService.requestScreenCapturePermissionRegistration()
             refreshPermissionStatuses()
+            startPollingPermissionStatus()
 
             if !isGranted {
                 openPrivacySettings(.screenRecording)

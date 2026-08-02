@@ -1,3 +1,4 @@
+import Foundation
 import SwiftUI
 
 enum OnboardingStage: String, CaseIterable {
@@ -182,7 +183,7 @@ enum OnboardingPermissionStatus: Equatable {
     }
 }
 
-enum PrivacySettingsPane {
+enum PrivacySettingsPane: Sendable {
     case microphone
     case accessibility
     case screenRecording
@@ -196,5 +197,72 @@ enum PrivacySettingsPane {
         case .screenRecording:
             return "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
         }
+    }
+
+    var tccService: String? {
+        switch self {
+        case .microphone:
+            return nil
+        case .accessibility:
+            return "Accessibility"
+        case .screenRecording:
+            return "ScreenCapture"
+        }
+    }
+}
+
+struct PrivacyPermissionResetCommand: Equatable, Sendable {
+    let executable: String
+    let arguments: [String]
+}
+
+enum PrivacyPermissionResetService {
+    static func command(
+        for pane: PrivacySettingsPane,
+        bundleIdentifier: String = Bundle.main.bundleIdentifier ?? "com.prakashjoshipax.VoiceInk"
+    ) -> PrivacyPermissionResetCommand? {
+        guard let tccService = pane.tccService else { return nil }
+
+        return PrivacyPermissionResetCommand(
+            executable: "/usr/bin/tccutil",
+            arguments: ["reset", tccService, bundleIdentifier]
+        )
+    }
+
+    /// Removes only VoiceInk's stale TCC entry. The system permission request
+    /// that follows registers the currently installed ad-hoc-signed build.
+    static func resetAuthorization(for pane: PrivacySettingsPane) async -> String? {
+        guard let command = command(for: pane) else { return nil }
+
+        return await Task.detached(priority: .userInitiated) {
+            let process = Process()
+            let stderr = Pipe()
+            process.executableURL = URL(fileURLWithPath: command.executable)
+            process.arguments = command.arguments
+            process.standardOutput = Pipe()
+            process.standardError = stderr
+
+            do {
+                try process.run()
+                process.waitUntilExit()
+            } catch {
+                let detail = error.localizedDescription
+                NSLog("VoiceInk permission reset failed to start: %@", detail)
+                return detail
+            }
+
+            guard process.terminationStatus == 0 else {
+                let data = stderr.fileHandleForReading.readDataToEndOfFile()
+                let detail = String(data: data, encoding: .utf8)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let message = detail?.isEmpty == false
+                    ? detail!
+                    : "tccutil exited with status \(process.terminationStatus)"
+                NSLog("VoiceInk permission reset failed: %@", message)
+                return message
+            }
+
+            return nil
+        }.value
     }
 }

@@ -312,8 +312,16 @@ struct DashboardContent: View {
     }
 
     private func openAccessibilitySettings() {
-        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
-            NSWorkspace.shared.open(url)
+        Task { @MainActor in
+            _ = await PrivacyPermissionResetService.resetAuthorization(for: .accessibility)
+            let options: NSDictionary = [
+                kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true
+            ]
+            AXIsProcessTrustedWithOptions(options)
+
+            if let url = URL(string: PrivacySettingsPane.accessibility.urlString) {
+                NSWorkspace.shared.open(url)
+            }
         }
     }
 
