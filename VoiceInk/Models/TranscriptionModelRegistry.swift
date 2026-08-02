@@ -41,6 +41,17 @@ enum TranscriptionModelRegistry {
                 supportedLanguages: LanguageDictionary.forProvider(isMultilingual: true, provider: .fluidAudio)
             ),
             FluidAudioModel(
+                name: "parakeet-ctc-0.6b-zh-cn",
+                displayName: "Parakeet CTC 0.6B (中文)",
+                description: "面向普通话和中英混合语音的本地 CTC 模型，并可通过滑动窗口实时预览",
+                size: "约 610 MB",
+                speed: 0.97,
+                accuracy: 0.91,
+                ramUsage: 1.0,
+                supportsStreaming: true,
+                supportedLanguages: ["zh-CN": "Mandarin Chinese"]
+            ),
+            FluidAudioModel(
                 name: "parakeet-unified-0.6b",
                 displayName: "Parakeet Unified",
                 description: "English-only Parakeet model with native realtime transcription support",

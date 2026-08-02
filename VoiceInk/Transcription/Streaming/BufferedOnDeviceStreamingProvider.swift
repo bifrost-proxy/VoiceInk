@@ -5,6 +5,50 @@ import os
 /// current bounded audio window is decoded; finalized windows are accumulated
 /// and the stop path decodes only the remaining tail.
 final class BufferedOnDeviceStreamingProvider: StreamingTranscriptionProvider {
+    struct Configuration {
+        let previewInterval: Duration
+        let minimumSamples: Int
+        let minimumNewSamples: Int
+        let minimumSegmentSamples: Int
+        let maximumSegmentSamples: Int
+        let forcedWindowOverlapSamples: Int
+        let pauseWindowOverlapSamples: Int
+        let silenceProbeSamples: Int
+        let silenceRMSLimit: Float
+        let finalizesAtPause: Bool
+
+        static let `default` = Configuration(
+            previewInterval: .milliseconds(700),
+            minimumSamples: 12_000,
+            minimumNewSamples: 12_000,
+            minimumSegmentSamples: 24_000,
+            // SenseVoice may not have emitted the end of an uninterrupted
+            // sentence at twelve seconds, so keep a larger bounded window.
+            maximumSegmentSamples: 480_000,
+            forcedWindowOverlapSamples: 16_000,
+            pauseWindowOverlapSamples: 3_200,
+            silenceProbeSamples: 9_600,
+            silenceRMSLimit: 0.0018,
+            finalizesAtPause: true
+        )
+
+        /// The CTC model is non-autoregressive and fast enough to refresh a
+        /// zero-padded short hypothesis without waiting for its 15-second
+        /// tensor to fill. This normally yields the first preview in ~0.9 s.
+        static let fastPreview = Configuration(
+            previewInterval: .milliseconds(450),
+            minimumSamples: 8_000,
+            minimumNewSamples: 8_000,
+            minimumSegmentSamples: 24_000,
+            maximumSegmentSamples: 240_000,
+            forcedWindowOverlapSamples: 16_000,
+            pauseWindowOverlapSamples: 0,
+            silenceProbeSamples: 9_600,
+            silenceRMSLimit: 0.0018,
+            finalizesAtPause: false
+        )
+    }
+
     enum Backend {
         case funASR(FluidAudioTranscriptionService)
         case qwen3ASR(SherpaOnnxTranscriptionService)
@@ -15,17 +59,7 @@ final class BufferedOnDeviceStreamingProvider: StreamingTranscriptionProvider {
         category: "BufferedOnDeviceStreaming"
     )
     private let backend: Backend
-    private let minimumSamples = 12_000
-    private let minimumNewSamples = 12_000
-    private let minimumSegmentSamples = 24_000
-    // SenseVoice may not have emitted the end of an uninterrupted sentence at
-    // twelve seconds. Prefer natural pauses and keep a larger bounded window so
-    // a forced rollover does not permanently discard the rest of a long phrase.
-    private let maximumSegmentSamples = 480_000
-    private let forcedWindowOverlapSamples = 16_000
-    private let pauseWindowOverlapSamples = 3_200
-    private let silenceProbeSamples = 9_600
-    private let silenceRMSLimit: Float = 0.0018
+    private let configuration: Configuration
     private let bufferLock = NSLock()
 
     private var audioBuffer: [Float] = []
@@ -38,8 +72,9 @@ final class BufferedOnDeviceStreamingProvider: StreamingTranscriptionProvider {
     private(set) var transcriptionEvents: AsyncStream<StreamingTranscriptionEvent>
     var stopDisposition: StreamingStopDisposition { .finalizeStreaming }
 
-    init(backend: Backend) {
+    init(backend: Backend, configuration: Configuration = .default) {
         self.backend = backend
+        self.configuration = configuration
         var continuation: AsyncStream<StreamingTranscriptionEvent>.Continuation!
         transcriptionEvents = AsyncStream { continuation = $0 }
         eventsContinuation = continuation
@@ -115,10 +150,11 @@ final class BufferedOnDeviceStreamingProvider: StreamingTranscriptionProvider {
     }
 
     private func startTranscriptionLoop() {
+        let previewInterval = configuration.previewInterval
         transcriptionTask = Task { [weak self] in
             while !Task.isCancelled {
                 do {
-                    try await Task.sleep(for: .milliseconds(700))
+                    try await Task.sleep(for: previewInterval)
                 } catch {
                     break
                 }
@@ -138,8 +174,8 @@ final class BufferedOnDeviceStreamingProvider: StreamingTranscriptionProvider {
             }
             guard sampleCount > 0 else { return nil }
             guard force
-                || (sampleCount >= minimumSamples
-                    && sampleCount - lastTranscribedSampleCount >= minimumNewSamples)
+                || (sampleCount >= configuration.minimumSamples
+                    && sampleCount - lastTranscribedSampleCount >= configuration.minimumNewSamples)
             else {
                 return nil
             }
@@ -153,16 +189,19 @@ final class BufferedOnDeviceStreamingProvider: StreamingTranscriptionProvider {
             return
         }
 
-        let pauseBoundary = Self.pauseBoundary(
-            in: snapshot.samples,
-            minimumSegmentSamples: minimumSegmentSamples,
-            probeSamples: silenceProbeSamples,
-            rmsLimit: silenceRMSLimit
-        )
+        let pauseBoundary = configuration.finalizesAtPause
+            ? Self.pauseBoundary(
+                in: snapshot.samples,
+                minimumSegmentSamples: configuration.minimumSegmentSamples,
+                probeSamples: configuration.silenceProbeSamples,
+                rmsLimit: configuration.silenceRMSLimit
+            )
+            : nil
         let endedAtPause = pauseBoundary != nil
-        let reachedWindowLimit = pauseBoundary == nil && snapshot.sampleCount >= maximumSegmentSamples
+        let reachedWindowLimit = pauseBoundary == nil
+            && snapshot.sampleCount >= configuration.maximumSegmentSamples
         let decodedSampleCount = pauseBoundary
-            ?? (reachedWindowLimit ? maximumSegmentSamples : snapshot.sampleCount)
+            ?? (reachedWindowLimit ? configuration.maximumSegmentSamples : snapshot.sampleCount)
         let samplesToDecode = decodedSampleCount == snapshot.sampleCount
             ? snapshot.samples
             : Array(snapshot.samples.prefix(decodedSampleCount))
@@ -188,11 +227,11 @@ final class BufferedOnDeviceStreamingProvider: StreamingTranscriptionProvider {
                     let finalized = transcriptAssembler.finalize(text)
                     let overlap: Int
                     if reachedWindowLimit && !commit {
-                        overlap = min(forcedWindowOverlapSamples, decodedSampleCount)
+                        overlap = min(configuration.forcedWindowOverlapSamples, decodedSampleCount)
                     } else if endedAtPause && !commit {
                         // Retain 200 ms of the detected quiet interval so the
                         // next phrase never starts exactly on a clipped onset.
-                        overlap = min(pauseWindowOverlapSamples, decodedSampleCount)
+                        overlap = min(configuration.pauseWindowOverlapSamples, decodedSampleCount)
                     } else {
                         overlap = 0
                     }
