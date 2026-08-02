@@ -148,10 +148,10 @@ struct ModelRealtimeCapabilityBadge: View {
 
     private var title: LocalizedStringKey {
         switch mode {
-        case .continuousStreaming:
-            return "Realtime streaming"
+        case .nativeStreaming:
+            return "Native streaming"
         case .slidingWindow:
-            return "Sliding window"
+            return "Realtime · sliding window"
         case .batchOnly:
             return "Batch transcription"
         }
@@ -159,7 +159,7 @@ struct ModelRealtimeCapabilityBadge: View {
 
     private var systemImage: String {
         switch mode {
-        case .continuousStreaming:
+        case .nativeStreaming:
             return "waveform"
         case .slidingWindow:
             return "rectangle.stack"
@@ -170,7 +170,7 @@ struct ModelRealtimeCapabilityBadge: View {
 
     private var color: Color {
         switch mode {
-        case .continuousStreaming:
+        case .nativeStreaming:
             return AppTheme.Status.positive
         case .slidingWindow:
             return .orange
@@ -193,10 +193,10 @@ struct ModelRealtimeCapabilityBadge: View {
 
     private var helpText: String {
         switch mode {
-        case .continuousStreaming:
-            return String(localized: "Produces text continuously while audio is being recorded.")
+        case .nativeStreaming:
+            return String(localized: "Consumes audio incrementally through the model runtime's streaming path.")
         case .slidingWindow:
-            return String(localized: "Produces live previews by repeatedly transcribing bounded, overlapping audio windows.")
+            return String(localized: "Shows realtime previews by repeatedly transcribing a bounded audio window; encoder state is not preserved between updates.")
         case .batchOnly:
             return String(localized: "Transcribes the complete recording after recording stops.")
         }

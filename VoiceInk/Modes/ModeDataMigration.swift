@@ -19,11 +19,6 @@ extension ModeManager {
         let defaults = UserDefaults.standard
         let bufferedRealtimeMigrationKey = "buffered-local-realtime-migrated-v1"
         let shouldMigrateBufferedRealtime = !defaults.bool(forKey: bufferedRealtimeMigrationKey)
-        let bufferedRealtimeModelNames: Set<String> = [
-            "sensevoice-small",
-            "paraformer-large-zh",
-            "qwen3-asr-0.6b-int8",
-        ]
         var didChange = false
         var foundBufferedRealtimeModel = false
 
@@ -31,18 +26,14 @@ extension ModeManager {
             var config = configurations[index]
             var changedConfig = false
 
-            if config.selectedTranscriptionModelName == "parakeet-ctc-0.6b-zh-cn" {
-                config.selectedTranscriptionModelName = StarterModeFactory.defaultTranscriptionModelName
-                config.isRealtimeTranscriptionEnabled = true
-                changedConfig = true
-            }
-
-            if let modelName = config.selectedTranscriptionModelName,
-                bufferedRealtimeModelNames.contains(modelName)
-            {
+            let bufferedRealtimeMigration = BufferedRealtimeModeMigration.migrate(
+                config,
+                shouldMigrate: shouldMigrateBufferedRealtime
+            )
+            if bufferedRealtimeMigration.foundBufferedRealtimeModel {
                 foundBufferedRealtimeModel = true
-                if shouldMigrateBufferedRealtime && !config.isRealtimeTranscriptionEnabled {
-                    config.isRealtimeTranscriptionEnabled = true
+                if bufferedRealtimeMigration.configuration != config {
+                    config = bufferedRealtimeMigration.configuration
                     changedConfig = true
                 }
             }
@@ -89,13 +80,6 @@ extension ModeManager {
             defaults.set(true, forKey: bufferedRealtimeMigrationKey)
         }
 
-        if UserDefaults.standard.string(forKey: "CurrentTranscriptionModel") == "parakeet-ctc-0.6b-zh-cn" {
-            UserDefaults.standard.set(
-                StarterModeFactory.defaultTranscriptionModelName,
-                forKey: "CurrentTranscriptionModel"
-            )
-        }
-
         migrateLegacyShortcutStorageIfNeeded()
     }
     private func migrateLegacyShortcutStorageIfNeeded() {
@@ -119,6 +103,32 @@ extension ModeManager {
                 defaults.set(defaults.bool(forKey: oldClearedKey), forKey: newClearedKey)
             }
         }
+    }
+}
+
+enum BufferedRealtimeModeMigration {
+    static let modelNames: Set<String> = [
+        "parakeet-ctc-0.6b-zh-cn",
+        "sensevoice-small",
+        "paraformer-large-zh",
+        "qwen3-asr-0.6b-int8",
+    ]
+
+    static func migrate(
+        _ configuration: ModeConfig,
+        shouldMigrate: Bool
+    ) -> (configuration: ModeConfig, foundBufferedRealtimeModel: Bool) {
+        guard let modelName = configuration.selectedTranscriptionModelName,
+            modelNames.contains(modelName)
+        else {
+            return (configuration, false)
+        }
+
+        var migratedConfiguration = configuration
+        if shouldMigrate {
+            migratedConfiguration.isRealtimeTranscriptionEnabled = true
+        }
+        return (migratedConfiguration, true)
     }
 }
 

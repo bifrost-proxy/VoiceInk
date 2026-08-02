@@ -1,14 +1,14 @@
 import Foundation
 
 enum TranscriptionRealtimeMode: Equatable {
-    case continuousStreaming
+    case nativeStreaming
     case slidingWindow
     case batchOnly
 }
 
 enum TranscriptionRealtimeSupport {
     /// Describes how VoiceInk actually produces live text for a model.
-    /// `supportsStreaming` alone cannot distinguish a continuous streaming decoder
+    /// `supportsStreaming` alone cannot distinguish a native streaming path
     /// from a local model that periodically re-decodes a bounded audio window.
     static func mode(for model: any TranscriptionModel) -> TranscriptionRealtimeMode {
         guard model.supportsStreaming else { return .batchOnly }
@@ -17,9 +17,12 @@ enum TranscriptionRealtimeSupport {
             if FluidAudioModelManager.isParakeetUnifiedModel(named: model.name)
                 || FluidAudioModelManager.isNemotronModel(named: model.name)
             {
-                return .continuousStreaming
+                return .nativeStreaming
             }
 
+            // FluidAudio's TDT V2/V3 path uses an offline encoder over sliding
+            // windows. Its CTC, SenseVoice, and Paraformer managers likewise
+            // expose whole-utterance transcription rather than encoder caches.
             return .slidingWindow
         }
 
@@ -27,7 +30,7 @@ enum TranscriptionRealtimeSupport {
             return .slidingWindow
         }
 
-        return .continuousStreaming
+        return .nativeStreaming
     }
 
     static func isAvailable(for model: any TranscriptionModel) -> Bool {
