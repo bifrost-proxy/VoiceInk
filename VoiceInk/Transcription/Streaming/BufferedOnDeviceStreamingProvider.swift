@@ -50,6 +50,22 @@ final class BufferedOnDeviceStreamingProvider: StreamingTranscriptionProvider {
             silenceRMSLimit: 0.0018,
             finalizesAtPause: false
         )
+
+        /// Qwen runs on the CPU and benefits from a smaller first window. The
+        /// loop sleeps after each inference, so this improves first-text
+        /// latency without allowing overlapping decoder work.
+        static let responsivePreview = Configuration(
+            previewInterval: .milliseconds(450),
+            minimumSamples: 6_400,
+            minimumNewSamples: 6_400,
+            minimumSegmentSamples: 24_000,
+            maximumSegmentSamples: 480_000,
+            forcedWindowOverlapSamples: 16_000,
+            pauseWindowOverlapSamples: 0,
+            silenceProbeSamples: 9_600,
+            silenceRMSLimit: 0.0018,
+            finalizesAtPause: false
+        )
     }
 
     enum Backend {

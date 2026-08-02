@@ -111,8 +111,8 @@ enum TranscriptionModelRegistry {
                 displayName: "Qwen3-ASR 0.6B (INT8)",
                 description: "Qwen3-ASR 的 sherpa-onnx 本地量化版本，支持中文、方言、多语言及实时预览",
                 size: "838 MB",
-                // Latest-10 local benchmark: 0.283 s median warm batch,
-                // 1.620 s first preview, 0.307 s finalize. This is comparable
+                // Latest-10 local benchmark: 0.322 s median warm batch,
+                // 0.610 s first preview, 0.328 s finalize. This is comparable
                 // overall to the Chinese Parakeet CTC model rated at 9.7.
                 speed: 0.97,
                 archiveURL: URL(string: "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25.tar.bz2")!,

@@ -38,3 +38,26 @@ The default reports are private runtime artifacts and are saved under:
 The complete-file output is not human-labelled ground truth. The benchmark proves integration parity and exposes preview/finalization regressions, but absolute recognition quality still requires reviewed reference transcripts. Historical screen, clipboard and selected-text context is not retained with recordings, so enhancement comparisons use the current prompt/provider with an empty historical context snapshot.
 
 Sliding-window models treat their incremental hypotheses as previews and refresh only the current bounded, unconfirmed window at stop. Previously finalized windows are not decoded again. Native streaming models finalize their decoder state directly.
+
+## Latest local validation snapshot
+
+The 2026-08-02 validation replayed the 10 most recent recordings through all 6 downloaded realtime-capable models (60 cases). Among cases where the whole-file pseudo-reference was non-empty:
+
+- Nemotron Multilingual: 7/7 realtime finals exactly matched whole-file inference;
+- Parakeet CTC zh-CN: 9/9 exact;
+- Qwen3-ASR INT8: 8/8 exact, with median first preview reduced from 1.620 s to 0.610 s;
+- SenseVoice Small: 6/6 exact;
+- Parakeet V3: average raw parity 0.965 across 3 scored cases; most Chinese recordings were unscored because V3 supports English and European languages, not Mandarin;
+- Paraformer Large zh: average raw parity 0.786 and identical-input batch repeatability 0.741. Repeating inference and voting was tested, did not produce a reliable net gain, and is intentionally not part of the product path.
+
+Parakeet V2/V3 whole-file inference conditionally appends one second of trailing silence when the recording has no quiet tail. Removing it reduced V3 parity from 0.965 to 0.512 and caused a very short recording to fail with `invalidAudioData`, so the bounded padding is retained. It does not cause a recording-length-dependent final pass.
+
+The detailed private report is stored at:
+
+```text
+~/Library/Application Support/com.prakashjoshipax.VoiceInk/Benchmarks/20260802-215748/
+```
+
+## Model loading and memory lifetime
+
+The recorder callback is installed before asynchronous local-model initialization finishes, so cold-start PCM chunks queue instead of being discarded. When prewarm-on-wake is enabled, the selected sherpa-onnx/Qwen model now follows the same launch/wake prewarm path as other local runtimes. Its recognizer is reused while active and released after 10 minutes without inference; every preview or batch inference resets that idle timer. This avoids both first-recording initialization delay and indefinite Qwen residency.

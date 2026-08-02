@@ -82,6 +82,8 @@ final class StreamingTranscriptionSession: TranscriptionSession {
         self.lastResolution = nil
         logger.notice("Streaming session prepare model=\(model.displayName, privacy: .public)")
 
+        streamingService.prepareForStart()
+
         // Return callback immediately; WebSocket connects in background
         let service = streamingService
         let callback: (Data) -> Void = { [weak service] data in

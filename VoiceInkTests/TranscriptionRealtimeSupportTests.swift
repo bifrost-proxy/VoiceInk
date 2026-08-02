@@ -63,6 +63,27 @@ struct TranscriptionRealtimeSupportTests {
         #expect(!BufferedOnDeviceStreamingProvider.Configuration.default.finalizesAtPause)
     }
 
+    @Test func qwenPreviewStartsFromAResponsiveShortWindow() {
+        let configuration = BufferedOnDeviceStreamingProvider.Configuration.responsivePreview
+
+        #expect(configuration.previewInterval == .milliseconds(450))
+        #expect(configuration.minimumSamples == 6_400)
+        #expect(configuration.minimumNewSamples == 6_400)
+        #expect(!configuration.finalizesAtPause)
+    }
+
+    @Test func parakeetTdtFinalizesItsBufferedTailWithoutBatchFallback() {
+        let provider = FluidAudioStreamingProvider(
+            fluidAudioService: FluidAudioTranscriptionService()
+        )
+
+        if case .finalizeStreaming = provider.stopDisposition {
+            #expect(Bool(true))
+        } else {
+            #expect(Bool(false), "Parakeet V2/V3 should finalize the live decoder tail")
+        }
+    }
+
     @Test func bufferedRealtimeMigrationPreservesChineseCtcSelection() {
         let configuration = ModeConfig(
             name: "Chinese dictation",
