@@ -11,8 +11,6 @@ struct DashboardContent: View {
     private static let displayNameMinWidth: CGFloat = 72
     private static let displayNameMaxWidth: CGFloat = 280
     private static let displayNameHorizontalPadding: CGFloat = 8
-    private static let insightsUnlockDuration: TimeInterval = 30 * 60
-    private static let peakHoursUnlockDuration: TimeInterval = 30 * 60
     // Above this count, skip live auto-refresh (full reload is expensive); tab reopen still refreshes.
     private static let automaticStatsRefreshMetricLimit = 2_000
     private static let statsRefreshDebounceNanoseconds: UInt64 = 750_000_000
@@ -64,7 +62,7 @@ struct DashboardContent: View {
 
                 ScrollView {
                     Group {
-                        if isInsightsViewPresented && canViewInsights {
+                        if isInsightsViewPresented {
                             dashboardInsightsView
                         } else {
                             dashboardMainContent(availableWidth: contentWidth)
@@ -217,44 +215,8 @@ struct DashboardContent: View {
         return String(format: String(localized: "Updated at %@"), formattedDate)
     }
 
-    private var canViewInsights: Bool {
-        hasLoadedStatsSnapshot && statsSummary.totalDuration >= Self.insightsUnlockDuration
-    }
-
-    private var shouldShowLockedInsightsState: Bool {
-        hasLoadedStatsSnapshot && !canViewInsights
-    }
-
-    private var canViewPeakHours: Bool {
-        hasLoadedStatsSnapshot && selectedTotals.duration >= Self.peakHoursUnlockDuration && selectedPeakHours.hasData
-    }
-
-    private var shouldLockPeakHours: Bool {
-        hasLoadedStatsSnapshot && !canViewPeakHours
-    }
-
     private var shouldRefreshStatsAfterMetricChange: Bool {
         !hasLoadedStatsSnapshot || statsSummary.totalCount < Self.automaticStatsRefreshMetricLimit
-    }
-
-    private var insightsActionTitle: LocalizedStringKey {
-        canViewInsights ? "View Insights" : "Insights Locked"
-    }
-
-    private var insightsActionIcon: String {
-        canViewInsights ? "chart.line.uptrend.xyaxis" : "lock.fill"
-    }
-
-    private var insightsActionHelp: String {
-        if canViewInsights {
-            return String(localized: "View dashboard insights")
-        }
-
-        return String(localized: "Continue using VoiceInk to unlock these stats.")
-    }
-
-    private var insightsActionAccessibilityLabel: String {
-        canViewInsights ? "View insights" : "Insights locked"
     }
 
     private var accessibilityReminder: some View {
@@ -356,10 +318,6 @@ struct DashboardContent: View {
     }
 
     private func openInsightsIfAvailable() {
-        guard canViewInsights else {
-            return
-        }
-
         isInsightsViewPresented = true
     }
 
@@ -482,7 +440,6 @@ struct DashboardContent: View {
             selectedPeriod: $selectedInsightPeriod,
             productivityPoints: selectedProductivityPoints,
             peakHoursSummary: selectedPeakHours,
-            isPeakHoursLocked: shouldLockPeakHours,
             timeSavedSummary: selectedTimeSavedSummary,
             modelUsage: selectedModelUsage,
             modelPerformanceSummaries: selectedModelPerformance,
@@ -497,14 +454,12 @@ struct DashboardContent: View {
 
     private var heroSection: some View {
         DashboardHeroCard(
-            isLocked: shouldShowLockedInsightsState,
             headline: momentumHeadline,
             subtext: momentumSubtext,
-            actionTitle: insightsActionTitle,
-            actionIcon: insightsActionIcon,
-            canViewInsights: canViewInsights,
-            actionHelp: insightsActionHelp,
-            actionAccessibilityLabel: insightsActionAccessibilityLabel,
+            actionTitle: "View Insights",
+            actionIcon: "chart.line.uptrend.xyaxis",
+            actionHelp: String(localized: "View dashboard insights"),
+            actionAccessibilityLabel: "View insights",
             onViewInsights: openInsightsIfAvailable
         )
     }

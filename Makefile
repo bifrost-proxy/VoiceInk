@@ -42,7 +42,8 @@ setup: whisper
 	@echo "Please ensure your Xcode project references the framework from this new location."
 
 build: setup
-	xcodebuild -project VoiceInk.xcodeproj -scheme VoiceInk -configuration Debug CODE_SIGN_IDENTITY="" build
+	xcodebuild -project VoiceInk.xcodeproj -scheme VoiceInk -configuration Debug \
+		CODE_SIGN_IDENTITY="-" DEVELOPMENT_TEAM="" build
 
 # Build for local use without Apple Developer certificate
 local: check setup

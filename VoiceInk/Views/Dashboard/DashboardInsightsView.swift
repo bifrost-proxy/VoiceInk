@@ -4,7 +4,6 @@ struct DashboardInsightsView: View {
     @Binding var selectedPeriod: DashboardInsightPeriod
     let productivityPoints: [DashboardProductivityPoint]
     let peakHoursSummary: DashboardPeakHoursSummary
-    let isPeakHoursLocked: Bool
     let timeSavedSummary: DashboardTimeSavedSummary
     let modelUsage: ModelUsageSummary
     let modelPerformanceSummaries: [ModelPerformanceSummary]
@@ -48,7 +47,7 @@ struct DashboardInsightsView: View {
 
     private var insightSummaryCards: some View {
         HStack(alignment: .top, spacing: DashboardLayout.columnSpacing) {
-            DashboardPeakHoursCard(summary: peakHoursSummary, isLocked: isPeakHoursLocked)
+            DashboardPeakHoursCard(summary: peakHoursSummary)
                 .frame(maxWidth: .infinity, alignment: .topLeading)
 
             DashboardTimeSavedCard(summary: timeSavedSummary, period: selectedPeriod)

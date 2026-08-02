@@ -56,7 +56,7 @@ done
 [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "version must use MAJOR.MINOR.PATCH"
 [[ "$BUILD_NUMBER" =~ ^[0-9]+$ ]] || fail "build number must be numeric"
 
-for command_name in awk codesign cp ditto grep lipo make plutil shasum tr xcodebuild; do
+for command_name in awk codesign cp ditto find grep lipo make plutil shasum tr xcodebuild; do
     command -v "$command_name" >/dev/null 2>&1 || fail "required command not found: $command_name"
 done
 
@@ -106,6 +106,21 @@ EXECUTABLE="$APP_PATH/Contents/MacOS/VoiceInk"
 
 codesign --force --deep --sign - --entitlements "$LOCAL_ENTITLEMENTS" "$APP_PATH"
 codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+
+verify_ad_hoc_signature() {
+    local code_path="$1"
+    local signature_details
+    signature_details="$(codesign --display --verbose=4 "$code_path" 2>&1)"
+    grep -Fq "Signature=adhoc" <<<"$signature_details" \
+        || fail "expected ad-hoc signature: $code_path"
+    grep -Fq "TeamIdentifier=not set" <<<"$signature_details" \
+        || fail "unexpected Team ID in ad-hoc release: $code_path"
+}
+
+verify_ad_hoc_signature "$APP_PATH"
+while IFS= read -r framework_path; do
+    verify_ad_hoc_signature "$framework_path"
+done < <(find "$APP_PATH/Contents/Frameworks" -type d -name "*.framework" -prune -print)
 
 APP_VERSION="$(plutil -extract CFBundleShortVersionString raw "$INFO_PLIST")"
 APP_BUILD="$(plutil -extract CFBundleVersion raw "$INFO_PLIST")"
