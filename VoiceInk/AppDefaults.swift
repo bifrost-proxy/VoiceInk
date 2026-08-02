@@ -6,6 +6,14 @@ enum CleanupSettingsKeys {
     static let isAudioCleanupEnabled = "IsAudioCleanupEnabled"
     static let audioRetentionPeriod = "AudioRetentionPeriod"
     static let lastAutomaticAudioCleanupDate = "AudioCleanupLastAutomaticCleanupDate"
+    static let maximumHistoryRecordCount = "MaximumHistoryRecordCount"
+    static let maximumHistoryStorageMegabytes = "MaximumHistoryStorageMegabytes"
+}
+
+enum CloudSyncSettingsKeys {
+    static let configurationSyncEnabled = "CloudConfigurationSyncEnabled"
+    static let usageDataSyncEnabled = "CloudUsageDataSyncEnabled"
+    static let usageAudioSyncEnabled = "CloudUsageAudioSyncEnabled"
 }
 
 enum RecorderDisplaySettingsKeys {
@@ -13,8 +21,8 @@ enum RecorderDisplaySettingsKeys {
 }
 
 enum AppDefaults {
-    static func registerDefaults() {
-        UserDefaults.standard.register(defaults: [
+    static func registerDefaults(in defaults: UserDefaults = .standard) {
+        defaults.register(defaults: [
             // Onboarding & General
             "hasCompletedOnboardingV2": false,
             "hasPreparedOnboardingV2": false,
@@ -46,6 +54,14 @@ enum AppDefaults {
             CleanupSettingsKeys.transcriptionRetentionMinutes: 1440,
             CleanupSettingsKeys.isAudioCleanupEnabled: false,
             CleanupSettingsKeys.audioRetentionPeriod: 7,
+            CleanupSettingsKeys.maximumHistoryRecordCount: 0,
+            CleanupSettingsKeys.maximumHistoryStorageMegabytes: 0,
+
+            // iCloud. Portable configuration keeps its existing opt-out
+            // behavior; private usage history and audio require explicit opt-in.
+            CloudSyncSettingsKeys.configurationSyncEnabled: true,
+            CloudSyncSettingsKeys.usageDataSyncEnabled: false,
+            CloudSyncSettingsKeys.usageAudioSyncEnabled: false,
 
             // UI & Behavior
             "IsMenuBarOnly": false,

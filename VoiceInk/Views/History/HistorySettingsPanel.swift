@@ -3,6 +3,7 @@ import SwiftUI
 
 struct HistorySettingsPanel: View {
     @Environment(\.modelContext) private var modelContext
+    @ObservedObject private var storageManager = HistoryStorageManager.shared
 
     let onClose: () -> Void
 
@@ -10,6 +11,8 @@ struct HistorySettingsPanel: View {
     @AppStorage(CleanupSettingsKeys.transcriptionRetentionMinutes) private var transcriptionRetentionMinutes = 24 * 60
     @AppStorage(CleanupSettingsKeys.isAudioCleanupEnabled) private var isAudioCleanupEnabled = false
     @AppStorage(CleanupSettingsKeys.audioRetentionPeriod) private var audioRetentionPeriod = 7
+    @AppStorage(CleanupSettingsKeys.maximumHistoryRecordCount) private var maximumHistoryRecordCount = 0
+    @AppStorage(CleanupSettingsKeys.maximumHistoryStorageMegabytes) private var maximumHistoryStorageMegabytes = 0
 
     @State private var isPerformingAudioCleanup = false
     @State private var isShowingAudioConfirmation = false
@@ -23,6 +26,68 @@ struct HistorySettingsPanel: View {
             AppPanelHeader(title: "History Settings", onClose: onClose)
 
             Form {
+                Section {
+                    LabeledContent("History Records") {
+                        Text(storageManager.snapshot.recordCount, format: .number)
+                    }
+                    LabeledContent("Saved Audio") {
+                        Text(
+                            "\(storageManager.snapshot.audioFileCount) files · \(formatBytes(storageManager.snapshot.audioBytes))"
+                        )
+                    }
+                    LabeledContent("History Database") {
+                        Text(formatBytes(storageManager.snapshot.databaseBytes))
+                    }
+                    LabeledContent("Total on Disk") {
+                        Text(formatBytes(storageManager.snapshot.onDiskBytes))
+                            .fontWeight(.medium)
+                    }
+
+                    if storageManager.isCalculating {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                    if let error = storageManager.lastError {
+                        Text(error)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
+                    Button("Refresh Storage Usage") {
+                        Task { await storageManager.refresh(modelContext: modelContext) }
+                    }
+                    .disabled(storageManager.isCalculating)
+                } header: {
+                    sectionHeader(
+                        "Storage Usage",
+                        tip: "Calculated once when this page opens. Audio and database sizes reflect the current files on this Mac."
+                    )
+                }
+
+                Section {
+                    Picker("Maximum Records", selection: $maximumHistoryRecordCount) {
+                        Text("Unlimited").tag(0)
+                        Text("100").tag(100)
+                        Text("500").tag(500)
+                        Text("1,000").tag(1_000)
+                        Text("5,000").tag(5_000)
+                        Text("10,000").tag(10_000)
+                    }
+
+                    Picker("Maximum Storage", selection: $maximumHistoryStorageMegabytes) {
+                        Text("Unlimited").tag(0)
+                        Text("500 MB").tag(500)
+                        Text("1 GB").tag(1_024)
+                        Text("5 GB").tag(5_120)
+                        Text("10 GB").tag(10_240)
+                        Text("50 GB").tag(51_200)
+                    }
+                } header: {
+                    sectionHeader(
+                        "Capacity Limits",
+                        tip: "When either limit is exceeded, VoiceInk deletes the oldest local records first. The newest record is always retained. Defaults are unlimited."
+                    )
+                }
+
                 Section {
                     Toggle("Auto-delete Transcript History", isOn: $isTranscriptionCleanupEnabled)
 
@@ -143,6 +208,15 @@ struct HistorySettingsPanel: View {
                 AudioCleanupManager.shared.stopAutomaticCleanup()
             }
         }
+        .onChange(of: maximumHistoryRecordCount) { _, _ in
+            Task { _ = await storageManager.enforceLimits(modelContext: modelContext) }
+        }
+        .onChange(of: maximumHistoryStorageMegabytes) { _, _ in
+            Task { _ = await storageManager.enforceLimits(modelContext: modelContext) }
+        }
+        .task {
+            await storageManager.refresh(modelContext: modelContext)
+        }
     }
 
     private func sectionHeader(_ title: LocalizedStringKey, tip: LocalizedStringKey) -> some View {
@@ -151,6 +225,10 @@ struct HistorySettingsPanel: View {
 
             InfoTip(message: tip, iconSize: .small, iconColor: .secondary, width: 260)
         }
+    }
+
+    private func formatBytes(_ bytes: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
     }
 
     private func analyzeAudioCleanup() {

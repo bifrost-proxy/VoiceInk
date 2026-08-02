@@ -39,6 +39,7 @@ final class CloudConfigurationSyncService: ObservableObject {
     }
 
     enum SyncState: Equatable {
+        case disabled
         case waitingForICloud
         case syncing
         case synced
@@ -46,6 +47,8 @@ final class CloudConfigurationSyncService: ObservableObject {
 
         var displayText: String {
             switch self {
+            case .disabled:
+                return String(localized: "Off")
             case .waitingForICloud:
                 return String(localized: "Waiting for iCloud Drive")
             case .syncing:
@@ -71,6 +74,10 @@ final class CloudConfigurationSyncService: ObservableObject {
         iCloudDriveRootURL?.appendingPathComponent("VoiceInk/Configuration/VoiceInkConfig.plist")
     }
 
+    var isEnabled: Bool {
+        defaults.bool(forKey: CloudSyncSettingsKeys.configurationSyncEnabled)
+    }
+
     private static let metadataPrefix = "CloudConfigurationSync."
     private static let lastLocalChangeKey = metadataPrefix + "lastLocalChange"
     private static let lastAppliedRevisionKey = metadataPrefix + "lastAppliedRevision"
@@ -93,6 +100,9 @@ final class CloudConfigurationSyncService: ObservableObject {
         "prioritizedAudioDevices",
         // Local maintenance, migration, framework and macOS UI state.
         CleanupSettingsKeys.lastAutomaticAudioCleanupDate,
+        CloudSyncSettingsKeys.configurationSyncEnabled,
+        CloudSyncSettingsKeys.usageDataSyncEnabled,
+        CloudSyncSettingsKeys.usageAudioSyncEnabled,
         "HasCompletedStatsMigration",
         "HasCompletedStatsTokenBackfillV3",
         "streaming-keys-migrated",
@@ -144,6 +154,10 @@ final class CloudConfigurationSyncService: ObservableObject {
     /// Applies preferences before services read their initial values. Dictionary
     /// entities are applied later, after SwiftData is available.
     func preparePreferencesForLaunch() {
+        guard isEnabled else {
+            state = .disabled
+            return
+        }
         guard let snapshot = readSnapshot(), snapshot.schemaVersion <= Snapshot.currentSchemaVersion else {
             return
         }
@@ -177,18 +191,30 @@ final class CloudConfigurationSyncService: ObservableObject {
         }
 
         installObserversIfNeeded()
-        pollTimer?.invalidate()
-        pollTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                self?.poll()
-            }
-        }
-
-        poll()
+        setEnabled(isEnabled)
     }
 
     func syncNow() {
+        guard isEnabled else { return }
         poll(forceWriteWhenLocal: true)
+    }
+
+    func setEnabled(_ enabled: Bool) {
+        defaults.set(enabled, forKey: CloudSyncSettingsKeys.configurationSyncEnabled)
+        pendingWriteTask?.cancel()
+        pendingWriteTask = nil
+        pollTimer?.invalidate()
+        pollTimer = nil
+
+        guard enabled else {
+            state = .disabled
+            return
+        }
+
+        pollTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.poll() }
+        }
+        poll()
     }
 
     func revealConfigurationFile() {
@@ -247,6 +273,7 @@ final class CloudConfigurationSyncService: ObservableObject {
     }
 
     private func handleLocalPreferenceChange() {
+        guard isEnabled else { return }
         guard !isApplyingRemoteSnapshot, !isWritingMetadata else { return }
         guard let content = makeLocalContent(),
             Self.shouldQueueLocalChange(
@@ -284,6 +311,10 @@ final class CloudConfigurationSyncService: ObservableObject {
     }
 
     private func poll(forceWriteWhenLocal: Bool = false) {
+        guard isEnabled else {
+            state = .disabled
+            return
+        }
         guard configurationFileURL != nil else {
             state = .waitingForICloud
             return

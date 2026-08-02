@@ -6,10 +6,278 @@
 //
 
 import Foundation
+import SwiftData
 import Testing
 @testable import VoiceInk
 
 struct VoiceInkTests {
+
+    @Test func cloudAndRetentionDefaultsArePrivacyPreservingAndUnlimited() throws {
+        let suiteName = "VoiceInkTests.SyncDefaults"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        AppDefaults.registerDefaults(in: defaults)
+
+        #expect(defaults.bool(forKey: CloudSyncSettingsKeys.configurationSyncEnabled))
+        #expect(!defaults.bool(forKey: CloudSyncSettingsKeys.usageDataSyncEnabled))
+        #expect(!defaults.bool(forKey: CloudSyncSettingsKeys.usageAudioSyncEnabled))
+        #expect(defaults.integer(forKey: CleanupSettingsKeys.maximumHistoryRecordCount) == 0)
+        #expect(defaults.integer(forKey: CleanupSettingsKeys.maximumHistoryStorageMegabytes) == 0)
+        defaults.removePersistentDomain(forName: suiteName)
+    }
+
+    @Test func transcriptionStagePerformanceRoundTripsThroughPersistedData() throws {
+        var original = TranscriptionPerformanceSnapshot(executionMode: "nativeStreaming")
+        original.streamingResolution = "providerFinal"
+        original.connectionDuration = 0.21
+        original.firstPartialLatency = 0.44
+        original.firstCommitLatency = 0.83
+        original.drainDuration = 0.12
+        original.finalizationDuration = 0.09
+        original.transcriptionDuration = 2.1
+        original.postProcessingDuration = 0.08
+        original.enhancementDuration = 0.7
+        original.deliveryDuration = 0.03
+        original.totalProcessingDuration = 2.9
+        original.receivedChunks = 42
+        original.sentChunks = 42
+        original.droppedChunks = 0
+        original.receivedBytes = 268_800
+        original.sentBytes = 268_800
+        let transcription = Transcription(text: "同步阶段性能", duration: 4.2)
+        transcription.performanceSnapshot = original
+
+        #expect(transcription.performanceData != nil)
+        #expect(transcription.performanceSnapshot == original)
+
+        let metric = SessionMetric(
+            transcriptionId: transcription.id,
+            wordCount: 8,
+            audioDuration: 4.2,
+            transcriptionModelName: "streaming-model",
+            transcriptionDuration: 2.1,
+            speedFactor: 2,
+            modeName: nil,
+            aiEnhancementModelName: nil,
+            enhancementDuration: 0.7,
+            performanceData: transcription.performanceData
+        )
+        #expect(metric.performanceData == transcription.performanceData)
+    }
+
+    @Test func historyCapacityLimitsUseEitherThresholdAndDefaultToUnlimited() {
+        #expect(
+            !HistoryStorageManager.shouldDelete(
+                recordCount: 10_000,
+                managedBytes: 100_000_000_000,
+                maximumRecordCount: 0,
+                maximumBytes: 0
+            )
+        )
+        #expect(
+            HistoryStorageManager.shouldDelete(
+                recordCount: 501,
+                managedBytes: 100,
+                maximumRecordCount: 500,
+                maximumBytes: 0
+            )
+        )
+        #expect(
+            HistoryStorageManager.shouldDelete(
+                recordCount: 10,
+                managedBytes: 1_024,
+                maximumRecordCount: 500,
+                maximumBytes: 1_000
+            )
+        )
+    }
+
+    @Test func cloudUsageSnapshotPreservesEveryPerformanceStage() throws {
+        var performance = TranscriptionPerformanceSnapshot(executionMode: "slidingWindow")
+        performance.connectionDuration = 0.4
+        performance.firstPartialLatency = 0.8
+        performance.transcriptionDuration = 1.7
+        performance.postProcessingDuration = 0.06
+        performance.enhancementDuration = 0.5
+        performance.deliveryDuration = 0.02
+        performance.totalProcessingDuration = 2.3
+        performance.receivedChunks = 30
+        performance.sentChunks = 30
+        let performanceData = try JSONEncoder().encode(performance)
+        let transcriptionID = UUID()
+        let payload = CloudUsageDataSyncService.TranscriptionPayload(
+            id: transcriptionID,
+            text: "完整输入",
+            enhancedText: "润色结果",
+            timestamp: Date(timeIntervalSince1970: 1_700_000_000),
+            duration: 3.5,
+            transcriptionModelName: "Parakeet CTC 0.6B (中文)",
+            aiEnhancementModelName: "qwen",
+            promptName: "Polish",
+            transcriptionDuration: 1.7,
+            enhancementDuration: 0.5,
+            deliveredText: "润色结果",
+            finalEditedText: "最终修改",
+            pasteTargetApplicationName: "Notes",
+            pasteTargetBundleIdentifier: "com.apple.Notes",
+            pasteTargetElementRole: "AXTextArea",
+            pasteTrackingStatus: "completed",
+            pasteStartedAt: nil,
+            pasteTrackingFinishedAt: nil,
+            postPasteEditHistoryData: nil,
+            modeName: "中文",
+            modeEmoji: "📝",
+            transcriptionStatus: "completed",
+            performanceData: performanceData
+        )
+        let snapshot = CloudUsageDataSyncService.Snapshot(
+            schemaVersion: CloudUsageDataSyncService.Snapshot.currentSchemaVersion,
+            revisionID: UUID(),
+            sourceDeviceID: "test-mac",
+            updatedAt: Date(timeIntervalSince1970: 1_700_000_010),
+            transcription: payload,
+            metric: nil,
+            audio: nil
+        )
+
+        let data = try PropertyListEncoder().encode(snapshot)
+        let decoded = try PropertyListDecoder().decode(CloudUsageDataSyncService.Snapshot.self, from: data)
+        let decodedPerformanceData = try #require(decoded.transcription.performanceData)
+        let decodedPerformance = try JSONDecoder().decode(
+            TranscriptionPerformanceSnapshot.self,
+            from: decodedPerformanceData
+        )
+
+        #expect(decoded == snapshot)
+        #expect(decodedPerformance == performance)
+    }
+
+    @MainActor
+    @Test func historyCapacityCleanupDeletesOldestRecordsFirst() async throws {
+        let previousCount = UserDefaults.standard.integer(forKey: CleanupSettingsKeys.maximumHistoryRecordCount)
+        let previousStorage = UserDefaults.standard.integer(forKey: CleanupSettingsKeys.maximumHistoryStorageMegabytes)
+        defer {
+            UserDefaults.standard.set(previousCount, forKey: CleanupSettingsKeys.maximumHistoryRecordCount)
+            UserDefaults.standard.set(previousStorage, forKey: CleanupSettingsKeys.maximumHistoryStorageMegabytes)
+        }
+        UserDefaults.standard.set(2, forKey: CleanupSettingsKeys.maximumHistoryRecordCount)
+        UserDefaults.standard.set(0, forKey: CleanupSettingsKeys.maximumHistoryStorageMegabytes)
+
+        let schema = Schema([Transcription.self, SessionMetric.self])
+        let configuration = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container = try ModelContainer(for: schema, configurations: [configuration])
+        let context = container.mainContext
+        let timestamps = [100.0, 200.0, 300.0]
+        for (index, timestamp) in timestamps.enumerated() {
+            let record = Transcription(text: "record-\(index)", duration: 1)
+            record.timestamp = Date(timeIntervalSince1970: timestamp)
+            context.insert(record)
+        }
+        try context.save()
+
+        let result = await HistoryStorageManager.shared.enforceLimits(modelContext: context)
+        let remaining = try context.fetch(
+            FetchDescriptor<Transcription>(sortBy: [SortDescriptor(\Transcription.timestamp)])
+        )
+
+        #expect(result.deletedRecordCount == 1)
+        #expect(remaining.map(\.text) == ["record-1", "record-2"])
+    }
+
+    @MainActor
+    @Test func cloudUsageSyncTransfersHistoryAndPerformanceBetweenDevices() async throws {
+        let temporaryRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("VoiceInkUsageSyncTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: temporaryRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temporaryRoot) }
+
+        let suiteAName = "VoiceInkTests.UsageSync.A.\(UUID().uuidString)"
+        let suiteBName = "VoiceInkTests.UsageSync.B.\(UUID().uuidString)"
+        let defaultsA = try #require(UserDefaults(suiteName: suiteAName))
+        let defaultsB = try #require(UserDefaults(suiteName: suiteBName))
+        defer {
+            defaultsA.removePersistentDomain(forName: suiteAName)
+            defaultsB.removePersistentDomain(forName: suiteBName)
+        }
+        defaultsA.set(true, forKey: CloudSyncSettingsKeys.usageDataSyncEnabled)
+        defaultsB.set(true, forKey: CloudSyncSettingsKeys.usageDataSyncEnabled)
+        defaultsA.set(true, forKey: CloudSyncSettingsKeys.usageAudioSyncEnabled)
+        defaultsB.set(false, forKey: CloudSyncSettingsKeys.usageAudioSyncEnabled)
+
+        let schema = Schema([Transcription.self, SessionMetric.self])
+        let configurationA = ModelConfiguration(isStoredInMemoryOnly: true)
+        let configurationB = ModelConfiguration(isStoredInMemoryOnly: true)
+        let containerA = try ModelContainer(for: schema, configurations: [configurationA])
+        let containerB = try ModelContainer(for: schema, configurations: [configurationB])
+
+        var performance = TranscriptionPerformanceSnapshot(executionMode: "nativeStreaming")
+        performance.firstPartialLatency = 0.35
+        performance.finalizationDuration = 0.11
+        performance.totalProcessingDuration = 1.6
+        let sourceRecord = Transcription(text: "跨设备转录", duration: 2.4)
+        let sourceAudioURL = temporaryRoot.appendingPathComponent("source.wav")
+        try Data(repeating: 7, count: 4_096).write(to: sourceAudioURL)
+        sourceRecord.audioFileURL = sourceAudioURL.absoluteString
+        sourceRecord.transcriptionStatus = TranscriptionStatus.completed.rawValue
+        sourceRecord.performanceSnapshot = performance
+        containerA.mainContext.insert(sourceRecord)
+        try containerA.mainContext.save()
+
+        let serviceA = CloudUsageDataSyncService(
+            defaults: defaultsA,
+            iCloudDriveRootURL: temporaryRoot
+        )
+        serviceA.start(modelContext: containerA.mainContext)
+        try await waitForUsageSync(serviceA)
+
+        let serviceB = CloudUsageDataSyncService(
+            defaults: defaultsB,
+            iCloudDriveRootURL: temporaryRoot
+        )
+        serviceB.start(modelContext: containerB.mainContext)
+        try await waitForUsageSync(serviceB)
+
+        let imported = try #require(containerB.mainContext.fetch(FetchDescriptor<Transcription>()).first)
+        #expect(imported.id == sourceRecord.id)
+        #expect(imported.text == "跨设备转录")
+        #expect(imported.performanceSnapshot == performance)
+
+        // A device that opted out of downloading audio must still carry the
+        // existing cloud descriptor when it publishes a later metadata copy.
+        serviceB.syncNow()
+        let recordDirectory = temporaryRoot
+            .appendingPathComponent("VoiceInk/UsageData/v1/Records", isDirectory: true)
+            .appendingPathComponent(sourceRecord.id.uuidString, isDirectory: true)
+        let replicaTimeout = Date().addingTimeInterval(5)
+        var snapshots: [CloudUsageDataSyncService.Snapshot] = []
+        repeat {
+            let urls = (try? FileManager.default.contentsOfDirectory(
+                at: recordDirectory,
+                includingPropertiesForKeys: nil
+            )) ?? []
+            snapshots = urls.compactMap { url in
+                guard let data = try? Data(contentsOf: url) else { return nil }
+                return try? PropertyListDecoder().decode(CloudUsageDataSyncService.Snapshot.self, from: data)
+            }
+            if snapshots.count >= 2 { break }
+            try await Task.sleep(for: .milliseconds(25))
+        } while Date() < replicaTimeout
+        #expect(snapshots.count == 2)
+        #expect(snapshots.allSatisfy { $0.audio != nil })
+
+        serviceA.setEnabled(false)
+        serviceB.setEnabled(false)
+    }
+
+    @MainActor
+    private func waitForUsageSync(_ service: CloudUsageDataSyncService) async throws {
+        let timeout = Date().addingTimeInterval(5)
+        while service.lastSyncedAt == nil && Date() < timeout {
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        #expect(service.state == .synced)
+        #expect(service.lastSyncedAt != nil)
+    }
 
     @MainActor
     @Test func cloudConfigurationSyncExcludesSecretsAndDeviceState() {
@@ -25,6 +293,9 @@ struct VoiceInkTests {
         #expect(!CloudConfigurationSyncService.isEligiblePreferenceKey("onboardingStage"))
         #expect(!CloudConfigurationSyncService.isEligiblePreferenceKey("NSWindow Frame main"))
         #expect(!CloudConfigurationSyncService.isEligiblePreferenceKey("CloudConfigurationSync.deviceID"))
+        #expect(!CloudConfigurationSyncService.isEligiblePreferenceKey(CloudSyncSettingsKeys.configurationSyncEnabled))
+        #expect(!CloudConfigurationSyncService.isEligiblePreferenceKey(CloudSyncSettingsKeys.usageDataSyncEnabled))
+        #expect(!CloudConfigurationSyncService.isEligiblePreferenceKey(CloudSyncSettingsKeys.usageAudioSyncEnabled))
     }
 
     @MainActor

@@ -19542,6 +19542,196 @@
         }
       }
     },
+    "Capacity Limits" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "容量上限"
+          }
+        }
+      }
+    },
+    "Configuration sync is on by default. Usage data sync is opt-in and includes transcription history, corrections, reports, and every persisted transcription-stage performance measurement. Source audio requires a separate opt-in. API keys, permissions, device selections, and downloaded model files always stay on this Mac." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "配置同步默认开启。使用数据同步需要手动开启，包括转录历史、修改记录、报告以及每次转录各阶段保存的性能数据。原始音频需要单独开启同步。API 密钥、权限、设备选择和已下载的模型文件始终仅保留在本机。"
+          }
+        }
+      }
+    },
+    "History Database" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "历史数据库"
+          }
+        }
+      }
+    },
+    "History Records" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "历史记录"
+          }
+        }
+      }
+    },
+    "Include Source Audio" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "包含原始音频"
+          }
+        }
+      }
+    },
+    "Maximum Records" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "最多记录数"
+          }
+        }
+      }
+    },
+    "Maximum Storage" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "最大存储空间"
+          }
+        }
+      }
+    },
+    "Refresh Storage Usage" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "刷新存储占用"
+          }
+        }
+      }
+    },
+    "Saved Audio" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已保存音频"
+          }
+        }
+      }
+    },
+    "Show Usage Data" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "显示使用数据"
+          }
+        }
+      }
+    },
+    "Storage Usage" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "存储占用"
+          }
+        }
+      }
+    },
+    "Sync Configuration" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "同步配置"
+          }
+        }
+      }
+    },
+    "Sync Usage Data" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "同步使用数据"
+          }
+        }
+      }
+    },
+    "Sync Usage Now" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "立即同步使用数据"
+          }
+        }
+      }
+    },
+    "Synchronized Records" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已同步记录"
+          }
+        }
+      }
+    },
+    "Total on Disk" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "磁盘总占用"
+          }
+        }
+      }
+    },
+    "Usage Data" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "使用数据"
+          }
+        }
+      }
+    },
+    "Usage Last Synced" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "使用数据上次同步"
+          }
+        }
+      }
+    },
+    "When either limit is exceeded, VoiceInk deletes the oldest local records first. The newest record is always retained. Defaults are unlimited." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "超过任一上限后，VoiceInk 会优先删除最旧的本地记录，并始终保留最新一条。默认均为无限制。"
+          }
+        }
+      }
+    },
     "When enabled, VoiceInk checks for a new version at launch and once every hour. Downloaded updates are verified before VoiceInk installs and restarts automatically." : {
       "localizations" : {
         "de" : {

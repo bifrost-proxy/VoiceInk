@@ -168,6 +168,8 @@ struct VoiceInkApp: App {
             enhancementService.reloadFromSynchronizedDefaults()
             transcriptionModelManager.reloadFromSynchronizedDefaults()
         }
+        CloudUsageDataSyncService.shared.start(modelContext: resolvedContainer.mainContext)
+        HistoryStorageManager.shared.startMonitoring(modelContext: resolvedContainer.mainContext)
 
         // Ensure no lingering recording state from previous runs
         Task {
