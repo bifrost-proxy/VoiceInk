@@ -17,6 +17,7 @@ struct TranscriptionRealtimeSupportTests {
         let senseVoice = try #require(models.first { $0.name == "sensevoice-small" })
         let paraformer = try #require(models.first { $0.name == "paraformer-large-zh" })
         let qwen3 = try #require(models.first { $0.name == "qwen3-asr-0.6b-int8" })
+        let qwen3MLX = try #require(models.first { $0.name == "qwen3-asr-0.6b-mlx-streaming" })
         let whisper = try #require(models.first { $0.name == "ggml-small" })
 
         #expect(TranscriptionRealtimeSupport.mode(for: unified) == .nativeStreaming)
@@ -27,10 +28,14 @@ struct TranscriptionRealtimeSupportTests {
         #expect(TranscriptionRealtimeSupport.mode(for: senseVoice) == .slidingWindow)
         #expect(TranscriptionRealtimeSupport.mode(for: paraformer) == .slidingWindow)
         #expect(TranscriptionRealtimeSupport.mode(for: qwen3) == .slidingWindow)
+        #expect(TranscriptionRealtimeSupport.mode(for: qwen3MLX) == .nativeStreaming)
         #expect(TranscriptionRealtimeSupport.mode(for: whisper) == .batchOnly)
 
         let qwenModel = try #require(qwen3 as? SherpaOnnxModel)
         #expect(qwenModel.speed == 0.97)
+        #expect(qwen3MLX is QwenMLXModel)
+        #expect(qwen3.provider == .sherpaOnnx)
+        #expect(qwen3MLX.provider == .qwenMlx)
     }
 
     @Test func streamingCloudModelsUseNativeStreaming() {

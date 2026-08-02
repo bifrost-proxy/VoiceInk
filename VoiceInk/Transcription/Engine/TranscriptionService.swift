@@ -12,7 +12,7 @@ struct TranscriptionRequestContext {
     }
 
     func scoped(to model: any TranscriptionModel) -> TranscriptionRequestContext {
-        guard model.provider == .whisper else {
+        guard model.provider == .whisper || model.provider == .qwenMlx else {
             return TranscriptionRequestContext(language: language, prompt: nil)
         }
 

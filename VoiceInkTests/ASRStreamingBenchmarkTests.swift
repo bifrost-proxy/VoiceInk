@@ -66,6 +66,7 @@ struct ASRStreamingBenchmarkTests {
         let modelContext = container.mainContext
         let fluidAudioService = FluidAudioTranscriptionService()
         let sherpaOnnxService = SherpaOnnxTranscriptionService()
+        let qwenMLXService = QwenMLXTranscriptionService()
         let fluidAudioModelManager = FluidAudioModelManager()
         #if VOICEINK_ASR_BENCHMARK_SMOKE
             let requestedModelNames: [String]? = ["qwen3-asr-0.6b-int8"]
@@ -82,7 +83,8 @@ struct ASRStreamingBenchmarkTests {
                     && Self.isDownloaded(
                         model,
                         fluidAudioModelManager: fluidAudioModelManager,
-                        sherpaOnnxModelManager: .shared
+                        sherpaOnnxModelManager: .shared,
+                        qwenMLXModelManager: .shared
                     )
                     && TranscriptionRealtimeSupport.mode(for: model) != .batchOnly
             }
@@ -108,6 +110,7 @@ struct ASRStreamingBenchmarkTests {
                 let transcriptionService: any TranscriptionService = switch model.provider {
                 case .fluidAudio: fluidAudioService
                 case .sherpaOnnx: sherpaOnnxService
+                case .qwenMlx: qwenMLXService
                 default: fatalError("Unsupported local benchmark provider: \(model.provider)")
                 }
 
@@ -245,6 +248,8 @@ struct ASRStreamingBenchmarkTests {
             }
             if model.provider == .fluidAudio {
                 await fluidAudioService.cleanup()
+            } else if model.provider == .qwenMlx {
+                await QwenMLXRuntime.shared.stop()
             }
         }
 
@@ -277,13 +282,17 @@ struct ASRStreamingBenchmarkTests {
     private static func isDownloaded(
         _ model: any TranscriptionModel,
         fluidAudioModelManager: FluidAudioModelManager,
-        sherpaOnnxModelManager: SherpaOnnxModelManager
+        sherpaOnnxModelManager: SherpaOnnxModelManager,
+        qwenMLXModelManager: QwenMLXModelManager
     ) -> Bool {
         if let model = model as? FluidAudioModel {
             return fluidAudioModelManager.isFluidAudioModelDownloaded(model)
         }
         if let model = model as? SherpaOnnxModel {
             return sherpaOnnxModelManager.isDownloaded(model)
+        }
+        if let model = model as? QwenMLXModel {
+            return qwenMLXModelManager.isReady(model)
         }
         return false
     }

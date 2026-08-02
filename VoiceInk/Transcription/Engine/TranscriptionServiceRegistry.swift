@@ -18,6 +18,7 @@ class TranscriptionServiceRegistry {
     private(set) lazy var nativeAppleTranscriptionService = NativeAppleTranscriptionService()
     private(set) lazy var fluidAudioTranscriptionService = FluidAudioTranscriptionService()
     private(set) lazy var sherpaOnnxTranscriptionService = SherpaOnnxTranscriptionService()
+    private(set) lazy var qwenMLXTranscriptionService = QwenMLXTranscriptionService()
 
     init(modelProvider: any WhisperModelProvider, modelsDirectory: URL, modelContext: ModelContext) {
         self.modelProvider = modelProvider
@@ -33,6 +34,8 @@ class TranscriptionServiceRegistry {
             return fluidAudioTranscriptionService
         case .sherpaOnnx:
             return sherpaOnnxTranscriptionService
+        case .qwenMlx:
+            return qwenMLXTranscriptionService
         case .nativeApple:
             return nativeAppleTranscriptionService
         default:

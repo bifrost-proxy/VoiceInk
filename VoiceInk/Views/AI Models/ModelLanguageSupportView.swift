@@ -68,12 +68,12 @@ enum ModelLanguageSupportCatalog {
         var sections = [
             ModelLanguageSupportSection(
                 id: "languages",
-                title: model.name == "qwen3-asr-0.6b-int8" ? String(localized: "Languages") : nil,
+                title: isQwen3ASR(model) ? String(localized: "Languages") : nil,
                 entries: languageEntries
             )
         ]
 
-        if model.name == "qwen3-asr-0.6b-int8" {
+        if isQwen3ASR(model) {
             sections.append(
                 ModelLanguageSupportSection(
                     id: "dialects",
@@ -94,6 +94,11 @@ enum ModelLanguageSupportCatalog {
         Locale.current.localizedString(forIdentifier: code)
             ?? Locale.current.localizedString(forLanguageCode: code)
             ?? fallback
+    }
+
+    private static func isQwen3ASR(_ model: any TranscriptionModel) -> Bool {
+        model.name == "qwen3-asr-0.6b-int8"
+            || model.name == "qwen3-asr-0.6b-mlx-streaming"
     }
 
     private static func summaryPriority(for code: String?) -> Int {

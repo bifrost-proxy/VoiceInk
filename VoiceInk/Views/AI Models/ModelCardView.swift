@@ -46,6 +46,10 @@ struct ModelCardView: View {
                 if let sherpaModel = model as? SherpaOnnxModel {
                     SherpaOnnxModelCardView(model: sherpaModel)
                 }
+            case .qwenMlx:
+                if let qwenModel = model as? QwenMLXModel {
+                    QwenMLXModelCardView(model: qwenModel)
+                }
             case .nativeApple:
                 if let nativeAppleModel = model as? NativeAppleModel {
                     NativeAppleModelCardView(

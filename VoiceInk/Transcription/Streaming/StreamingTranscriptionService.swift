@@ -200,7 +200,7 @@ class StreamingTranscriptionService {
             prepareForStart()
         }
 
-        let provider = createProvider(for: model)
+        let provider = createProvider(for: model, context: context)
         self.provider = provider
 
         let selectedLanguage = context.language ?? "auto"
@@ -316,7 +316,14 @@ class StreamingTranscriptionService {
 
     // MARK: - Private
 
-    private func createProvider(for model: any TranscriptionModel) -> StreamingTranscriptionProvider {
+    private func createProvider(
+        for model: any TranscriptionModel,
+        context: TranscriptionRequestContext
+    ) -> StreamingTranscriptionProvider {
+        if model.provider == .qwenMlx {
+            return QwenMLXStreamingProvider(context: context.prompt)
+        }
+
         if model.provider == .fluidAudio {
             if FluidAudioModelManager.isNemotronModel(named: model.name) {
                 return FluidAudioNemotronStreamingProvider()
@@ -457,6 +464,21 @@ class StreamingTranscriptionService {
                                 display = prefix + " " + text
                             }
                             self.onPartialTranscript?(display)
+                        }
+                    }
+                case .snapshot(let text, let stableText):
+                    await MainActor.run {
+                        if !self.firstPartialLogged {
+                            self.firstPartialLogged = true
+                            if let preparedAt = self.preparedAt {
+                                self.firstPartialLatency = Date().timeIntervalSince(preparedAt)
+                            }
+                            self.logger.notice(
+                                "Streaming first native snapshot chars=\(text.count, privacy: .public) stableChars=\(stableText.count, privacy: .public)"
+                            )
+                        }
+                        if self.state == .streaming {
+                            self.onPartialTranscript?(text)
                         }
                     }
                 case .sessionStarted:
