@@ -12,7 +12,7 @@ Before you begin, ensure you have:
 
 ## Quick Start with Makefile (Recommended)
 
-The easiest way to build VoiceInk is using the included Makefile, which automates the entire build process including building and linking the whisper framework.
+The easiest way to build VoiceInk is using the included Makefile, which automates the entire build process including Whisper, sherpa-onnx, and ONNX Runtime frameworks.
 
 ### Simple Build Commands
 
@@ -44,9 +44,9 @@ make dev
 ### How the Makefile Helps
 
 The Makefile automatically:
-1. **Manages Dependencies**: Creates a dedicated `~/VoiceInk-Dependencies` directory for all external frameworks
+1. **Manages Dependencies**: Creates a dedicated `~/VoiceInk-Dependencies` directory for Whisper and prepares the local sherpa-onnx package
 2. **Builds Whisper Framework**: Clones whisper.cpp and builds the XCFramework with the correct configuration
-3. **Handles Framework Linking**: Sets up the whisper.xcframework in the proper location for Xcode to find
+3. **Handles Framework Linking**: Sets up Whisper, sherpa-onnx, and ONNX Runtime frameworks in the locations expected by Xcode
 4. **Verifies Prerequisites**: Checks that git, xcodebuild, and swift are installed before building
 5. **Streamlines Development**: Provides convenient shortcuts for common development tasks
 
@@ -100,11 +100,17 @@ git clone https://github.com/bifrost-proxy/VoiceInk.git
 cd VoiceInk
 ```
 
-2. Add the whisper.xcframework to your project:
+2. Prepare the verified sherpa-onnx and ONNX Runtime frameworks:
+
+```bash
+./scripts/prepare-sherpa-onnx.sh
+```
+
+3. Add the whisper.xcframework to your project:
    - Drag and drop `../whisper.cpp/build-apple/whisper.xcframework` into the project navigator, or
    - Add it manually in the "Frameworks, Libraries, and Embedded Content" section of project settings
 
-3. Build and Run
+4. Build and Run
    - Build the project using Cmd+B or Product > Build
    - Run the project using Cmd+R or Product > Run
 
@@ -115,7 +121,7 @@ cd VoiceInk
    - Install any required Xcode Command Line Tools
 
 2. **Dependencies**
-   - The project uses [whisper.cpp](https://github.com/ggerganov/whisper.cpp) for transcription
+   - The project uses [whisper.cpp](https://github.com/ggerganov/whisper.cpp) and [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) for transcription
    - Ensure the whisper.xcframework is properly linked in your Xcode project
    - Test the whisper.cpp installation independently before proceeding
 

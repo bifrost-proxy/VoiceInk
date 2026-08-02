@@ -4,6 +4,7 @@ import Foundation
 enum ModelProvider: String, Codable, Hashable, CaseIterable {
     case whisper = "Whisper"
     case fluidAudio = "Parakeet"
+    case sherpaOnnx = "sherpa-onnx"
     case groq = "Groq"
     case elevenLabs = "ElevenLabs"
     case deepgram = "Deepgram"
@@ -53,7 +54,15 @@ extension TranscriptionModel {
     }
 
     var language: String {
-        isMultilingualModel ? String(localized: "Multilingual") : String(localized: "English")
+        if isMultilingualModel {
+            return String(localized: "Multilingual")
+        }
+        if let languageCode = supportedLanguages.keys.first,
+            !languageCode.lowercased().hasPrefix("en")
+        {
+            return supportedLanguages[languageCode] ?? languageCode
+        }
+        return String(localized: "English")
     }
 
     var supportsStreaming: Bool { false }
@@ -101,6 +110,28 @@ struct FluidAudioModel: TranscriptionModel {
         self.supportsStreaming = supportsStreaming
         self.supportedLanguages = supportedLanguages
     }
+}
+
+enum SherpaOnnxModelKind: String, Hashable {
+    case qwen3Asr
+    case zipformerCtc
+}
+
+struct SherpaOnnxModel: TranscriptionModel {
+    let id = UUID()
+    let name: String
+    let displayName: String
+    let description: String
+    let provider: ModelProvider = .sherpaOnnx
+    let size: String
+    let archiveURL: URL
+    let archiveSHA256: String
+    let extractedDirectoryName: String
+    let kind: SherpaOnnxModelKind
+    let supportedLanguages: [String: String]
+    let supportsStreaming = false
+
+    var isMultilingualModel: Bool { supportedLanguages.count > 1 }
 }
 
 // A new struct for cloud models

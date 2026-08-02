@@ -2,7 +2,7 @@ import AppKit
 import Foundation
 
 enum StarterModeFactory {
-    static let defaultTranscriptionModelName = "parakeet-tdt-0.6b-v3"
+    static let defaultTranscriptionModelName = "sensevoice-small"
 
     static func install(
         kinds: [StarterModeKind],

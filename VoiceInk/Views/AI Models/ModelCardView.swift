@@ -42,6 +42,10 @@ struct ModelCardView: View {
                         fluidAudioModelManager: fluidAudioModelManager
                     )
                 }
+            case .sherpaOnnx:
+                if let sherpaModel = model as? SherpaOnnxModel {
+                    SherpaOnnxModelCardView(model: sherpaModel)
+                }
             case .nativeApple:
                 if let nativeAppleModel = model as? NativeAppleModel {
                     NativeAppleModelCardView(

@@ -56,7 +56,7 @@ done
 [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "version must use MAJOR.MINOR.PATCH"
 [[ "$BUILD_NUMBER" =~ ^[0-9]+$ ]] || fail "build number must be numeric"
 
-for command_name in awk codesign cp ditto find grep lipo make plutil shasum tr xcodebuild; do
+for command_name in awk codesign cp curl ditto find grep lipo make plutil shasum tr unzip xcodebuild; do
     command -v "$command_name" >/dev/null 2>&1 || fail "required command not found: $command_name"
 done
 
@@ -79,6 +79,7 @@ rm -rf "$DERIVED_DATA"
 rm -f "$ZIP_PATH" "$CASK_PATH" "$CHECKSUM_PATH"
 
 make -C "$REPO_ROOT" whisper
+"$REPO_ROOT/scripts/prepare-sherpa-onnx.sh"
 
 xcodebuild \
     -project "$PROJECT" \

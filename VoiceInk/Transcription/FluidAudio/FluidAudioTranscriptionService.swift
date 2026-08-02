@@ -6,6 +6,9 @@ class FluidAudioTranscriptionService: TranscriptionService {
     private var asrManager: AsrManager?
     private var unifiedAsrManager: UnifiedAsrManager?
     private var nemotronAsrManager: StreamingNemotronMultilingualAsrManager?
+    private var senseVoiceManager: SenseVoiceManager?
+    private var paraformerManager: ParaformerManager?
+    private var parakeetCtcZhCnManager: ParakeetCtcZhCnManager?
     private var activeVersion: AsrModelVersion?
     private var activeNemotronModelName: String?
     private var cachedModels: AsrModels?
@@ -32,6 +35,9 @@ class FluidAudioTranscriptionService: TranscriptionService {
         unifiedAsrManager = nil
         nemotronAsrManager = nil
         asrManager = nil
+        senseVoiceManager = nil
+        paraformerManager = nil
+        parakeetCtcZhCnManager = nil
         activeVersion = nil
         activeNemotronModelName = nil
     }
@@ -75,6 +81,30 @@ class FluidAudioTranscriptionService: TranscriptionService {
         try await manager.loadModels(from: FluidAudioModelManager.nemotronCacheDirectory(for: modelName))
         self.nemotronAsrManager = manager
         self.activeNemotronModelName = modelName
+    }
+
+    private func ensureSenseVoiceLoaded() async throws {
+        if senseVoiceManager != nil { return }
+        await cleanupLoadedManagers()
+        let models = try SenseVoiceModels.load(
+            from: FluidAudioModelManager.senseVoiceCacheDirectory(), precision: .int8)
+        senseVoiceManager = SenseVoiceManager(models: models)
+    }
+
+    private func ensureParaformerLoaded() async throws {
+        if paraformerManager != nil { return }
+        await cleanupLoadedManagers()
+        let models = try ParaformerModels.load(
+            from: FluidAudioModelManager.paraformerZhCacheDirectory(), precision: .int8)
+        paraformerManager = ParaformerManager(models: models)
+    }
+
+    private func ensureParakeetCtcZhCnLoaded() async throws {
+        if parakeetCtcZhCnManager != nil { return }
+        await cleanupLoadedManagers()
+        let models = try ParakeetCtcZhCnModels.load(
+            from: FluidAudioModelManager.parakeetCtcZhCnCacheDirectory())
+        parakeetCtcZhCnManager = ParakeetCtcZhCnManager(models: models)
     }
 
     // Returns cached models or loads from disk; deduplicates concurrent loads
@@ -122,6 +152,18 @@ class FluidAudioTranscriptionService: TranscriptionService {
     }
 
     func loadModel(for model: FluidAudioModel) async throws {
+        if FluidAudioModelManager.isSenseVoiceModel(named: model.name) {
+            try await ensureSenseVoiceLoaded()
+            return
+        }
+        if FluidAudioModelManager.isParaformerZhModel(named: model.name) {
+            try await ensureParaformerLoaded()
+            return
+        }
+        if FluidAudioModelManager.isParakeetCtcZhCnModel(named: model.name) {
+            try await ensureParakeetCtcZhCnLoaded()
+            return
+        }
         if FluidAudioModelManager.isNemotronModel(named: model.name) {
             // Realtime Nemotron uses a dedicated streaming manager; batch loads lazily in transcribe().
             return
@@ -138,6 +180,27 @@ class FluidAudioTranscriptionService: TranscriptionService {
     func transcribe(audioURL: URL, model: any TranscriptionModel, context: TranscriptionRequestContext) async throws
         -> String
     {
+        if FluidAudioModelManager.isSenseVoiceModel(named: model.name) {
+            try await ensureSenseVoiceLoaded()
+            guard let senseVoiceManager else { throw ASRError.notInitialized }
+            let text = try await senseVoiceManager.transcribe(audioURL: audioURL)
+            return TextNormalizer.shared.normalizeSentence(text)
+        }
+
+        if FluidAudioModelManager.isParaformerZhModel(named: model.name) {
+            try await ensureParaformerLoaded()
+            guard let paraformerManager else { throw ASRError.notInitialized }
+            let text = try await paraformerManager.transcribe(audioURL: audioURL)
+            return TextNormalizer.shared.normalizeSentence(text)
+        }
+
+        if FluidAudioModelManager.isParakeetCtcZhCnModel(named: model.name) {
+            try await ensureParakeetCtcZhCnLoaded()
+            guard let parakeetCtcZhCnManager else { throw ASRError.notInitialized }
+            let text = try await parakeetCtcZhCnManager.transcribe(audioURL: audioURL)
+            return TextNormalizer.shared.normalizeSentence(text)
+        }
+
         if FluidAudioModelManager.isParakeetUnifiedModel(named: model.name) {
             try await ensureUnifiedModelsLoaded()
             guard let unifiedAsrManager else {

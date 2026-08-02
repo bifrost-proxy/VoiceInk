@@ -73,6 +73,58 @@ enum TranscriptionModelRegistry {
                 supportsStreaming: true,
                 supportedLanguages: LanguageDictionary.nemotronMultilingual
             ),
+            FluidAudioModel(
+                name: "sensevoice-small",
+                displayName: "FunASR SenseVoice Small",
+                description: "支持中文、粤语、英语、日语和韩语的本地多语言语音识别模型",
+                size: "约 230 MB",
+                speed: 0.96,
+                accuracy: 0.90,
+                ramUsage: 0.8,
+                supportedLanguages: LanguageDictionary.senseVoice
+            ),
+            FluidAudioModel(
+                name: "paraformer-large-zh",
+                displayName: "FunASR Paraformer Large (中文)",
+                description: "面向普通话优化的本地 Paraformer 语音识别模型",
+                size: "约 480 MB",
+                speed: 0.95,
+                accuracy: 0.93,
+                ramUsage: 1.0,
+                supportedLanguages: ["zh-CN": "Mandarin Chinese"]
+            ),
+            FluidAudioModel(
+                name: "parakeet-ctc-0.6b-zh-cn",
+                displayName: "Parakeet CTC 0.6B (中文)",
+                description: "面向普通话优化的 Parakeet CTC 0.6B Core ML 模型",
+                size: "约 600 MB",
+                speed: 0.94,
+                accuracy: 0.91,
+                ramUsage: 1.0,
+                supportedLanguages: ["zh-CN": "Mandarin Chinese"]
+            ),
+            SherpaOnnxModel(
+                name: "qwen3-asr-0.6b-int8",
+                displayName: "Qwen3-ASR 0.6B (INT8)",
+                description: "Qwen3-ASR 的 sherpa-onnx 本地量化版本，支持中文、方言及多语言",
+                size: "838 MB",
+                archiveURL: URL(string: "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25.tar.bz2")!,
+                archiveSHA256: "393f8a14e2f5fb96746aaab342997a40641001fbd5bf9592a080a8329178ee96",
+                extractedDirectoryName: "sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25",
+                kind: .qwen3Asr,
+                supportedLanguages: LanguageDictionary.all
+            ),
+            SherpaOnnxModel(
+                name: "sherpa-zipformer-ctc-zh-int8",
+                displayName: "sherpa-onnx Zipformer CTC (中文)",
+                description: "轻量、快速的中文 Zipformer CTC 本地语音识别模型",
+                size: "287 MB",
+                archiveURL: URL(string: "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-zipformer-ctc-zh-int8-2025-07-03.tar.bz2")!,
+                archiveSHA256: "f3ad1814fea34c407eab0cc3df6f6b625419ac9a60d8aebd8efe772a8e85ef67",
+                extractedDirectoryName: "sherpa-onnx-zipformer-ctc-zh-int8-2025-07-03",
+                kind: .zipformerCtc,
+                supportedLanguages: ["zh-CN": "Mandarin Chinese"]
+            ),
 
             // Local Models
             WhisperModel(
@@ -114,6 +166,26 @@ enum TranscriptionModelRegistry {
                 speed: 0.85,
                 accuracy: 0.75,
                 ramUsage: 0.5
+            ),
+            WhisperModel(
+                name: "ggml-small",
+                displayName: "Small（支持中文）",
+                size: "466 MB",
+                supportedLanguages: LanguageDictionary.forProvider(isMultilingual: true, provider: .whisper),
+                description: "兼顾速度与中文识别质量的 Whisper 多语言模型",
+                speed: 0.68,
+                accuracy: 0.84,
+                ramUsage: 0.9
+            ),
+            WhisperModel(
+                name: "ggml-medium",
+                displayName: "Medium（支持中文）",
+                size: "1.5 GB",
+                supportedLanguages: LanguageDictionary.forProvider(isMultilingual: true, provider: .whisper),
+                description: "中文准确率更高的 Whisper 多语言模型",
+                speed: 0.48,
+                accuracy: 0.91,
+                ramUsage: 2.2
             ),
             WhisperModel(
                 name: "ggml-large-v2",

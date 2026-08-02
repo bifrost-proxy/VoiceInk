@@ -130,6 +130,23 @@ enum LanguageDictionary {
         "zh-CN": "Mandarin Chinese",
     ]
 
+    static let chineseASR: [String: String] = [
+        "auto": "Auto-detect",
+        "zh": "Chinese",
+        "zh-CN": "Mandarin Chinese",
+        "yue": "Cantonese",
+        "en": "English",
+    ]
+
+    static let senseVoice: [String: String] = [
+        "auto": "Auto-detect",
+        "zh": "Chinese",
+        "yue": "Cantonese",
+        "en": "English",
+        "ja": "Japanese",
+        "ko": "Korean",
+    ]
+
     private static func languages(matching codes: Set<String>) -> [String: String] {
         all.filter { codes.contains($0.key) }
     }

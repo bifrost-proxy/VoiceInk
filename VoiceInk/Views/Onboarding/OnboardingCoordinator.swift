@@ -359,7 +359,7 @@ final class OnboardingCoordinator: ObservableObject {
     var requiredTranscriptionModel: FluidAudioModel? {
         TranscriptionModelRegistry.models
             .compactMap { $0 as? FluidAudioModel }
-            .first { $0.name == "parakeet-tdt-0.6b-v3" }
+            .first { $0.name == StarterModeFactory.defaultTranscriptionModelName }
     }
 
     func selectedOnboardingTranscriptionProviderKeyBinding() -> Binding<String> {

@@ -28,7 +28,7 @@ class FluidAudioModelManager: ObservableObject {
     private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "FluidAudioModelManager")
 
     // Add new Fluid Audio models here when support is added.
-    private static let modelVersionMap: [String: AsrModelVersion] = [
+    nonisolated private static let modelVersionMap: [String: AsrModelVersion] = [
         "parakeet-tdt-0.6b-v2": .v2,
         "parakeet-tdt-0.6b-v3": .v3,
     ]
@@ -37,6 +37,9 @@ class FluidAudioModelManager: ObservableObject {
         case parakeet(AsrModelVersion)
         case parakeetUnified
         case nemotron(NemotronVariant)
+        case senseVoice
+        case paraformerZh
+        case parakeetCtcZhCn
     }
 
     nonisolated static func asrVersion(for modelName: String) -> AsrModelVersion {
@@ -97,11 +100,27 @@ class FluidAudioModelManager: ObservableObject {
         NemotronVariant(modelName: modelName) != nil
     }
 
+    nonisolated static func isSenseVoiceModel(named modelName: String) -> Bool {
+        modelName == "sensevoice-small"
+    }
+
+    nonisolated static func isParaformerZhModel(named modelName: String) -> Bool {
+        modelName == "paraformer-large-zh"
+    }
+
+    nonisolated static func isParakeetCtcZhCnModel(named modelName: String) -> Bool {
+        modelName == "parakeet-ctc-0.6b-zh-cn"
+    }
+
     nonisolated static func requiresRealtime(named modelName: String) -> Bool {
         isNemotronModel(named: modelName)
     }
 
     nonisolated private static func modelKind(for modelName: String) -> FluidAudioModelKind {
+        if isSenseVoiceModel(named: modelName) { return .senseVoice }
+        if isParaformerZhModel(named: modelName) { return .paraformerZh }
+        if isParakeetCtcZhCnModel(named: modelName) { return .parakeetCtcZhCn }
+
         if let nemotronVariant = NemotronVariant(modelName: modelName) {
             return .nemotron(nemotronVariant)
         }
@@ -152,6 +171,12 @@ class FluidAudioModelManager: ObservableObject {
 
     func isFluidAudioModelDownloaded(named modelName: String) -> Bool {
         switch Self.modelKind(for: modelName) {
+        case .senseVoice:
+            return SenseVoiceModels.modelsExist(at: Self.senseVoiceCacheDirectory(), precision: .int8)
+        case .paraformerZh:
+            return ParaformerModels.modelsExist(at: Self.paraformerZhCacheDirectory(), precision: .int8)
+        case .parakeetCtcZhCn:
+            return ParakeetCtcZhCnModels.modelsExist(at: Self.parakeetCtcZhCnCacheDirectory())
         case .nemotron(let variant):
             return Self.nemotronRequiredFilesExist(in: Self.nemotronCacheDirectory(for: variant))
         case .parakeetUnified:
@@ -204,6 +229,32 @@ class FluidAudioModelManager: ObservableObject {
 
         do {
             switch Self.modelKind(for: modelName) {
+            case .senseVoice:
+                let directory = try await SenseVoiceModels.download(
+                    precision: .int8,
+                    progressHandler: Self.downloadOnlyProgressHandler(forwarding: progressHandler)
+                )
+                beginModelPreparation(for: modelName, downloadID: downloadID)
+                _ = try SenseVoiceModels.load(from: directory, precision: .int8)
+            case .paraformerZh:
+                let directory = try await ParaformerModels.download(
+                    precision: .int8,
+                    progressHandler: Self.downloadOnlyProgressHandler(forwarding: progressHandler)
+                )
+                beginModelPreparation(for: modelName, downloadID: downloadID)
+                _ = try ParaformerModels.load(from: directory, precision: .int8)
+            case .parakeetCtcZhCn:
+                try await ParakeetCtcZhCnModels.download(
+                    to: Self.parakeetCtcZhCnCacheDirectory(),
+                    progress: { fraction in
+                        Task { @MainActor [weak self] in
+                            self?.updateDirectDownloadProgress(
+                                fraction, for: modelName, downloadID: downloadID)
+                        }
+                    }
+                )
+                beginModelPreparation(for: modelName, downloadID: downloadID)
+                _ = try ParakeetCtcZhCnModels.load(from: Self.parakeetCtcZhCnCacheDirectory())
             case .parakeetUnified:
                 try await ModelHub.download(
                     .parakeetUnified,
@@ -327,6 +378,12 @@ class FluidAudioModelManager: ObservableObject {
 
     private func cacheDirectory(for modelName: String) -> URL {
         switch Self.modelKind(for: modelName) {
+        case .senseVoice:
+            return Self.senseVoiceCacheDirectory()
+        case .paraformerZh:
+            return Self.paraformerZhCacheDirectory()
+        case .parakeetCtcZhCn:
+            return Self.parakeetCtcZhCnCacheDirectory()
         case .nemotron(let variant):
             return Self.nemotronCacheDirectory(for: variant)
         case .parakeetUnified:
@@ -377,6 +434,21 @@ class FluidAudioModelManager: ObservableObject {
     nonisolated static func parakeetUnifiedCacheDirectory() -> URL {
         fluidAudioModelsRootDirectory()
             .appendingPathComponent(Repo.parakeetUnified.folderName, isDirectory: true)
+    }
+
+    nonisolated static func senseVoiceCacheDirectory() -> URL {
+        fluidAudioModelsRootDirectory()
+            .appendingPathComponent(Repo.senseVoiceSmall.folderName, isDirectory: true)
+    }
+
+    nonisolated static func paraformerZhCacheDirectory() -> URL {
+        fluidAudioModelsRootDirectory()
+            .appendingPathComponent(Repo.paraformerLargeZh.folderName, isDirectory: true)
+    }
+
+    nonisolated static func parakeetCtcZhCnCacheDirectory() -> URL {
+        fluidAudioModelsRootDirectory()
+            .appendingPathComponent("parakeet-ctc-0.6b-zh-cn-coreml", isDirectory: true)
     }
 
     // Matches the cache root used by FluidAudio's Unified managers.
@@ -438,6 +510,17 @@ class FluidAudioModelManager: ObservableObject {
             fractionCompleted: reportedFraction,
             message: FluidAudioModelManager.statusMessage(for: progress),
             isIndeterminate: Self.isIndeterminatePhase(progress.phase)
+        )
+    }
+
+    private func updateDirectDownloadProgress(_ fraction: Double, for modelName: String, downloadID: UUID) {
+        guard activeDownloadIDs[modelName] == downloadID,
+            activeNetworkProgressIDs[modelName] == downloadID
+        else { return }
+
+        downloadStatuses[modelName] = FluidAudioDownloadStatus(
+            fractionCompleted: min(max(fraction, 0), 1),
+            message: String(localized: "Downloading model files...")
         )
     }
 

@@ -23,12 +23,18 @@ class TranscriptionModelManager: ObservableObject {
         fluidAudioModelManager.onModelDeleted = { [weak self] modelName in
             self?.handleModelDeleted(modelName)
         }
+        SherpaOnnxModelManager.shared.onModelDeleted = { [weak self] modelName in
+            self?.handleModelDeleted(modelName)
+        }
 
         // Wire up "models changed" callbacks so this manager rebuilds allAvailableModels.
         whisperModelManager.onModelsChanged = { [weak self] in
             self?.refreshAllAvailableModels()
         }
         fluidAudioModelManager.onModelsChanged = { [weak self] in
+            self?.refreshAllAvailableModels()
+        }
+        SherpaOnnxModelManager.shared.onModelsChanged = { [weak self] in
             self?.refreshAllAvailableModels()
         }
     }
@@ -42,6 +48,9 @@ class TranscriptionModelManager: ObservableObject {
                 return whisperModelManager?.availableModels.contains { $0.name == model.name } ?? false
             case .fluidAudio:
                 return fluidAudioModelManager?.isFluidAudioModelDownloaded(named: model.name) ?? false
+            case .sherpaOnnx:
+                guard let sherpaModel = model as? SherpaOnnxModel else { return false }
+                return SherpaOnnxModelManager.shared.isDownloaded(sherpaModel)
             case .nativeApple:
                 if #available(macOS 26, *) { return true } else { return false }
             case .custom:

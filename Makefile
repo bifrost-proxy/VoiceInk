@@ -5,7 +5,7 @@ FRAMEWORK_PATH := $(WHISPER_CPP_DIR)/build-apple/whisper.xcframework
 WHISPER_CPP_REF := 2ca53bb45e38748d07b310eeb36245a7157ac882
 LOCAL_DERIVED_DATA := $(CURDIR)/.local-build
 
-.PHONY: all clean whisper setup build local check healthcheck help dev run release
+.PHONY: all clean whisper sherpa setup build local check healthcheck help dev run release
 
 # Default target
 all: check build
@@ -17,6 +17,9 @@ dev: build run
 check:
 	@echo "Checking prerequisites..."
 	@command -v git >/dev/null 2>&1 || { echo "git is not installed"; exit 1; }
+	@command -v curl >/dev/null 2>&1 || { echo "curl is not installed"; exit 1; }
+	@command -v unzip >/dev/null 2>&1 || { echo "unzip is not installed"; exit 1; }
+	@command -v shasum >/dev/null 2>&1 || { echo "shasum is not installed"; exit 1; }
 	@command -v xcodebuild >/dev/null 2>&1 || { echo "xcodebuild is not installed (need Xcode)"; exit 1; }
 	@command -v swift >/dev/null 2>&1 || { echo "swift is not installed"; exit 1; }
 	@echo "Prerequisites OK"
@@ -37,8 +40,12 @@ whisper:
 		echo "whisper.xcframework already built in $(DEPS_DIR), skipping build"; \
 	fi
 
-setup: whisper
+sherpa:
+	@./scripts/prepare-sherpa-onnx.sh
+
+setup: whisper sherpa
 	@echo "Whisper framework is ready at $(FRAMEWORK_PATH)"
+	@echo "sherpa-onnx and ONNX Runtime frameworks are ready."
 	@echo "Please ensure your Xcode project references the framework from this new location."
 
 build: setup
@@ -96,7 +103,7 @@ run:
 
 # Build the same ad-hoc-signed universal ZIP published by the tag workflow.
 release:
-	@./scripts/release.sh --version "$(or $(VERSION),2.1.2)" $(RELEASE_ARGS)
+	@./scripts/release.sh --version "$(or $(VERSION),2.2.0)" $(RELEASE_ARGS)
 
 # Cleanup
 clean:
@@ -109,7 +116,8 @@ help:
 	@echo "Available targets:"
 	@echo "  check/healthcheck  Check if required CLI tools are installed"
 	@echo "  whisper            Clone and build whisper.cpp XCFramework"
-	@echo "  setup              Copy whisper XCFramework to VoiceInk project"
+	@echo "  sherpa              Download verified sherpa-onnx macOS frameworks"
+	@echo "  setup              Prepare Whisper and sherpa-onnx frameworks"
 	@echo "  build              Build the VoiceInk Xcode project"
 	@echo "  local              Build for local use (no Apple Developer certificate needed)"
 	@echo "  run                Launch the built VoiceInk app"
