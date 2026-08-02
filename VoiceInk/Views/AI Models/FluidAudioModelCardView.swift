@@ -54,6 +54,8 @@ struct FluidAudioModelCardView: View {
                     .background(Capsule().fill(Color(red: 0.96, green: 0.79, blue: 0.63)))
             }
 
+            ModelRealtimeCapabilityBadge(model: model)
+
             Spacer()
         }
     }

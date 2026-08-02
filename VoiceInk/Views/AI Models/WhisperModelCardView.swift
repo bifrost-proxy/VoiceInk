@@ -40,6 +40,8 @@ struct WhisperModelCardView: View {
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundColor(Color(.labelColor))
 
+            ModelRealtimeCapabilityBadge(model: model)
+
             Spacer()
         }
     }
@@ -167,6 +169,7 @@ struct ImportedWhisperModelCardView: View {
                     Text(model.displayName)
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundColor(Color(.labelColor))
+                    ModelRealtimeCapabilityBadge(model: model)
                     Spacer()
                 }
 

@@ -138,3 +138,67 @@ struct ProviderStatusBadge: View {
         }
     }
 }
+
+struct ModelRealtimeCapabilityBadge: View {
+    let model: any TranscriptionModel
+
+    private var mode: TranscriptionRealtimeMode {
+        TranscriptionRealtimeSupport.mode(for: model)
+    }
+
+    private var title: LocalizedStringKey {
+        switch mode {
+        case .continuousStreaming:
+            return "Realtime streaming"
+        case .slidingWindow:
+            return "Sliding window"
+        case .batchOnly:
+            return "Batch transcription"
+        }
+    }
+
+    private var systemImage: String {
+        switch mode {
+        case .continuousStreaming:
+            return "waveform"
+        case .slidingWindow:
+            return "rectangle.stack"
+        case .batchOnly:
+            return "doc.text"
+        }
+    }
+
+    private var color: Color {
+        switch mode {
+        case .continuousStreaming:
+            return AppTheme.Status.positive
+        case .slidingWindow:
+            return .orange
+        case .batchOnly:
+            return .secondary
+        }
+    }
+
+    var body: some View {
+        Label(title, systemImage: systemImage)
+            .font(.system(size: 10, weight: .medium))
+            .foregroundStyle(color)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 2)
+            .background(Capsule().fill(color.opacity(0.12)))
+            .overlay(Capsule().stroke(color.opacity(0.25), lineWidth: 0.5))
+            .fixedSize(horizontal: true, vertical: false)
+            .help(helpText)
+    }
+
+    private var helpText: String {
+        switch mode {
+        case .continuousStreaming:
+            return String(localized: "Produces text continuously while audio is being recorded.")
+        case .slidingWindow:
+            return String(localized: "Produces live previews by repeatedly transcribing bounded, overlapping audio windows.")
+        case .batchOnly:
+            return String(localized: "Transcribes the complete recording after recording stops.")
+        }
+    }
+}

@@ -7,8 +7,11 @@ struct SherpaOnnxModelCardView: View {
     var body: some View {
         HStack(alignment: .top, spacing: 16) {
             VStack(alignment: .leading, spacing: 7) {
-                Text(model.displayName)
-                    .font(.system(size: 13, weight: .semibold))
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(model.displayName)
+                        .font(.system(size: 13, weight: .semibold))
+                    ModelRealtimeCapabilityBadge(model: model)
+                }
 
                 HStack(spacing: 12) {
                     ModelLanguageSupportButton(model: model)
