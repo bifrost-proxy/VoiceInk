@@ -127,6 +127,8 @@ final class CloudConfigurationSyncService: ObservableObject {
     private var pendingLaunchSnapshot: Snapshot?
     private var lastKnownContent: Content?
     private var lastSeenRevision: UUID?
+    private var pendingLocalContent: Content?
+    private var pendingLocalChangeAt: Date?
     private var isApplyingRemoteSnapshot = false
     private var isWritingMetadata = false
     private var pendingWriteTask: Task<Void, Never>?
@@ -246,8 +248,30 @@ final class CloudConfigurationSyncService: ObservableObject {
 
     private func handleLocalPreferenceChange() {
         guard !isApplyingRemoteSnapshot, !isWritingMetadata else { return }
-        setMetadata(Date(), forKey: Self.lastLocalChangeKey)
+        guard let content = makeLocalContent(),
+            Self.shouldQueueLocalChange(
+                current: content,
+                lastKnown: lastKnownContent,
+                pending: pendingLocalContent
+            )
+        else {
+            return
+        }
+
+        // UserDefaults notifications may be delivered after a metadata write
+        // completes. Remember the portable content in memory so those delayed
+        // notifications cannot continuously schedule another metadata write.
+        pendingLocalContent = content
+        pendingLocalChangeAt = Date()
         scheduleWrite()
+    }
+
+    static func shouldQueueLocalChange(
+        current: Content,
+        lastKnown: Content?,
+        pending: Content?
+    ) -> Bool {
+        current != lastKnown && current != pending
     }
 
     private func scheduleWrite() {
@@ -266,7 +290,7 @@ final class CloudConfigurationSyncService: ObservableObject {
         }
 
         if let remote = readSnapshot(), remote.schemaVersion <= Snapshot.currentSchemaVersion {
-            let localChange = defaults.object(forKey: Self.lastLocalChangeKey) as? Date
+            let localChange = effectiveLocalChangeDate
             let isUnseenRemote = remote.revision != lastSeenRevision
                 && defaults.string(forKey: Self.lastAppliedRevisionKey) != remote.revision.uuidString
 
@@ -290,6 +314,8 @@ final class CloudConfigurationSyncService: ObservableObject {
             return
         }
         guard force || content != lastKnownContent else {
+            pendingLocalContent = nil
+            pendingLocalChangeAt = nil
             if state != .synced { state = .synced }
             return
         }
@@ -312,6 +338,8 @@ final class CloudConfigurationSyncService: ObservableObject {
             try data.write(to: url, options: .atomic)
 
             lastKnownContent = content
+            pendingLocalContent = nil
+            pendingLocalChangeAt = nil
             lastSeenRevision = snapshot.revision
             lastSyncedAt = snapshot.updatedAt
             setMetadata(snapshot.updatedAt, forKey: Self.lastLocalChangeKey)
@@ -338,6 +366,8 @@ final class CloudConfigurationSyncService: ObservableObject {
 
     private func recordAppliedSnapshot(_ snapshot: Snapshot) {
         lastKnownContent = snapshot.content
+        pendingLocalContent = nil
+        pendingLocalChangeAt = nil
         lastSeenRevision = snapshot.revision
         lastSyncedAt = snapshot.updatedAt
         setMetadata(snapshot.updatedAt, forKey: Self.lastLocalChangeKey)
@@ -459,6 +489,11 @@ final class CloudConfigurationSyncService: ObservableObject {
     private func isRemoteSnapshotNewer(_ snapshot: Snapshot, than localChange: Date?) -> Bool {
         guard let localChange else { return true }
         return snapshot.updatedAt >= localChange
+    }
+
+    private var effectiveLocalChangeDate: Date? {
+        let persisted = defaults.object(forKey: Self.lastLocalChangeKey) as? Date
+        return [persisted, pendingLocalChangeAt].compactMap { $0 }.max()
     }
 
     private var deviceID: String {

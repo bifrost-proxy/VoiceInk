@@ -27,6 +27,42 @@ struct VoiceInkTests {
         #expect(!CloudConfigurationSyncService.isEligiblePreferenceKey("CloudConfigurationSync.deviceID"))
     }
 
+    @MainActor
+    @Test func cloudConfigurationSyncIgnoresRepeatedContentNotifications() {
+        let original = CloudConfigurationSyncService.Content(
+            preferences: ["mode": Data("original".utf8)],
+            vocabulary: [],
+            replacements: []
+        )
+        let changed = CloudConfigurationSyncService.Content(
+            preferences: ["mode": Data("changed".utf8)],
+            vocabulary: [],
+            replacements: []
+        )
+
+        #expect(
+            CloudConfigurationSyncService.shouldQueueLocalChange(
+                current: changed,
+                lastKnown: original,
+                pending: nil
+            )
+        )
+        #expect(
+            !CloudConfigurationSyncService.shouldQueueLocalChange(
+                current: changed,
+                lastKnown: original,
+                pending: changed
+            )
+        )
+        #expect(
+            !CloudConfigurationSyncService.shouldQueueLocalChange(
+                current: original,
+                lastKnown: original,
+                pending: nil
+            )
+        )
+    }
+
     @Test func volcanoArkUsesOpenAICompatibleChatEndpoint() {
         #expect(AIProvider.ark.baseURL == "https://ark.cn-beijing.volces.com/api/v3/chat/completions")
         #expect(AIProvider.ark.requiresAPIKey)
