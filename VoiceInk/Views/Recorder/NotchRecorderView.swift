@@ -58,7 +58,7 @@ struct NotchRecorderView<S: RecorderStateProvider & ObservableObject>: View {
     private let transcriptSideExpansion: CGFloat = 110
     private let assistantSideExpansion: CGFloat = 230
     private let activeHeightBonus: CGFloat = 6
-    private let transcriptPanelHeight: CGFloat = 57
+    private let transcriptPanelHeight: CGFloat = 97
     private let assistantPanelHeight: CGFloat = 320
 
     private var mainRowHeight: CGFloat { notchHeight + activeHeightBonus }
