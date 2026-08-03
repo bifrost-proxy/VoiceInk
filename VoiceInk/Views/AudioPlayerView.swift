@@ -612,7 +612,9 @@ struct AudioPlayerView: View {
                     transcription.aiRequestSystemMessage = enhancementService.lastSystemMessageSent
                     transcription.aiRequestUserMessage = enhancementService.lastUserMessageSent
                     transcription.syncModifiedAt = Date()
-                    try? modelContext.save()
+                    if (try? modelContext.save()) != nil {
+                        NotificationCenter.default.post(name: .transcriptionCompleted, object: transcription)
+                    }
 
                     isReEnhancing = false
                     showSuccessFeedback(.reEnhanceSuccess, title: String(localized: "Re-enhancement successful"))

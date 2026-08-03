@@ -402,9 +402,11 @@ final class PostPasteEditTracker {
     }
 
     private func saveChanges() {
-        activeSession?.transcription.syncModifiedAt = Date()
+        guard let transcription = activeSession?.transcription else { return }
+        transcription.syncModifiedAt = Date()
         do {
             try modelContext.save()
+            NotificationCenter.default.post(name: .transcriptionCompleted, object: transcription)
         } catch {
             logger.error("Failed to save post-paste edit tracking: \(error, privacy: .public)")
         }
