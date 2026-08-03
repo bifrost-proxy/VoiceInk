@@ -23,6 +23,13 @@ enum ModelCatalogOrdering {
                 return lhsAccuracy > rhsAccuracy
             }
 
+            if let lhsQwen = lhs as? QwenMLXModel,
+                let rhsQwen = rhs as? QwenMLXModel,
+                lhsQwen.precision.isRecommended != rhsQwen.precision.isRecommended
+            {
+                return lhsQwen.precision.isRecommended
+            }
+
             return lhs.displayName.localizedStandardCompare(rhs.displayName) == .orderedAscending
         }
     }

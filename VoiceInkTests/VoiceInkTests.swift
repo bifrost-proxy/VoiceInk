@@ -432,6 +432,7 @@ struct VoiceInkTests {
             "sensevoice-small",
             "paraformer-large-zh",
             "qwen3-asr-0.6b-int8",
+            "qwen3-asr-0.6b-mlx-int8-streaming",
             "qwen3-asr-0.6b-mlx-streaming",
             "sherpa-zipformer-ctc-zh-int8",
             "ggml-small",
@@ -485,11 +486,11 @@ struct VoiceInkTests {
             #expect(ModelLanguageSupportCatalog.languageCount(for: qwen3) == 52)
         }
 
-        let qwen3MLX = TranscriptionModelRegistry.models.first {
-            $0.name == "qwen3-asr-0.6b-mlx-streaming"
+        let qwen3MLXModels = TranscriptionModelRegistry.models.filter {
+            $0.provider == .qwenMlx
         }
-        #expect(qwen3MLX != nil)
-        if let qwen3MLX {
+        #expect(qwen3MLXModels.count == 2)
+        for qwen3MLX in qwen3MLXModels {
             #expect(qwen3MLX.supportedLanguages.count == 31) // 30 languages plus auto-detect.
             #expect(ModelLanguageSupportCatalog.languageCount(for: qwen3MLX) == 52)
         }
@@ -542,9 +543,60 @@ struct VoiceInkTests {
 
         let defaults = UserDefaults(suiteName: "VoiceInkTests.Onboarding")!
         defaults.removePersistentDomain(forName: "VoiceInkTests.Onboarding")
-        let onboardingModel = OnboardingCoordinator(defaults: defaults).requiredTranscriptionModel
+        let onboardingModel = OnboardingCoordinator(
+            defaults: defaults,
+            preferredLanguages: ["en-US"],
+            supportsQwenMLX: true
+        ).requiredTranscriptionModel
         #expect(onboardingModel?.name == StarterModeFactory.defaultTranscriptionModelName)
         #expect(onboardingModel?.supportedLanguages.keys.contains(where: { $0.hasPrefix("zh") }) == true)
+    }
+
+    @MainActor
+    @Test func chineseOnboardingRecommendsQwenMLXINT8OnAppleSilicon() {
+        let defaults = UserDefaults(suiteName: "VoiceInkTests.ChineseOnboarding")!
+        defaults.removePersistentDomain(forName: "VoiceInkTests.ChineseOnboarding")
+
+        let coordinator = OnboardingCoordinator(
+            defaults: defaults,
+            preferredLanguages: ["zh-Hans-CN", "en-US"],
+            supportsQwenMLX: true
+        )
+
+        #expect(coordinator.recommendedLocalTranscriptionModelName == "qwen3-asr-0.6b-mlx-int8-streaming")
+        #expect(coordinator.requiredTranscriptionModel?.name == "qwen3-asr-0.6b-mlx-int8-streaming")
+        #expect((coordinator.requiredTranscriptionModel as? QwenMLXModel)?.precision == .int8)
+    }
+
+    @MainActor
+    @Test func chineseOnboardingRecommendationDoesNotReplaceAnExistingModelSelection() {
+        let suiteName = "VoiceInkTests.ChineseOnboardingExistingSelection"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        defaults.set("qwen3-asr-0.6b-mlx-streaming", forKey: "CurrentTranscriptionModel")
+
+        _ = OnboardingCoordinator(
+            defaults: defaults,
+            preferredLanguages: ["zh-Hans"],
+            supportsQwenMLX: true
+        )
+
+        #expect(defaults.string(forKey: "CurrentTranscriptionModel") == "qwen3-asr-0.6b-mlx-streaming")
+    }
+
+    @MainActor
+    @Test func chineseOnboardingFallsBackWhenMLXIsUnavailable() {
+        let defaults = UserDefaults(suiteName: "VoiceInkTests.ChineseOnboardingFallback")!
+        defaults.removePersistentDomain(forName: "VoiceInkTests.ChineseOnboardingFallback")
+
+        let coordinator = OnboardingCoordinator(
+            defaults: defaults,
+            preferredLanguages: ["zh_CN"],
+            supportsQwenMLX: false
+        )
+
+        #expect(coordinator.recommendedLocalTranscriptionModelName == StarterModeFactory.defaultTranscriptionModelName)
+        #expect(coordinator.requiredTranscriptionModel?.name == StarterModeFactory.defaultTranscriptionModelName)
     }
 
 }

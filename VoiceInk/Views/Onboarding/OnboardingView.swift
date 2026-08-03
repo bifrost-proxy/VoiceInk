@@ -7,6 +7,7 @@ struct OnboardingView: View {
     @EnvironmentObject var transcriptionModelManager: TranscriptionModelManager
     @EnvironmentObject var aiService: AIService
     @EnvironmentObject var enhancementService: AIEnhancementService
+    @ObservedObject private var qwenMLXModelManager = QwenMLXModelManager.shared
     @StateObject private var coordinator = OnboardingCoordinator()
     @State private var isShowingSkipOnboardingConfirmation = false
 
@@ -14,7 +15,8 @@ struct OnboardingView: View {
 
     var body: some View {
         let isTranscriptionModelDownloaded = coordinator.isTranscriptionModelDownloaded(
-            using: fluidAudioModelManager
+            using: fluidAudioModelManager,
+            qwenMLXModelManager: qwenMLXModelManager
         )
         let isTranscriptionSetupReady = coordinator.isTranscriptionSetupReady(
             isTranscriptionModelDownloaded: isTranscriptionModelDownloaded
@@ -59,18 +61,15 @@ struct OnboardingView: View {
                         providerOptions: coordinator.onboardingTranscriptionProviderOptions,
                         selectedProviderKey: coordinator.selectedOnboardingTranscriptionProviderKeyBinding(),
                         isLocalDownloaded: isTranscriptionModelDownloaded,
-                        isLocalDownloading: coordinator.requiredTranscriptionModel.map {
-                            fluidAudioModelManager.isFluidAudioModelDownloading($0)
-                        } ?? false,
-                        localDownloadStatus: coordinator.requiredTranscriptionModel.flatMap {
-                            fluidAudioModelManager.downloadStatus(for: $0)
-                        },
+                        isLocalDownloading: isLocalModelDownloading(coordinator.requiredTranscriptionModel),
+                        localDownloadStatus: localDownloadStatus(for: coordinator.requiredTranscriptionModel),
                         isSetupReady: isTranscriptionSetupReady,
                         onSelectSetupKind: coordinator.flow.selectOnboardingTranscriptionSetup,
                         onDownload: {
                             coordinator.flow.downloadTranscriptionModel(
                                 $0,
-                                modelManager: fluidAudioModelManager
+                                modelManager: fluidAudioModelManager,
+                                qwenMLXModelManager: qwenMLXModelManager
                             )
                         },
                         onVerificationChanged: coordinator.flow.refreshTranscriptionSetupVerification,
@@ -267,6 +266,40 @@ struct OnboardingView: View {
 
     private var shouldShowSkipOnboardingButton: Bool {
         coordinator.requiredPermissionsGranted && coordinator.stage != .permissions
+    }
+
+    private func isLocalModelDownloading(_ model: (any TranscriptionModel)?) -> Bool {
+        if let fluidAudioModel = model as? FluidAudioModel {
+            return fluidAudioModelManager.isFluidAudioModelDownloading(fluidAudioModel)
+        }
+        if let qwenMLXModel = model as? QwenMLXModel {
+            return qwenMLXModelManager.isDownloading(qwenMLXModel)
+        }
+        return false
+    }
+
+    private func localDownloadStatus(
+        for model: (any TranscriptionModel)?
+    ) -> OnboardingTranscriptionDownloadStatus? {
+        if let fluidAudioModel = model as? FluidAudioModel,
+            let status = fluidAudioModelManager.downloadStatus(for: fluidAudioModel)
+        {
+            return OnboardingTranscriptionDownloadStatus(
+                fractionCompleted: status.fractionCompleted,
+                message: status.message,
+                isIndeterminate: status.isIndeterminate
+            )
+        }
+        if let qwenMLXModel = model as? QwenMLXModel,
+            let status = qwenMLXModelManager.downloadStatuses[qwenMLXModel.name]
+        {
+            return OnboardingTranscriptionDownloadStatus(
+                fractionCompleted: status.fractionCompleted,
+                message: status.message,
+                isIndeterminate: false
+            )
+        }
+        return nil
     }
 
     private var skipOnboardingButton: some View {

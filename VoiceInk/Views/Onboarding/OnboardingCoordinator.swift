@@ -61,12 +61,20 @@ final class OnboardingCoordinator: ObservableObject {
     @Published var clearedExperienceShortcutActions: Set<ShortcutAction> = []
 
     let defaults: UserDefaults
+    private let preferredLanguages: [String]
+    private let supportsQwenMLX: Bool
     var refreshTask: Task<Void, Never>?
     lazy var flow = OnboardingFlowController(coordinator: self)
     lazy var permissions = OnboardingPermissionController(coordinator: self)
 
-    init(defaults: UserDefaults = .standard) {
+    init(
+        defaults: UserDefaults = .standard,
+        preferredLanguages: [String] = Locale.preferredLanguages,
+        supportsQwenMLX: Bool = SystemArchitecture.isAppleSilicon
+    ) {
         self.defaults = defaults
+        self.preferredLanguages = preferredLanguages
+        self.supportsQwenMLX = supportsQwenMLX
         self.storedStage = defaults.string(forKey: OnboardingStorageKeys.stage) ?? OnboardingStage.permissions.rawValue
         self.storedActivePermission =
             defaults.string(forKey: OnboardingStorageKeys.activePermission)
@@ -356,10 +364,20 @@ final class OnboardingCoordinator: ObservableObject {
         return onboardingProviderOptions.first ?? .groq
     }
 
-    var requiredTranscriptionModel: FluidAudioModel? {
+    var recommendedLocalTranscriptionModelName: String {
+        guard supportsQwenMLX,
+            let preferredLanguage = preferredLanguages.first?.lowercased(),
+            preferredLanguage == "zh" || preferredLanguage.hasPrefix("zh-") || preferredLanguage.hasPrefix("zh_")
+        else {
+            return StarterModeFactory.defaultTranscriptionModelName
+        }
+
+        return StarterModeFactory.chineseOnboardingTranscriptionModelName
+    }
+
+    var requiredTranscriptionModel: (any TranscriptionModel)? {
         TranscriptionModelRegistry.models
-            .compactMap { $0 as? FluidAudioModel }
-            .first { $0.name == StarterModeFactory.defaultTranscriptionModelName }
+            .first { $0.name == recommendedLocalTranscriptionModelName }
     }
 
     func selectedOnboardingTranscriptionProviderKeyBinding() -> Binding<String> {
@@ -388,9 +406,18 @@ final class OnboardingCoordinator: ObservableObject {
         )
     }
 
-    func isTranscriptionModelDownloaded(using modelManager: FluidAudioModelManager) -> Bool {
+    func isTranscriptionModelDownloaded(
+        using modelManager: FluidAudioModelManager,
+        qwenMLXModelManager: QwenMLXModelManager
+    ) -> Bool {
         guard let requiredTranscriptionModel else { return false }
-        return modelManager.isFluidAudioModelDownloaded(requiredTranscriptionModel)
+        if let fluidAudioModel = requiredTranscriptionModel as? FluidAudioModel {
+            return modelManager.isFluidAudioModelDownloaded(fluidAudioModel)
+        }
+        if let qwenMLXModel = requiredTranscriptionModel as? QwenMLXModel {
+            return qwenMLXModelManager.isReady(qwenMLXModel)
+        }
+        return false
     }
 
     func isTranscriptionSetupReady(isTranscriptionModelDownloaded: Bool) -> Bool {

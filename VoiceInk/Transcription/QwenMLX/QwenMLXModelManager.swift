@@ -109,12 +109,16 @@ final class QwenMLXModelManager: ObservableObject {
         activeDownloads.contains(model.name)
     }
 
+    var isDownloadingAnyModel: Bool {
+        !activeDownloads.isEmpty
+    }
+
     func download(_ model: QwenMLXModel) async {
         guard SystemArchitecture.isAppleSilicon else {
             errors[model.name] = "Qwen MLX 仅支持 Apple Silicon Mac"
             return
         }
-        guard !isReady(model), !isDownloading(model) else { return }
+        guard !isReady(model), activeDownloads.isEmpty else { return }
 
         activeDownloads.insert(model.name)
         errors[model.name] = nil
@@ -138,7 +142,7 @@ final class QwenMLXModelManager: ObservableObject {
             if !isDownloaded(model) {
                 downloadStatuses[model.name] = .init(
                     fractionCompleted: 0.56,
-                    message: "正在下载 Qwen3-ASR 模型（约 1.9 GB）…"
+                    message: downloadMessage(for: model)
                 )
                 try await downloadModel(model)
             }
@@ -154,7 +158,7 @@ final class QwenMLXModelManager: ObservableObject {
 
     func delete(_ model: QwenMLXModel) {
         Task {
-            await QwenMLXRuntime.shared.stop()
+            await QwenMLXRuntime.shared.stopIfLoaded(model: model)
             do {
                 let directory = modelDirectory(for: model)
                 if FileManager.default.fileExists(atPath: directory.path) {
@@ -270,14 +274,13 @@ final class QwenMLXModelManager: ObservableObject {
             .appendingPathComponent("HuggingFaceCache", isDirectory: true).path
         environment["HF_HUB_DISABLE_TELEMETRY"] = "1"
 
-        let expectedDownloadBytes: Int64 = 1_900_000_000
         let progressTask = Task { [weak self] in
             while !Task.isCancelled {
                 let downloadedBytes = Self.directorySize(at: directory)
-                let modelFraction = min(0.98, Double(downloadedBytes) / Double(expectedDownloadBytes))
+                let modelFraction = min(0.98, Double(downloadedBytes) / Double(model.expectedDownloadBytes))
                 self?.downloadStatuses[model.name] = .init(
                     fractionCompleted: 0.56 + modelFraction * 0.43,
-                    message: "正在下载 Qwen3-ASR 模型（约 1.9 GB）…"
+                    message: self?.downloadMessage(for: model) ?? "正在下载 Qwen3-ASR 模型…"
                 )
                 try? await Task.sleep(for: .seconds(1))
             }
@@ -290,6 +293,10 @@ final class QwenMLXModelManager: ObservableObject {
                 arguments: ["-c", script, model.repositoryID, model.revision, directory.path],
                 environment: environment
             )
+            let weightsURL = directory.appendingPathComponent("model.safetensors")
+            guard try Self.sha256(of: weightsURL) == model.modelSHA256 else {
+                throw QwenMLXManagerError.modelChecksumMismatch
+            }
             try model.revision.write(
                 to: QwenMLXPaths.modelMarkerURL(for: model),
                 atomically: true,
@@ -299,6 +306,10 @@ final class QwenMLXModelManager: ObservableObject {
             try? FileManager.default.removeItem(at: directory)
             throw error
         }
+    }
+
+    private func downloadMessage(for model: QwenMLXModel) -> String {
+        "正在下载 Qwen3-ASR MLX \(model.precision.rawValue) 模型（\(model.size.replacingOccurrences(of: " + 运行时", with: ""))）…"
     }
 
     private static var runtimeInstallEnvironment: [String: String] {
@@ -397,6 +408,7 @@ final class QwenMLXModelManager: ObservableObject {
 
 private enum QwenMLXManagerError: LocalizedError {
     case runtimeChecksumMismatch
+    case modelChecksumMismatch
     case incompleteInstallation
     case processFailed(String, Int32, String)
 
@@ -404,6 +416,8 @@ private enum QwenMLXManagerError: LocalizedError {
         switch self {
         case .runtimeChecksumMismatch:
             return "MLX 运行时校验失败，请重新下载"
+        case .modelChecksumMismatch:
+            return "Qwen MLX 模型校验失败，请重新下载"
         case .incompleteInstallation:
             return "Qwen MLX 运行时或模型文件不完整"
         case .processFailed(let command, let status, let detail):

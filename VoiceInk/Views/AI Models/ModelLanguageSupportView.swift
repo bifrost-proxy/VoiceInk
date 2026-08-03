@@ -98,7 +98,7 @@ enum ModelLanguageSupportCatalog {
 
     private static func isQwen3ASR(_ model: any TranscriptionModel) -> Bool {
         model.name == "qwen3-asr-0.6b-int8"
-            || model.name == "qwen3-asr-0.6b-mlx-streaming"
+            || model.provider == .qwenMlx
     }
 
     private static func summaryPriority(for code: String?) -> Int {

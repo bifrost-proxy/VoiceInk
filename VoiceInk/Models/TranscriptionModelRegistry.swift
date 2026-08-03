@@ -125,16 +125,33 @@ enum TranscriptionModelRegistry {
                 supportedLanguages: LanguageDictionary.qwen3ASR
             ),
             QwenMLXModel(
+                name: "qwen3-asr-0.6b-mlx-int8-streaming",
+                displayName: "Qwen3-ASR 0.6B (MLX INT8)",
+                description: "推荐的 Apple Silicon Metal GPU 原生流式版本；8 位量化降低约 42% 常驻内存",
+                size: "约 1.0 GB + 运行时",
+                speed: 0.95,
+                accuracy: 0.96,
+                precision: .int8,
+                repositoryID: "mlx-community/Qwen3-ASR-0.6B-8bit",
+                revision: "89e96d92ba34aca20b3e29fb10cc284097d1219f",
+                modelSHA256: "b5bfe4abc1b4c6e58b633096682ec2b6297298add1527119936107d211adf0e8",
+                expectedDownloadBytes: 1_020_000_000,
+                supportedLanguages: LanguageDictionary.qwen3ASR
+            ),
+            QwenMLXModel(
                 name: "qwen3-asr-0.6b-mlx-streaming",
-                displayName: "Qwen3-ASR 0.6B (MLX Streaming)",
-                description: "Apple Silicon Metal GPU 原生流式版本，支持中英等 30 种语言及 22 种中文方言；增量解码复用 KV Cache",
+                displayName: "Qwen3-ASR 0.6B (MLX FP16)",
+                description: "未量化的 FP16 全参数版本，使用 Apple Silicon Metal GPU 原生流式推理",
                 size: "约 1.9 GB + 运行时",
                 // M4 Max local benchmark: 0.269 s median warm batch and
                 // 7.3x realtime native streaming throughput.
                 speed: 0.95,
                 accuracy: 0.96,
+                precision: .fp16,
                 repositoryID: "Qwen/Qwen3-ASR-0.6B",
                 revision: "5eb144179a02acc5e5ba31e748d22b0cf3e303b0",
+                modelSHA256: "79d6cbd4c98c7bbffe9db2edac07f56cd6637d0d5944b27f6c2b8353840323ea",
+                expectedDownloadBytes: 1_900_000_000,
                 supportedLanguages: LanguageDictionary.qwen3ASR
             ),
             SherpaOnnxModel(
