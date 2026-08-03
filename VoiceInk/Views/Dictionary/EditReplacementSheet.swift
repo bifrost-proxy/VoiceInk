@@ -164,6 +164,7 @@ struct EditReplacementSheet: View {
 
         do {
             try modelContext.save()
+            NotificationCenter.default.post(name: .portableConfigurationDidChange, object: nil)
             dismiss()
         } catch {
             alertMessage = String(format: String(localized: "Failed to save changes: %@"), error.localizedDescription)

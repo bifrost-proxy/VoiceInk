@@ -113,6 +113,7 @@ struct VocabularyView: View {
 
         do {
             try modelContext.save()
+            NotificationCenter.default.post(name: .portableConfigurationDidChange, object: nil)
         } catch {
             // Rollback the delete to restore UI consistency
             modelContext.rollback()

@@ -82,6 +82,7 @@ final class CloudConfigurationSyncService: ObservableObject {
     private static let lastLocalChangeKey = metadataPrefix + "lastLocalChange"
     private static let lastAppliedRevisionKey = metadataPrefix + "lastAppliedRevision"
     private static let deviceIDKey = metadataPrefix + "deviceID"
+    private static let hasPendingLocalChangeKey = metadataPrefix + "hasPendingLocalChange"
 
     private static let excludedExactKeys: Set<String> = [
         // Onboarding and permissions must be completed independently on each Mac.
@@ -133,6 +134,8 @@ final class CloudConfigurationSyncService: ObservableObject {
 
     private let defaults: UserDefaults
     private let fileManager: FileManager
+    private let iCloudDriveRootOverride: URL?
+    private let preferencesDomainName: String?
     private let logger = Logger(
         subsystem: "com.prakashjoshipax.voiceink", category: "CloudConfigurationSync")
 
@@ -145,79 +148,88 @@ final class CloudConfigurationSyncService: ObservableObject {
     private var isApplyingRemoteSnapshot = false
     private var isWritingMetadata = false
     private var pendingWriteTask: Task<Void, Never>?
-    private var pollTimer: Timer?
     private var observers: [NSObjectProtocol] = []
     private var onRemoteConfigurationApplied: (() -> Void)?
 
-    init(defaults: UserDefaults = .standard, fileManager: FileManager = .default) {
+    init(
+        defaults: UserDefaults = .standard,
+        fileManager: FileManager = .default,
+        iCloudDriveRootURL: URL? = nil,
+        preferencesDomainName: String? = Bundle.main.bundleIdentifier
+    ) {
         self.defaults = defaults
         self.fileManager = fileManager
+        self.iCloudDriveRootOverride = iCloudDriveRootURL
+        self.preferencesDomainName = preferencesDomainName
     }
 
     /// Applies preferences before services read their initial values. Dictionary
     /// entities are applied later, after SwiftData is available.
     func preparePreferencesForLaunch() {
+        guard !shouldSkipAutomaticSyncInTests else {
+            state = .disabled
+            return
+        }
         guard isEnabled else {
             state = .disabled
             return
         }
-        guard let snapshot = readSnapshot(), snapshot.schemaVersion <= Snapshot.currentSchemaVersion else {
-            return
-        }
-
-        let appliedRevision = defaults.string(forKey: Self.lastAppliedRevisionKey)
-        let localChange = defaults.object(forKey: Self.lastLocalChangeKey) as? Date
-        let shouldApply = appliedRevision != snapshot.revision.uuidString
-            && isRemoteSnapshotNewer(snapshot, than: localChange)
-
-        guard shouldApply else {
-            lastSeenRevision = snapshot.revision
-            lastKnownContent = snapshot.content
-            lastSyncedAt = snapshot.updatedAt
-            state = .synced
-            return
-        }
-
-        applyPreferences(snapshot.content.preferences)
-        recordAppliedSnapshot(snapshot)
-        pendingLaunchSnapshot = snapshot
+        synchronizeWithRemote(applyDictionaryImmediately: false)
     }
 
     func start(modelContext: ModelContext, onRemoteConfigurationApplied: @escaping () -> Void) {
+        guard !shouldSkipAutomaticSyncInTests else {
+            state = .disabled
+            return
+        }
         self.modelContext = modelContext
         self.onRemoteConfigurationApplied = onRemoteConfigurationApplied
 
         if let pendingLaunchSnapshot {
-            applyDictionary(from: pendingLaunchSnapshot.content)
-            self.pendingLaunchSnapshot = nil
-            onRemoteConfigurationApplied()
+            isApplyingRemoteSnapshot = true
+            if applyDictionary(from: pendingLaunchSnapshot.content) {
+                recordAppliedSnapshot(pendingLaunchSnapshot)
+                self.pendingLaunchSnapshot = nil
+                onRemoteConfigurationApplied()
+            }
+            isApplyingRemoteSnapshot = false
         }
 
         installObserversIfNeeded()
-        setEnabled(isEnabled)
+        if isEnabled {
+            synchronizeWithRemote(applyDictionaryImmediately: true)
+        } else {
+            state = .disabled
+        }
     }
 
+    /// Pulls once and reconciles any pending offline edit. This method never
+    /// creates a revision when local portable content has not changed.
     func syncNow() {
         guard isEnabled else { return }
-        poll(forceWriteWhenLocal: true)
+        pendingWriteTask?.cancel()
+        pendingWriteTask = nil
+        synchronizeWithRemote(applyDictionaryImmediately: true)
     }
 
     func setEnabled(_ enabled: Bool) {
-        defaults.set(enabled, forKey: CloudSyncSettingsKeys.configurationSyncEnabled)
+        if isEnabled != enabled {
+            defaults.set(enabled, forKey: CloudSyncSettingsKeys.configurationSyncEnabled)
+        }
         pendingWriteTask?.cancel()
         pendingWriteTask = nil
-        pollTimer?.invalidate()
-        pollTimer = nil
 
         guard enabled else {
             state = .disabled
             return
         }
+        synchronizeWithRemote(applyDictionaryImmediately: modelContext != nil)
+    }
 
-        pollTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.poll() }
-        }
-        poll()
+    /// Marks a successful non-UserDefaults edit, such as a vocabulary change,
+    /// for one event-driven upload.
+    func portableContentDidChange() {
+        handleLocalContentChange()
     }
 
     func revealConfigurationFile() {
@@ -231,6 +243,7 @@ final class CloudConfigurationSyncService: ObservableObject {
     }
 
     private var iCloudDriveRootURL: URL? {
+        if let iCloudDriveRootOverride { return iCloudDriveRootOverride }
         let root = fileManager.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Mobile Documents/com~apple~CloudDocs", isDirectory: true)
         var isDirectory: ObjCBool = false
@@ -238,6 +251,11 @@ final class CloudConfigurationSyncService: ObservableObject {
             return nil
         }
         return root
+    }
+
+    private var shouldSkipAutomaticSyncInTests: Bool {
+        iCloudDriveRootOverride == nil
+            && ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
     }
 
     private func installObserversIfNeeded() {
@@ -251,48 +269,29 @@ final class CloudConfigurationSyncService: ObservableObject {
                     self?.handleLocalPreferenceChange()
                 }
             })
-
-        for name in [NSApplication.didBecomeActiveNotification, NSApplication.willTerminateNotification] {
-            observers.append(
-                NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
-                    Task { @MainActor in
-                        if note.name == NSApplication.willTerminateNotification {
-                            self?.writeLocalSnapshotIfNeeded(force: true)
-                        } else {
-                            self?.poll()
-                        }
-                    }
-                })
-        }
-
         observers.append(
-            NSWorkspace.shared.notificationCenter.addObserver(
-                forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+            NotificationCenter.default.addObserver(
+                forName: .portableConfigurationDidChange, object: nil, queue: .main
             ) { [weak self] _ in
-                Task { @MainActor in
-                    self?.poll()
-                }
+                Task { @MainActor in self?.portableContentDidChange() }
             })
     }
 
     private func handleLocalPreferenceChange() {
-        guard isEnabled else { return }
-        guard !isApplyingRemoteSnapshot, !isWritingMetadata else { return }
-        guard let content = makeLocalContent(),
-            Self.shouldQueueLocalChange(
-                current: content,
-                lastKnown: lastKnownContent,
-                pending: pendingLocalContent
-            )
-        else {
-            return
-        }
+        handleLocalContentChange()
+    }
 
-        // UserDefaults notifications may be delivered after a metadata write
-        // completes. Remember the portable content in memory so those delayed
-        // notifications cannot continuously schedule another metadata write.
+    private func handleLocalContentChange() {
+        guard isEnabled, !isApplyingRemoteSnapshot, !isWritingMetadata else { return }
+        guard let content = makeLocalContent(),
+            Self.shouldQueueLocalChange(current: content, lastKnown: lastKnownContent, pending: pendingLocalContent)
+        else { return }
+
         pendingLocalContent = content
-        pendingLocalChangeAt = Date()
+        let changedAt = Date()
+        pendingLocalChangeAt = changedAt
+        setMetadata(changedAt, forKey: Self.lastLocalChangeKey)
+        setMetadata(true, forKey: Self.hasPendingLocalChangeKey)
         scheduleWrite()
     }
 
@@ -309,11 +308,11 @@ final class CloudConfigurationSyncService: ObservableObject {
         pendingWriteTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .milliseconds(800))
             guard !Task.isCancelled else { return }
-            self?.writeLocalSnapshotIfNeeded(force: false)
+            self?.synchronizeWithRemote(applyDictionaryImmediately: true)
         }
     }
 
-    private func poll(forceWriteWhenLocal: Bool = false) {
+    private func synchronizeWithRemote(applyDictionaryImmediately: Bool) {
         guard isEnabled else {
             state = .disabled
             return
@@ -323,73 +322,134 @@ final class CloudConfigurationSyncService: ObservableObject {
             return
         }
 
-        if let remote = readSnapshot(), remote.schemaVersion <= Snapshot.currentSchemaVersion {
-            let localChange = effectiveLocalChangeDate
-            let isUnseenRemote = remote.revision != lastSeenRevision
-                && defaults.string(forKey: Self.lastAppliedRevisionKey) != remote.revision.uuidString
-
-            if isUnseenRemote, isRemoteSnapshotNewer(remote, than: localChange) {
-                applyRemoteSnapshot(remote)
-                return
+        state = .syncing
+        switch readNewestSnapshot() {
+        case .missing:
+            if hasPendingLocalChange, applyDictionaryImmediately {
+                writePendingLocalSnapshot()
+            } else {
+                lastKnownContent = makeLocalContent()
+                state = .synced
             }
 
-            lastSeenRevision = remote.revision
-            if lastKnownContent == nil {
-                lastKnownContent = remote.content
+        case .failed(let message):
+            state = .failed(message)
+
+        case .available(let remote, let hasConflicts):
+            let normalizedRemote = normalizedSnapshot(remote)
+            var conflictWinner = normalizedRemote
+            if hasPendingLocalChange,
+                let localChangeAt = effectiveLocalChangeDate,
+                localChangeWins(
+                    changedAt: localChangeAt,
+                    deviceID: deviceID,
+                    over: normalizedRemote
+                )
+            {
+                guard applyDictionaryImmediately else {
+                    lastKnownContent = normalizedRemote.content
+                    lastSeenRevision = normalizedRemote.revision
+                    lastSyncedAt = normalizedRemote.updatedAt
+                    state = .synced
+                    return
+                }
+                if makeLocalContent() == normalizedRemote.content {
+                    clearPendingLocalChange()
+                    recordAppliedSnapshot(normalizedRemote)
+                } else {
+                    lastKnownContent = normalizedRemote.content
+                    if let localSnapshot = writePendingLocalSnapshot() {
+                        conflictWinner = localSnapshot
+                    }
+                }
+            } else {
+                let appliedRevision = defaults.string(forKey: Self.lastAppliedRevisionKey)
+                let isUnseenRemote = normalizedRemote.revision != lastSeenRevision
+                    && appliedRevision != normalizedRemote.revision.uuidString
+
+                if isUnseenRemote || makeLocalContent() != normalizedRemote.content {
+                    if applyDictionaryImmediately {
+                        applyRemoteSnapshot(normalizedRemote)
+                    } else {
+                        isApplyingRemoteSnapshot = true
+                        applyPreferences(normalizedRemote.content.preferences)
+                        pendingLaunchSnapshot = normalizedRemote
+                        lastKnownContent = normalizedRemote.content
+                        lastSeenRevision = normalizedRemote.revision
+                        lastSyncedAt = normalizedRemote.updatedAt
+                        clearPendingLocalChange()
+                        state = .synced
+                        isApplyingRemoteSnapshot = false
+                    }
+                } else {
+                    recordAppliedSnapshot(normalizedRemote)
+                }
+            }
+
+            if hasConflicts {
+                resolveFileConflicts(keeping: conflictWinner)
             }
         }
-
-        writeLocalSnapshotIfNeeded(force: forceWriteWhenLocal)
     }
 
-    private func writeLocalSnapshotIfNeeded(force: Bool) {
-        guard let url = configurationFileURL, let content = makeLocalContent() else {
-            state = .waitingForICloud
-            return
+    @discardableResult
+    private func writePendingLocalSnapshot() -> Snapshot? {
+        guard let content = makeLocalContent() else {
+            state = .failed(String(localized: "Unable to collect local configuration"))
+            return nil
         }
-        guard force || content != lastKnownContent else {
-            pendingLocalContent = nil
-            pendingLocalChangeAt = nil
-            if state != .synced { state = .synced }
-            return
+        guard let changedAt = effectiveLocalChangeDate else {
+            clearPendingLocalChange()
+            state = .synced
+            return nil
         }
 
-        state = .syncing
         let snapshot = Snapshot(
             schemaVersion: Snapshot.currentSchemaVersion,
             revision: UUID(),
-            updatedAt: Date(),
+            updatedAt: changedAt,
             sourceDeviceID: deviceID,
             content: content
         )
 
         do {
-            let directory = url.deletingLastPathComponent()
-            try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
-            let encoder = PropertyListEncoder()
-            encoder.outputFormat = .binary
-            let data = try encoder.encode(snapshot)
-            try data.write(to: url, options: .atomic)
-
+            try writeSnapshot(snapshot)
             lastKnownContent = content
-            pendingLocalContent = nil
-            pendingLocalChangeAt = nil
             lastSeenRevision = snapshot.revision
             lastSyncedAt = snapshot.updatedAt
-            setMetadata(snapshot.updatedAt, forKey: Self.lastLocalChangeKey)
             setMetadata(snapshot.revision.uuidString, forKey: Self.lastAppliedRevisionKey)
+            clearPendingLocalChange()
             state = .synced
-            logger.info("Saved portable configuration to iCloud Drive.")
+            logger.info("Saved user-modified portable configuration to iCloud Drive.")
+            return snapshot
         } catch {
             state = .failed(error.localizedDescription)
             logger.error("Failed to write iCloud Drive configuration: \(error.localizedDescription, privacy: .public)")
+            return nil
         }
+    }
+
+    private func clearPendingLocalChange() {
+        pendingLocalContent = nil
+        pendingLocalChangeAt = nil
+        setMetadata(false, forKey: Self.hasPendingLocalChangeKey)
+    }
+
+    private var hasPendingLocalChange: Bool {
+        defaults.bool(forKey: Self.hasPendingLocalChangeKey)
+    }
+
+    private func localChangeWins(changedAt: Date, deviceID: String, over remote: Snapshot) -> Bool {
+        if changedAt != remote.updatedAt { return changedAt > remote.updatedAt }
+        return deviceID > remote.sourceDeviceID
     }
 
     private func applyRemoteSnapshot(_ snapshot: Snapshot) {
         state = .syncing
+        isApplyingRemoteSnapshot = true
+        defer { isApplyingRemoteSnapshot = false }
         applyPreferences(snapshot.content.preferences)
-        applyDictionary(from: snapshot.content)
+        guard applyDictionary(from: snapshot.content) else { return }
         recordAppliedSnapshot(snapshot)
         onRemoteConfigurationApplied?()
 
@@ -400,20 +460,15 @@ final class CloudConfigurationSyncService: ObservableObject {
 
     private func recordAppliedSnapshot(_ snapshot: Snapshot) {
         lastKnownContent = snapshot.content
-        pendingLocalContent = nil
-        pendingLocalChangeAt = nil
+        clearPendingLocalChange()
         lastSeenRevision = snapshot.revision
         lastSyncedAt = snapshot.updatedAt
-        setMetadata(snapshot.updatedAt, forKey: Self.lastLocalChangeKey)
         setMetadata(snapshot.revision.uuidString, forKey: Self.lastAppliedRevisionKey)
         state = .synced
     }
 
     private func applyPreferences(_ preferences: [String: Data]) {
-        isApplyingRemoteSnapshot = true
-        defer { isApplyingRemoteSnapshot = false }
-
-        if let domainName = Bundle.main.bundleIdentifier,
+        if let domainName = preferencesDomainName,
             let existing = defaults.persistentDomain(forName: domainName)
         {
             for key in existing.keys where Self.isEligiblePreferenceKey(key) && preferences[key] == nil {
@@ -431,8 +486,8 @@ final class CloudConfigurationSyncService: ObservableObject {
         }
     }
 
-    private func applyDictionary(from content: Content) {
-        guard let modelContext else { return }
+    private func applyDictionary(from content: Content) -> Bool {
+        guard let modelContext else { return false }
 
         do {
             for item in try modelContext.fetch(FetchDescriptor<VocabularyWord>()) {
@@ -457,23 +512,22 @@ final class CloudConfigurationSyncService: ObservableObject {
             }
             try modelContext.save()
             DictionaryService.removeExactDuplicateContent(context: modelContext, source: "iCloud sync")
+            return true
         } catch {
             modelContext.rollback()
             state = .failed(error.localizedDescription)
             logger.error("Failed to apply synchronized dictionary: \(error.localizedDescription, privacy: .public)")
+            return false
         }
     }
 
     private func makeLocalContent() -> Content? {
         var preferences: [String: Data] = [:]
-        if let domainName = Bundle.main.bundleIdentifier,
+        if let domainName = preferencesDomainName,
             let domain = defaults.persistentDomain(forName: domainName)
         {
             for (key, value) in domain where Self.isEligiblePreferenceKey(key) {
-                guard PropertyListSerialization.propertyList(["value": value], isValidFor: .binary),
-                    let data = try? PropertyListSerialization.data(
-                        fromPropertyList: ["value": value], format: .binary, options: 0)
-                else { continue }
+                guard let data = Self.encodePreferenceValue(value) else { continue }
                 preferences[key] = data
             }
         }
@@ -508,24 +562,141 @@ final class CloudConfigurationSyncService: ObservableObject {
         }
     }
 
-    private func readSnapshot() -> Snapshot? {
-        guard let url = configurationFileURL, fileManager.fileExists(atPath: url.path) else { return nil }
+    private enum SnapshotReadResult {
+        case missing
+        case available(Snapshot, hasConflicts: Bool)
+        case failed(String)
+    }
+
+    private func readNewestSnapshot() -> SnapshotReadResult {
+        guard let url = configurationFileURL else { return .missing }
+        let currentExists = fileManager.fileExists(atPath: url.path)
+        let conflicts = NSFileVersion.unresolvedConflictVersionsOfItem(at: url) ?? []
+        let candidateURLs = (currentExists ? [url] : []) + conflicts.map(\.url)
+        guard !candidateURLs.isEmpty else { return .missing }
+
+        var snapshots: [Snapshot] = []
+        var errors: [String] = []
+        for candidateURL in candidateURLs {
+            do {
+                let data = try coordinatedRead(from: candidateURL)
+                let snapshot = try PropertyListDecoder().decode(Snapshot.self, from: data)
+                guard snapshot.schemaVersion <= Snapshot.currentSchemaVersion else {
+                    return .failed(String(localized: "A newer VoiceInk version wrote this configuration"))
+                }
+                snapshots.append(snapshot)
+            } catch {
+                errors.append(error.localizedDescription)
+            }
+        }
+
+        guard let newest = snapshots.max(by: Self.snapshotPrecedes) else {
+            return .failed(errors.first ?? String(localized: "Unable to read synchronized configuration"))
+        }
+        return .available(newest, hasConflicts: !conflicts.isEmpty)
+    }
+
+    static func snapshotPrecedes(_ lhs: Snapshot, _ rhs: Snapshot) -> Bool {
+        if lhs.updatedAt != rhs.updatedAt { return lhs.updatedAt < rhs.updatedAt }
+        if lhs.sourceDeviceID != rhs.sourceDeviceID { return lhs.sourceDeviceID < rhs.sourceDeviceID }
+        return lhs.revision.uuidString < rhs.revision.uuidString
+    }
+
+    private func normalizedSnapshot(_ snapshot: Snapshot) -> Snapshot {
+        Snapshot(
+            schemaVersion: snapshot.schemaVersion,
+            revision: snapshot.revision,
+            updatedAt: snapshot.updatedAt,
+            sourceDeviceID: snapshot.sourceDeviceID,
+            content: Self.normalizedContent(snapshot.content)
+        )
+    }
+
+    static func normalizedContent(_ content: Content) -> Content {
+        var preferences: [String: Data] = [:]
+        for (key, encodedValue) in content.preferences {
+            guard let wrapper = try? PropertyListSerialization.propertyList(from: encodedValue, format: nil),
+                let dictionary = wrapper as? [String: Any],
+                let value = dictionary["value"],
+                let normalized = encodePreferenceValue(value)
+            else { continue }
+            preferences[key] = normalized
+        }
+        return Content(
+            preferences: preferences,
+            vocabulary: content.vocabulary.sorted {
+                if $0.word == $1.word { return $0.dateAdded < $1.dateAdded }
+                return $0.word.localizedStandardCompare($1.word) == .orderedAscending
+            },
+            replacements: content.replacements.sorted { $0.id.uuidString < $1.id.uuidString }
+        )
+    }
+
+    private static func encodePreferenceValue(_ value: Any) -> Data? {
+        let normalizedValue: Any
+        if let data = value as? Data,
+            let json = try? JSONSerialization.jsonObject(with: data),
+            JSONSerialization.isValidJSONObject(json),
+            let canonicalJSON = try? JSONSerialization.data(withJSONObject: json, options: [.sortedKeys])
+        {
+            normalizedValue = canonicalJSON
+        } else {
+            normalizedValue = value
+        }
+
+        let wrapper = ["value": normalizedValue]
+        guard PropertyListSerialization.propertyList(wrapper, isValidFor: .binary) else { return nil }
+        return try? PropertyListSerialization.data(fromPropertyList: wrapper, format: .binary, options: 0)
+    }
+
+    private func coordinatedRead(from url: URL) throws -> Data {
+        var coordinationError: NSError?
+        var result: Result<Data, Error>?
+        NSFileCoordinator().coordinate(readingItemAt: url, options: [], error: &coordinationError) { coordinatedURL in
+            result = Result { try Data(contentsOf: coordinatedURL) }
+        }
+        if let coordinationError { throw coordinationError }
+        guard let result else { throw CocoaError(.fileReadUnknown) }
+        return try result.get()
+    }
+
+    private func writeSnapshot(_ snapshot: Snapshot) throws {
+        guard let url = configurationFileURL else { throw CocoaError(.fileNoSuchFile) }
+        try fileManager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let encoder = PropertyListEncoder()
+        encoder.outputFormat = .binary
+        let data = try encoder.encode(snapshot)
+        var coordinationError: NSError?
+        var writeError: Error?
+        NSFileCoordinator().coordinate(writingItemAt: url, options: .forReplacing, error: &coordinationError) {
+            coordinatedURL in
+            do {
+                try data.write(to: coordinatedURL, options: .atomic)
+            } catch {
+                writeError = error
+            }
+        }
+        if let coordinationError { throw coordinationError }
+        if let writeError { throw writeError }
+    }
+
+    private func resolveFileConflicts(keeping snapshot: Snapshot) {
+        guard let url = configurationFileURL else { return }
         do {
-            let data = try Data(contentsOf: url)
-            return try PropertyListDecoder().decode(Snapshot.self, from: data)
+            try writeSnapshot(snapshot)
+            for version in NSFileVersion.unresolvedConflictVersionsOfItem(at: url) ?? [] {
+                version.isResolved = true
+            }
+            try NSFileVersion.removeOtherVersionsOfItem(at: url)
+            logger.notice("Resolved iCloud configuration file conflicts using the newest user edit.")
         } catch {
             state = .failed(error.localizedDescription)
-            logger.error("Failed to read iCloud Drive configuration: \(error.localizedDescription, privacy: .public)")
-            return nil
+            logger.error("Failed to resolve iCloud configuration conflicts: \(error.localizedDescription, privacy: .public)")
         }
     }
 
-    private func isRemoteSnapshotNewer(_ snapshot: Snapshot, than localChange: Date?) -> Bool {
-        guard let localChange else { return true }
-        return snapshot.updatedAt >= localChange
-    }
-
     private var effectiveLocalChangeDate: Date? {
+        guard hasPendingLocalChange else { return nil }
         let persisted = defaults.object(forKey: Self.lastLocalChangeKey) as? Date
         return [persisted, pendingLocalChangeAt].compactMap { $0 }.max()
     }
