@@ -52,8 +52,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ruby -c "$RUNNER_TEMP/voiceink-release/voiceink.rb"
-          grep -F 'releases/latest/download/VoiceInk.zip' "$RUNNER_TEMP/voiceink-release/voiceink.rb"
+          release_dir="$RUNNER_TEMP/voiceink-release"
+          cask="$release_dir/voiceink.rb"
+          version="${GITHUB_REF_NAME#v}"
+          checksum="$(awk '$2 == "VoiceInk.zip" { print $1 }' "$release_dir/SHA256SUMS")"
+          ruby -c "$cask"
+          grep -F "version \"$version\"" "$cask"
+          grep -F "sha256 \"$checksum\"" "$cask"
+          grep -F 'releases/download/v#{version}/VoiceInk.zip' "$cask"
+          grep -F 'com.apple.quarantine' "$cask"
+          ! grep -Eq ':latest|:no_check|__[A-Z0-9_]+__' "$cask"
 
       - name: Publish GitHub Release
         env:

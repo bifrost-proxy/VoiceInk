@@ -56,7 +56,7 @@ done
 [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "version must use MAJOR.MINOR.PATCH"
 [[ "$BUILD_NUMBER" =~ ^[0-9]+$ ]] || fail "build number must be numeric"
 
-for command_name in awk codesign cp curl ditto find grep lipo make plutil shasum tr unzip xcodebuild; do
+for command_name in awk codesign cp curl ditto find grep lipo make plutil sed shasum tr unzip xcodebuild; do
     command -v "$command_name" >/dev/null 2>&1 || fail "required command not found: $command_name"
 done
 
@@ -139,7 +139,19 @@ ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$ZIP_PATH"
 ZIP_SHA256="$(shasum -a 256 "$ZIP_PATH" | awk '{print $1}')"
 printf '%s  %s\n' "$ZIP_SHA256" "VoiceInk.zip" > "$CHECKSUM_PATH"
 
-cp "$REPO_ROOT/release/voiceink.rb.template" "$CASK_PATH"
+sed \
+    -e "s/__VERSION__/$VERSION/g" \
+    -e "s/__SHA256__/$ZIP_SHA256/g" \
+    "$REPO_ROOT/release/voiceink.rb.template" > "$CASK_PATH"
+
+grep -Fq "version \"$VERSION\"" "$CASK_PATH" \
+    || fail "generated cask does not contain release version"
+grep -Fq "sha256 \"$ZIP_SHA256\"" "$CASK_PATH" \
+    || fail "generated cask does not contain release checksum"
+grep -Fq 'releases/download/v#{version}/VoiceInk.zip' "$CASK_PATH" \
+    || fail "generated cask does not use a versioned release URL"
+grep -Fq 'com.apple.quarantine' "$CASK_PATH" \
+    || fail "generated cask does not remove the quarantine attribute"
 
 printf '%s\n' \
     "Release package created:" \
