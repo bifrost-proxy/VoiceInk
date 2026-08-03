@@ -4,11 +4,20 @@ import os
 
 @MainActor
 final class TranscriptionDelivery {
+    typealias PasteAtCursor = @MainActor (String) async -> CursorPaster.PasteResult
+
     private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "TranscriptionDelivery")
     private let postPasteEditTracker: PostPasteEditTracker
+    private let pasteAtCursor: PasteAtCursor
 
-    init(modelContext: ModelContext) {
+    init(
+        modelContext: ModelContext,
+        pasteAtCursor: @escaping PasteAtCursor = { text in
+            await CursorPaster.pasteAtCursorAndWaitUntilPosted(text)
+        }
+    ) {
         self.postPasteEditTracker = PostPasteEditTracker(modelContext: modelContext)
+        self.pasteAtCursor = pasteAtCursor
     }
 
     struct Request {
@@ -179,11 +188,10 @@ final class TranscriptionDelivery {
             transcription: transcription,
             deliveredText: pastedText
         )
-        let pasteTask = CursorPaster.startPasteAtCursor(pastedText)
+        let pasteResult = await pasteAtCursor(pastedText)
 
         let autoSendKey = output.outputMode == .paste ? output.autoSendKey : .none
         Task { @MainActor in
-            let pasteResult = await pasteTask.value
             await postPasteEditTracker.completePaste(
                 preparation: trackingPreparation,
                 result: pasteResult,
