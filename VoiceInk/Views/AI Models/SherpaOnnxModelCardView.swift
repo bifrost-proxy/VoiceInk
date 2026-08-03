@@ -36,6 +36,12 @@ struct SherpaOnnxModelCardView: View {
                     .font(.system(size: 11))
                     .foregroundColor(Color(.secondaryLabelColor))
 
+                if let benchmarkSummary = model.accuracyBenchmarkSummary {
+                    Label(benchmarkSummary, systemImage: "checkmark.seal")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.tertiary)
+                }
+
                 if let status = manager.downloadStatuses[model.name] {
                     VStack(alignment: .leading, spacing: 5) {
                         HStack {
