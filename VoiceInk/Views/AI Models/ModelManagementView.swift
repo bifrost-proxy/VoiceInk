@@ -114,7 +114,7 @@ struct ModelManagementView: View {
             headerSection
 
             ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
+                LazyVStack(alignment: .leading, spacing: 18) {
                     if SystemArchitecture.isIntelMac {
                         intelMacWarningBanner
                     }
@@ -269,7 +269,7 @@ struct ModelManagementView: View {
     }
 
     private var localModelsSection: some View {
-        VStack(spacing: 12) {
+        LazyVStack(spacing: 12) {
             localLanguageFilterPicker
 
             ForEach(localModels, id: \.id) { model in
