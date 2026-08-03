@@ -29,6 +29,7 @@ final class SessionMetricMigrationService {
         return Task.detached(priority: .utility) {
             let backgroundContext = ModelContext(modelContainer)
             var insertedCount = 0
+            var insertedTranscriptionIDs: [UUID] = []
 
             do {
                 let existingIds = Set(
@@ -47,6 +48,7 @@ final class SessionMetricMigrationService {
                     let metric = Self.makeSessionMetric(from: transcription)
                     backgroundContext.insert(metric)
                     insertedCount += 1
+                    insertedTranscriptionIDs.append(transcription.id)
                 }
 
                 if insertedCount > 0 {
@@ -61,12 +63,16 @@ final class SessionMetricMigrationService {
             }
 
             let didInsertMetrics = insertedCount > 0
+            let notificationTranscriptionIDs = insertedTranscriptionIDs
             await MainActor.run {
                 SessionMetricMigrationService.shared.isStatsMigrationRunning = false
                 if didInsertMetrics {
                     DashboardStatsCache.shared.markStale()
                 }
-                NotificationCenter.default.post(name: .sessionMetricsDidChange, object: nil)
+                NotificationCenter.default.post(
+                    name: .sessionMetricsDidChange,
+                    object: notificationTranscriptionIDs
+                )
             }
         }
     }
@@ -85,6 +91,7 @@ final class SessionMetricMigrationService {
             let backgroundContext = ModelContext(modelContainer)
             let batchSize = 500
             var updatedCount = 0
+            var updatedTranscriptionIDs: [UUID] = []
 
             do {
                 let metricCount = try backgroundContext.fetchCount(FetchDescriptor<SessionMetric>())
@@ -115,6 +122,7 @@ final class SessionMetricMigrationService {
 
                         if Self.applyEnhancementTokenEstimate(to: metric, from: transcription) {
                             batchUpdatedCount += 1
+                            updatedTranscriptionIDs.append(metric.transcriptionId)
                         }
                     }
 
@@ -135,12 +143,16 @@ final class SessionMetricMigrationService {
             }
 
             let didUpdateMetrics = updatedCount > 0
+            let notificationTranscriptionIDs = updatedTranscriptionIDs
             await MainActor.run {
                 SessionMetricMigrationService.shared.isTokenBackfillRunning = false
                 if didUpdateMetrics {
                     DashboardStatsCache.shared.markStale()
                 }
-                NotificationCenter.default.post(name: .sessionMetricsDidChange, object: nil)
+                NotificationCenter.default.post(
+                    name: .sessionMetricsDidChange,
+                    object: notificationTranscriptionIDs
+                )
             }
         }
     }

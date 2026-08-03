@@ -73,6 +73,21 @@ final class CloudUsageDataSyncService: ObservableObject {
         let audio: AudioDescriptor?
     }
 
+    struct DeviceManifest: Codable, Equatable, Sendable {
+        static let currentSchemaVersion = 1
+
+        struct Entry: Codable, Equatable, Sendable {
+            let transcriptionID: UUID
+            let revisionID: UUID
+            let updatedAt: Date
+        }
+
+        let schemaVersion: Int
+        let sourceDeviceID: String
+        let updatedAt: Date
+        var entries: [UUID: Entry]
+    }
+
     enum SyncState: Equatable {
         case disabled
         case waitingForICloud
@@ -94,6 +109,9 @@ final class CloudUsageDataSyncService: ObservableObject {
     @Published private(set) var state: SyncState = .disabled
     @Published private(set) var lastSyncedAt: Date?
     @Published private(set) var synchronizedRecordCount = 0
+    @Published private(set) var lastExportCandidateCount = 0
+    @Published private(set) var lastImportCandidateCount = 0
+    @Published private(set) var lastSyncUsedLegacyScan = false
 
     var statusText: String { state.displayText }
     var errorText: String? {
@@ -121,14 +139,23 @@ final class CloudUsageDataSyncService: ObservableObject {
     private static let metadataPrefix = "CloudUsageDataSync."
     private static let deviceIDKey = metadataPrefix + "deviceID"
     private static let appliedRevisionsKey = metadataPrefix + "appliedRevisions"
+    private static let pendingRecordIDsKey = metadataPrefix + "pendingRecordIDs"
+    private static let localBootstrapCompletedKey = metadataPrefix + "localBootstrapCompletedV2"
+    private static let legacyImportCompletedKey = metadataPrefix + "legacyImportCompletedV2"
+    private static let reconciliationInterval: TimeInterval = 5 * 60
     private let defaults: UserDefaults
     private let fileManager: FileManager
     private let iCloudDriveRootOverride: URL?
     private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "CloudUsageDataSync")
     private var modelContext: ModelContext?
     private var timer: Timer?
+    private var metadataQuery: NSMetadataQuery?
+    private var metadataQueryObservers: [NSObjectProtocol] = []
     private var observers: [NSObjectProtocol] = []
     private var syncTask: Task<Void, Never>?
+    private var eventSyncTask: Task<Void, Never>?
+    private var syncRequestedWhileRunning = false
+    private var recordIDsQueuedDuringSync: Set<UUID> = []
 
     init(
         defaults: UserDefaults = .standard,
@@ -150,34 +177,58 @@ final class CloudUsageDataSyncService: ObservableObject {
         defaults.set(enabled, forKey: CloudSyncSettingsKeys.usageDataSyncEnabled)
         timer?.invalidate()
         timer = nil
+        stopMetadataQuery()
         syncTask?.cancel()
         syncTask = nil
+        eventSyncTask?.cancel()
+        eventSyncTask = nil
+        syncRequestedWhileRunning = false
 
         guard enabled else {
             state = .disabled
             return
         }
 
-        timer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+        prepareInitialPendingRecordsIfNeeded()
+        timer = Timer.scheduledTimer(withTimeInterval: Self.reconciliationInterval, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.syncNow() }
         }
+        timer?.tolerance = 60
+        startMetadataQueryIfAvailable()
         syncNow()
     }
 
     func setAudioEnabled(_ enabled: Bool) {
         defaults.set(enabled, forKey: CloudSyncSettingsKeys.usageAudioSyncEnabled)
         if defaults.bool(forKey: CloudSyncSettingsKeys.usageDataSyncEnabled) {
-            syncNow()
+            if enabled {
+                enqueueAllLocalRecords()
+            } else {
+                syncNow()
+            }
         }
     }
 
     func syncNow() {
-        guard defaults.bool(forKey: CloudSyncSettingsKeys.usageDataSyncEnabled), syncTask == nil else { return }
+        guard defaults.bool(forKey: CloudSyncSettingsKeys.usageDataSyncEnabled) else { return }
+        guard syncTask == nil else {
+            syncRequestedWhileRunning = true
+            return
+        }
         syncTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            defer { self.syncTask = nil }
             await self.performSync()
+            self.syncTask = nil
+            let shouldRunAgain = self.syncRequestedWhileRunning || !self.loadPendingRecordIDs().isEmpty
+            self.syncRequestedWhileRunning = false
+            if shouldRunAgain {
+                self.syncNow()
+            }
         }
+    }
+
+    func recordDidChange(_ transcriptionID: UUID) {
+        enqueueLocalRecord(transcriptionID)
     }
 
     func revealUsageData() {
@@ -187,11 +238,38 @@ final class CloudUsageDataSyncService: ObservableObject {
 
     private func installObserversIfNeeded() {
         guard observers.isEmpty else { return }
-        for name in [
-            Notification.Name.transcriptionCompleted,
-            Notification.Name.sessionMetricsDidChange,
-            NSApplication.didBecomeActiveNotification,
-        ] {
+        for name in [Notification.Name.transcriptionCreated, .transcriptionCompleted] {
+            observers.append(
+                NotificationCenter.default.addObserver(
+                    forName: name,
+                    object: nil,
+                    queue: .main
+                ) { [weak self] notification in
+                    Task { @MainActor in
+                        guard let self else { return }
+                        if let transcription = notification.object as? Transcription {
+                            self.recordDidChange(transcription.id)
+                        } else if let transcriptionID = notification.object as? UUID {
+                            self.recordDidChange(transcriptionID)
+                        }
+                    }
+                })
+        }
+        observers.append(
+            NotificationCenter.default.addObserver(
+                forName: .sessionMetricsDidChange,
+                object: nil,
+                queue: .main
+            ) { [weak self] notification in
+                Task { @MainActor in
+                    if let transcriptionID = notification.object as? UUID {
+                        self?.recordDidChange(transcriptionID)
+                    } else if let transcriptionIDs = notification.object as? [UUID] {
+                        self?.enqueueLocalRecords(Set(transcriptionIDs))
+                    }
+                }
+            })
+        for name in [NSApplication.didBecomeActiveNotification] {
             observers.append(
                 NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
                     Task { @MainActor in self?.syncNow() }
@@ -207,6 +285,101 @@ final class CloudUsageDataSyncService: ObservableObject {
             })
     }
 
+    private func prepareInitialPendingRecordsIfNeeded() {
+        guard !defaults.bool(forKey: Self.localBootstrapCompletedKey), modelContext != nil else { return }
+        enqueueAllLocalRecords(scheduleSync: false)
+    }
+
+    private func enqueueAllLocalRecords(scheduleSync: Bool = true) {
+        guard let modelContext else { return }
+        do {
+            let ids = try modelContext.fetch(FetchDescriptor<Transcription>()).map(\.id)
+            persistPendingRecordIDs(loadPendingRecordIDs().union(ids))
+            if scheduleSync { scheduleEventDrivenSync() }
+        } catch {
+            logger.error("Failed to queue local usage records: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    private func enqueueLocalRecord(_ id: UUID) {
+        enqueueLocalRecords([id])
+    }
+
+    private func enqueueLocalRecords(_ ids: Set<UUID>) {
+        guard defaults.bool(forKey: CloudSyncSettingsKeys.usageDataSyncEnabled) else { return }
+        if syncTask != nil {
+            recordIDsQueuedDuringSync.formUnion(ids)
+        }
+        var pending = loadPendingRecordIDs()
+        pending.formUnion(ids)
+        persistPendingRecordIDs(pending)
+        scheduleEventDrivenSync()
+    }
+
+    private func scheduleEventDrivenSync() {
+        eventSyncTask?.cancel()
+        eventSyncTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(1))
+            guard !Task.isCancelled else { return }
+            self?.syncNow()
+        }
+    }
+
+    private func loadPendingRecordIDs() -> Set<UUID> {
+        Set((defaults.stringArray(forKey: Self.pendingRecordIDsKey) ?? []).compactMap(UUID.init(uuidString:)))
+    }
+
+    private func persistPendingRecordIDs(_ ids: Set<UUID>) {
+        defaults.set(ids.map(\.uuidString).sorted(), forKey: Self.pendingRecordIDsKey)
+    }
+
+    private func startMetadataQueryIfAvailable() {
+        guard iCloudDriveRootOverride == nil, metadataQuery == nil,
+            let devicesURL = usageDataDirectoryURL?.appendingPathComponent("Devices", isDirectory: true)
+        else { return }
+
+        let query = NSMetadataQuery()
+        query.searchScopes = [NSMetadataQueryUbiquitousDataScope]
+        query.predicate = NSPredicate(format: "%K BEGINSWITH %@", NSMetadataItemPathKey, devicesURL.path)
+        for name in [Notification.Name.NSMetadataQueryDidFinishGathering, .NSMetadataQueryDidUpdate] {
+            metadataQueryObservers.append(
+                NotificationCenter.default.addObserver(forName: name, object: query, queue: .main) {
+                    [weak self] notification in
+                    Task { @MainActor in self?.handleMetadataQueryChange(notification) }
+                })
+        }
+        metadataQuery = query
+        query.start()
+    }
+
+    private func handleMetadataQueryChange(_ notification: Notification) {
+        let itemKeys = [
+            NSMetadataQueryUpdateAddedItemsKey,
+            NSMetadataQueryUpdateChangedItemsKey,
+            NSMetadataQueryUpdateRemovedItemsKey,
+        ]
+        let changedPaths = itemKeys.flatMap { key -> [String] in
+            let items = notification.userInfo?[key] as? [NSMetadataItem] ?? []
+            return items.compactMap { $0.value(forAttribute: NSMetadataItemPathKey) as? String }
+        }
+        let localManifestName = deviceID + ".plist"
+        if !changedPaths.isEmpty,
+            changedPaths.allSatisfy({ URL(fileURLWithPath: $0).lastPathComponent == localManifestName })
+        {
+            return
+        }
+        scheduleEventDrivenSync()
+    }
+
+    private func stopMetadataQuery() {
+        metadataQuery?.stop()
+        metadataQuery = nil
+        for observer in metadataQueryObservers {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        metadataQueryObservers.removeAll()
+    }
+
     private func performSync() async {
         guard let modelContext, let root = usageDataDirectoryURL else {
             state = .waitingForICloud
@@ -216,26 +389,62 @@ final class CloudUsageDataSyncService: ObservableObject {
         state = .syncing
         do {
             let deviceID = self.deviceID
-            let exports = try collectExportItems(modelContext: modelContext, deviceID: deviceID)
+            let pendingRecordIDs = loadPendingRecordIDs()
+            let exports = try collectExportItems(
+                recordIDs: pendingRecordIDs,
+                modelContext: modelContext,
+                deviceID: deviceID
+            )
             let audioEnabled = defaults.bool(forKey: CloudSyncSettingsKeys.usageAudioSyncEnabled)
-            try await Task.detached(priority: .utility) {
-                try Self.writeExports(exports, root: root, audioEnabled: audioEnabled)
-            }.value
-
-            let imported = try await Task.detached(priority: .utility) {
-                try Self.readImports(
+            let exportResult = try await Task.detached(priority: .utility) {
+                try Self.writeExports(
+                    exports,
                     root: root,
-                    localRecordingsDirectory: Self.localRecordingsDirectory,
+                    sourceDeviceID: deviceID,
                     audioEnabled: audioEnabled
                 )
             }.value
+
+            let appliedRevisions = loadAppliedRevisions()
+            let incrementalImports = try await Task.detached(priority: .utility) {
+                try Self.readIncrementalImports(
+                    root: root,
+                    localRecordingsDirectory: Self.localRecordingsDirectory,
+                    audioEnabled: audioEnabled,
+                    localDeviceID: deviceID,
+                    appliedRevisions: appliedRevisions
+                )
+            }.value
+            var imported = incrementalImports.items
+            let usedLegacyScan = !defaults.bool(forKey: Self.legacyImportCompletedKey)
+            if usedLegacyScan {
+                let legacyImports = try await Task.detached(priority: .utility) {
+                    try Self.readLegacyImports(
+                        root: root,
+                        localRecordingsDirectory: Self.localRecordingsDirectory,
+                        audioEnabled: audioEnabled
+                    )
+                }.value
+                imported = Self.newestImports(incrementalImports.items + legacyImports)
+            }
             try applyImports(imported, modelContext: modelContext, localDeviceID: deviceID)
 
-            synchronizedRecordCount = imported.count
+            var remainingPending = loadPendingRecordIDs()
+            remainingPending.subtract(pendingRecordIDs)
+            remainingPending.formUnion(recordIDsQueuedDuringSync)
+            recordIDsQueuedDuringSync.removeAll()
+            persistPendingRecordIDs(remainingPending)
+            defaults.set(true, forKey: Self.localBootstrapCompletedKey)
+            defaults.set(true, forKey: Self.legacyImportCompletedKey)
+
+            synchronizedRecordCount = incrementalImports.availableRecordCount
+            lastExportCandidateCount = exports.count
+            lastImportCandidateCount = imported.count
+            lastSyncUsedLegacyScan = usedLegacyScan
             lastSyncedAt = Date()
             state = .synced
             logger.notice(
-                "Usage sync completed exports=\(exports.count, privacy: .public) imports=\(imported.count, privacy: .public) audio=\(audioEnabled, privacy: .public)"
+                "Incremental usage sync completed pending=\(pendingRecordIDs.count, privacy: .public) writes=\(exportResult.writtenRecordCount, privacy: .public) imports=\(imported.count, privacy: .public) available=\(incrementalImports.availableRecordCount, privacy: .public) legacy=\(usedLegacyScan, privacy: .public) audio=\(audioEnabled, privacy: .public)"
             )
         } catch is CancellationError {
             return
@@ -243,17 +452,31 @@ final class CloudUsageDataSyncService: ObservableObject {
             state = .failed(error.localizedDescription)
             logger.error("Usage sync failed: \(error.localizedDescription, privacy: .public)")
         }
+
     }
 
-    private func collectExportItems(modelContext: ModelContext, deviceID: String) throws -> [ExportItem] {
-        let metrics = try modelContext.fetch(FetchDescriptor<SessionMetric>())
-        let metricsByTranscription = Dictionary(metrics.map { ($0.transcriptionId, $0) }, uniquingKeysWith: { first, _ in first })
-        let transcriptions = try modelContext.fetch(FetchDescriptor<Transcription>())
+    private func collectExportItems(
+        recordIDs: Set<UUID>,
+        modelContext: ModelContext,
+        deviceID: String
+    ) throws -> [ExportItem] {
         var didChangeOrigin = false
         var result: [ExportItem] = []
 
-        for transcription in transcriptions {
-            if transcription.syncOriginDeviceID == nil {
+        for transcriptionID in recordIDs {
+            var transcriptionDescriptor = FetchDescriptor<Transcription>(
+                predicate: #Predicate<Transcription> { transcription in transcription.id == transcriptionID }
+            )
+            transcriptionDescriptor.fetchLimit = 1
+            guard let transcription = try modelContext.fetch(transcriptionDescriptor).first else { continue }
+
+            var metricDescriptor = FetchDescriptor<SessionMetric>(
+                predicate: #Predicate<SessionMetric> { metric in metric.transcriptionId == transcriptionID }
+            )
+            metricDescriptor.fetchLimit = 1
+            let metric = try modelContext.fetch(metricDescriptor).first
+
+            if transcription.syncOriginDeviceID != deviceID {
                 transcription.syncOriginDeviceID = deviceID
                 transcription.syncModifiedAt = transcription.syncModifiedAt ?? transcription.timestamp
                 didChangeOrigin = true
@@ -261,9 +484,9 @@ final class CloudUsageDataSyncService: ObservableObject {
             result.append(
                 ExportItem(
                     sourceDeviceID: deviceID,
-                    updatedAt: effectiveModifiedAt(for: transcription),
+                    updatedAt: Date(),
                     transcription: Self.payload(from: transcription),
-                    metric: metricsByTranscription[transcription.id].map(Self.payload),
+                    metric: metric.map(Self.payload),
                     audioURL: Self.audioURL(from: transcription)
                 ))
         }
@@ -290,6 +513,10 @@ final class CloudUsageDataSyncService: ObservableObject {
             let existing = try modelContext.fetch(descriptor).first
 
             if existing?.syncRevisionID == item.snapshot.revisionID {
+                appliedRevisions[recordKey] = revisionValue
+                continue
+            }
+            if let existing, effectiveModifiedAt(for: existing) > item.snapshot.updatedAt {
                 appliedRevisions[recordKey] = revisionValue
                 continue
             }
@@ -383,17 +610,34 @@ final class CloudUsageDataSyncService: ObservableObject {
             .appendingPathComponent("com.prakashjoshipax.VoiceInk/Recordings", isDirectory: true)
     }
 
+    private struct ExportResult: Sendable {
+        let writtenRecordCount: Int
+    }
+
     nonisolated private static func writeExports(
         _ exports: [ExportItem],
         root: URL,
+        sourceDeviceID: String,
         audioEnabled: Bool
-    ) throws {
+    ) throws -> ExportResult {
         let recordsRoot = root.appendingPathComponent("Records", isDirectory: true)
         let blobsRoot = root.appendingPathComponent("Blobs/Audio", isDirectory: true)
+        let devicesRoot = root.appendingPathComponent("Devices", isDirectory: true)
         try FileManager.default.createDirectory(at: recordsRoot, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: devicesRoot, withIntermediateDirectories: true)
         if audioEnabled { try FileManager.default.createDirectory(at: blobsRoot, withIntermediateDirectories: true) }
         let encoder = PropertyListEncoder()
         encoder.outputFormat = .binary
+        let manifestURL = devicesRoot.appendingPathComponent(sourceDeviceID + ".plist")
+        var manifest = readManifest(at: manifestURL)
+            ?? DeviceManifest(
+                schemaVersion: DeviceManifest.currentSchemaVersion,
+                sourceDeviceID: sourceDeviceID,
+                updatedAt: .distantPast,
+                entries: [:]
+            )
+        var manifestChanged = false
+        var writtenRecordCount = 0
 
         for item in exports {
             let recordDirectory = recordsRoot.appendingPathComponent(item.transcription.id.uuidString, isDirectory: true)
@@ -435,25 +679,56 @@ final class CloudUsageDataSyncService: ObservableObject {
                 }
             }
 
+            let snapshot: Snapshot
             if let previous,
                 previous.transcription == item.transcription,
                 previous.metric == item.metric,
                 previous.audio == audio
             {
-                continue
+                snapshot = previous
+            } else {
+                snapshot = Snapshot(
+                    schemaVersion: Snapshot.currentSchemaVersion,
+                    revisionID: UUID(),
+                    sourceDeviceID: item.sourceDeviceID,
+                    updatedAt: item.updatedAt,
+                    transcription: item.transcription,
+                    metric: item.metric,
+                    audio: audio
+                )
+                try encoder.encode(snapshot).write(to: snapshotURL, options: .atomic)
+                writtenRecordCount += 1
             }
 
-            let snapshot = Snapshot(
-                schemaVersion: Snapshot.currentSchemaVersion,
-                revisionID: UUID(),
-                sourceDeviceID: item.sourceDeviceID,
-                updatedAt: Date(),
-                transcription: item.transcription,
-                metric: item.metric,
-                audio: audio
+            let entry = DeviceManifest.Entry(
+                transcriptionID: item.transcription.id,
+                revisionID: snapshot.revisionID,
+                updatedAt: snapshot.updatedAt
             )
-            try encoder.encode(snapshot).write(to: snapshotURL, options: .atomic)
+            if manifest.entries[item.transcription.id] != entry {
+                manifest.entries[item.transcription.id] = entry
+                manifestChanged = true
+            }
         }
+
+        if manifestChanged || !FileManager.default.fileExists(atPath: manifestURL.path) {
+            manifest = DeviceManifest(
+                schemaVersion: DeviceManifest.currentSchemaVersion,
+                sourceDeviceID: sourceDeviceID,
+                updatedAt: Date(),
+                entries: manifest.entries
+            )
+            try encoder.encode(manifest).write(to: manifestURL, options: .atomic)
+        }
+        return ExportResult(writtenRecordCount: writtenRecordCount)
+    }
+
+    nonisolated private static func readManifest(at url: URL) -> DeviceManifest? {
+        guard let data = try? Data(contentsOf: url),
+            let manifest = try? PropertyListDecoder().decode(DeviceManifest.self, from: data),
+            manifest.schemaVersion <= DeviceManifest.currentSchemaVersion
+        else { return nil }
+        return manifest
     }
 
     nonisolated private static func newestAudioDescriptor(in recordDirectory: URL) -> AudioDescriptor? {
@@ -474,7 +749,67 @@ final class CloudUsageDataSyncService: ObservableObject {
             .audio
     }
 
-    nonisolated private static func readImports(
+    private struct IncrementalImportResult: Sendable {
+        let items: [ImportedItem]
+        let availableRecordCount: Int
+    }
+
+    nonisolated private static func readIncrementalImports(
+        root: URL,
+        localRecordingsDirectory: URL,
+        audioEnabled: Bool,
+        localDeviceID: String,
+        appliedRevisions: [String: String]
+    ) throws -> IncrementalImportResult {
+        let devicesRoot = root.appendingPathComponent("Devices", isDirectory: true)
+        guard FileManager.default.fileExists(atPath: devicesRoot.path) else {
+            return IncrementalImportResult(items: [], availableRecordCount: 0)
+        }
+        let manifestURLs = try FileManager.default.contentsOfDirectory(
+            at: devicesRoot,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        )
+        let recordsRoot = root.appendingPathComponent("Records", isDirectory: true)
+        var newestEntries: [UUID: (sourceDeviceID: String, entry: DeviceManifest.Entry)] = [:]
+
+        for manifestURL in manifestURLs where manifestURL.pathExtension == "plist" {
+            guard let manifest = readManifest(at: manifestURL) else { continue }
+            for (recordID, entry) in manifest.entries {
+                if let existing = newestEntries[recordID],
+                    existing.entry.updatedAt > entry.updatedAt
+                        || (existing.entry.updatedAt == entry.updatedAt
+                            && existing.entry.revisionID.uuidString > entry.revisionID.uuidString)
+                {
+                    continue
+                }
+                newestEntries[recordID] = (manifest.sourceDeviceID, entry)
+            }
+        }
+
+        var items: [ImportedItem] = []
+        for (recordID, candidate) in newestEntries where candidate.sourceDeviceID != localDeviceID {
+            guard appliedRevisions[recordID.uuidString] != candidate.entry.revisionID.uuidString else { continue }
+            let snapshotURL = recordsRoot
+                .appendingPathComponent(recordID.uuidString, isDirectory: true)
+                .appendingPathComponent(candidate.sourceDeviceID + ".plist")
+            guard let data = try? Data(contentsOf: snapshotURL),
+                let snapshot = try? PropertyListDecoder().decode(Snapshot.self, from: data),
+                snapshot.schemaVersion <= Snapshot.currentSchemaVersion,
+                snapshot.revisionID == candidate.entry.revisionID
+            else { continue }
+            items.append(
+                try importedItem(
+                    snapshot: snapshot,
+                    root: root,
+                    localRecordingsDirectory: localRecordingsDirectory,
+                    audioEnabled: audioEnabled
+                ))
+        }
+        return IncrementalImportResult(items: items, availableRecordCount: newestEntries.count)
+    }
+
+    nonisolated private static func readLegacyImports(
         root: URL,
         localRecordingsDirectory: URL,
         audioEnabled: Bool
@@ -506,39 +841,64 @@ final class CloudUsageDataSyncService: ObservableObject {
             newest[id] = snapshot
         }
 
-        return newest.values.map { snapshot in
-            let localAudioURL: URL?
-            if audioEnabled, let audio = snapshot.audio {
-                let destination = localRecordingsDirectory.appendingPathComponent(
-                    "synced_\(snapshot.transcription.id.uuidString).\(audio.fileExtension)")
-                if FileManager.default.fileExists(atPath: destination.path), fileSize(at: destination) == audio.byteCount {
-                    localAudioURL = destination
-                } else {
-                    let blobURL = root
-                        .appendingPathComponent("Blobs/Audio/\(String(audio.sha256.prefix(2)))", isDirectory: true)
-                        .appendingPathComponent("\(audio.sha256).\(audio.fileExtension)")
-                    if FileManager.default.fileExists(atPath: blobURL.path) {
-                        try? FileManager.default.startDownloadingUbiquitousItem(at: blobURL)
-                        let temporary = localRecordingsDirectory.appendingPathComponent(".\(UUID().uuidString).download")
-                        if (try? FileManager.default.copyItem(at: blobURL, to: temporary)) != nil,
-                            (try? sha256(of: temporary)) == audio.sha256
-                        {
-                            try? FileManager.default.removeItem(at: destination)
-                            try? FileManager.default.moveItem(at: temporary, to: destination)
-                            localAudioURL = destination
-                        } else {
-                            try? FileManager.default.removeItem(at: temporary)
-                            localAudioURL = nil
-                        }
-                    } else {
-                        localAudioURL = nil
-                    }
-                }
-            } else {
-                localAudioURL = nil
-            }
-            return ImportedItem(snapshot: snapshot, localAudioURL: localAudioURL)
+        return try newest.values.map {
+            try importedItem(
+                snapshot: $0,
+                root: root,
+                localRecordingsDirectory: localRecordingsDirectory,
+                audioEnabled: audioEnabled
+            )
         }
+    }
+
+    nonisolated private static func newestImports(_ imports: [ImportedItem]) -> [ImportedItem] {
+        var newest: [UUID: ImportedItem] = [:]
+        for item in imports {
+            let recordID = item.snapshot.transcription.id
+            if let existing = newest[recordID],
+                existing.snapshot.updatedAt > item.snapshot.updatedAt
+                    || (existing.snapshot.updatedAt == item.snapshot.updatedAt
+                        && existing.snapshot.revisionID.uuidString > item.snapshot.revisionID.uuidString)
+            {
+                continue
+            }
+            newest[recordID] = item
+        }
+        return Array(newest.values)
+    }
+
+    nonisolated private static func importedItem(
+        snapshot: Snapshot,
+        root: URL,
+        localRecordingsDirectory: URL,
+        audioEnabled: Bool
+    ) throws -> ImportedItem {
+        guard audioEnabled, let audio = snapshot.audio else {
+            return ImportedItem(snapshot: snapshot, localAudioURL: nil)
+        }
+        let destination = localRecordingsDirectory.appendingPathComponent(
+            "synced_\(snapshot.transcription.id.uuidString).\(audio.fileExtension)")
+        if FileManager.default.fileExists(atPath: destination.path), fileSize(at: destination) == audio.byteCount {
+            return ImportedItem(snapshot: snapshot, localAudioURL: destination)
+        }
+
+        let blobURL = root
+            .appendingPathComponent("Blobs/Audio/\(String(audio.sha256.prefix(2)))", isDirectory: true)
+            .appendingPathComponent("\(audio.sha256).\(audio.fileExtension)")
+        guard FileManager.default.fileExists(atPath: blobURL.path) else {
+            return ImportedItem(snapshot: snapshot, localAudioURL: nil)
+        }
+        try? FileManager.default.startDownloadingUbiquitousItem(at: blobURL)
+        let temporary = localRecordingsDirectory.appendingPathComponent(".\(UUID().uuidString).download")
+        guard (try? FileManager.default.copyItem(at: blobURL, to: temporary)) != nil,
+            (try? sha256(of: temporary)) == audio.sha256
+        else {
+            try? FileManager.default.removeItem(at: temporary)
+            return ImportedItem(snapshot: snapshot, localAudioURL: nil)
+        }
+        try? FileManager.default.removeItem(at: destination)
+        try FileManager.default.moveItem(at: temporary, to: destination)
+        return ImportedItem(snapshot: snapshot, localAudioURL: destination)
     }
 
     nonisolated private static func payload(from transcription: Transcription) -> TranscriptionPayload {
