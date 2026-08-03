@@ -73,4 +73,18 @@ struct ModelCatalogPresentationTests {
         let qwenOrder = ModelCatalogOrdering.localModelsByPerformance([paraformer, mlx])
         #expect(qwenOrder.map(\.name) == [mlx.name, paraformer.name])
     }
+
+    @Test func zipformerExposesOfficialAccuracyEvidence() throws {
+        let model = try #require(
+            TranscriptionModelRegistry.models.first { $0.name == "sherpa-zipformer-ctc-zh-int8" }
+                as? SherpaOnnxModel
+        )
+
+        #expect(model.accuracy == 0.94)
+        #expect(ModelCatalogOrdering.performance(for: model).accuracy == 0.94)
+        #expect(
+            model.accuracyBenchmarkSummary
+                == "官方 WER：AISHELL 1.74 · WenetSpeech 网络 5.92 / 会议 7.75"
+        )
+    }
 }

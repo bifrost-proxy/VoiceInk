@@ -171,7 +171,21 @@ struct SherpaOnnxModel: TranscriptionModel {
     let kind: SherpaOnnxModelKind
     let supportedLanguages: [String: String]
     var supportsStreaming: Bool { kind == .qwen3Asr }
-    var accuracy: Double? { kind == .qwen3Asr ? 0.96 : nil }
+    var accuracy: Double? {
+        switch kind {
+        case .qwen3Asr: 0.96
+        case .zipformerCtc: 0.94
+        }
+    }
+
+    var accuracyBenchmarkSummary: String? {
+        switch kind {
+        case .qwen3Asr:
+            nil
+        case .zipformerCtc:
+            "官方 WER：AISHELL 1.74 · WenetSpeech 网络 5.92 / 会议 7.75"
+        }
+    }
 
     var isMultilingualModel: Bool { supportedLanguages.count > 1 }
 }
