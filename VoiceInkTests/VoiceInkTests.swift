@@ -382,7 +382,7 @@ struct VoiceInkTests {
 
         cloudDefaults.set(true, forKey: CloudSyncSettingsKeys.usageDataSyncEnabled)
         cloudDefaults.set(sharedLegacyID, forKey: "CloudUsageDataSync.deviceID")
-        cloudDefaults.set(2, forKey: "CloudUsageDataSync.localIdentityVersionV2")
+        cloudDefaults.set(2, forKey: "LocalKeychain_CloudUsageDataSyncIdentityVersion")
 
         let schema = Schema([Transcription.self, SessionMetric.self])
         let cloudContainer = try ModelContainer(
@@ -419,6 +419,9 @@ struct VoiceInkTests {
 
         localDefaults.set(true, forKey: CloudSyncSettingsKeys.usageDataSyncEnabled)
         localDefaults.set(sharedLegacyID, forKey: "CloudUsageDataSync.deviceID")
+        // Simulate another upgraded Mac copying the old v2 marker through an
+        // older VoiceInk configuration-sync implementation.
+        localDefaults.set(2, forKey: "CloudUsageDataSync.localIdentityVersionV2")
         localDefaults.set(true, forKey: "CloudUsageDataSync.localBootstrapCompletedV2")
         localDefaults.set(true, forKey: "CloudUsageDataSync.legacyImportCompletedV2")
         localDefaults.set(
@@ -464,6 +467,7 @@ struct VoiceInkTests {
         let migratedID = try #require(localDefaults.string(forKey: "CloudUsageDataSync.deviceID"))
         let localRecords = try localContainer.mainContext.fetch(FetchDescriptor<Transcription>())
         #expect(migratedID != sharedLegacyID)
+        #expect(localDefaults.integer(forKey: "LocalKeychain_CloudUsageDataSyncIdentityVersion") == 2)
         #expect(localRecords.count == 2)
         #expect(localRecords.contains { $0.id == remoteOnlyID && $0.text == "from another Mac" })
         #expect(migratedManifest?.sourceDeviceID == migratedID)

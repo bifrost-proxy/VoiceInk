@@ -145,7 +145,11 @@ final class CloudUsageDataSyncService: ObservableObject {
     private static let pendingRecordIDsKey = metadataPrefix + "pendingRecordIDs"
     private static let localBootstrapCompletedKey = metadataPrefix + "localBootstrapCompletedV2"
     private static let legacyImportCompletedKey = metadataPrefix + "legacyImportCompletedV2"
-    private static let localIdentityVersionKey = metadataPrefix + "localIdentityVersionV2"
+    // This marker deliberately uses a prefix that every configuration-sync
+    // release has treated as local-only. Keeping it outside metadataPrefix is
+    // required because an older Mac may copy CloudUsageDataSync.* (including a
+    // contaminated migration marker) before it installs the identity fix.
+    private static let localIdentityVersionKey = "LocalKeychain_CloudUsageDataSyncIdentityVersion"
     private static let identityMigrationRepublishPendingKey = metadataPrefix + "identityMigrationRepublishPendingV2"
     private static let currentLocalIdentityVersion = 2
     private static let reconciliationInterval: TimeInterval = 5 * 60
