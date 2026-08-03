@@ -306,6 +306,11 @@ struct SettingsView: View {
                     }
 
                 if usageDataSyncEnabled {
+                    LabeledContent("This Device") {
+                        Text(usageSync.localDeviceName)
+                            .foregroundStyle(.secondary)
+                    }
+
                     Toggle("Include Source Audio", isOn: $usageAudioSyncEnabled)
                         .onChange(of: usageAudioSyncEnabled) { _, enabled in
                             usageSync.setAudioEnabled(enabled)
