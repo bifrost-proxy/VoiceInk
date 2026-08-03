@@ -3,11 +3,27 @@ import Foundation
 import SherpaOnnx
 
 actor SherpaOnnxTranscriptionService: TranscriptionService {
+    nonisolated static let qwenCPUProviderConfigResourceName = "qwen-onnxruntime-cpu"
     private let audioConverter = AudioConverter(sampleRate: 16_000)
     private var recognizer: SherpaOnnxOfflineRecognizer?
     private var activeModelName: String?
     private var idleReleaseTask: Task<Void, Never>?
     nonisolated static let idleRetention: Duration = .seconds(3_600)
+
+    nonisolated static func qwenCPUProvider(bundle: Bundle = .main) throws -> String {
+        guard
+            let configURL = bundle.url(
+                forResource: qwenCPUProviderConfigResourceName,
+                withExtension: "conf"
+            )
+        else {
+            throw ASRError.processingFailed(
+                "Qwen3-ASR CPU runtime configuration is missing from the application bundle"
+            )
+        }
+
+        return "cpu:\(configURL.path)"
+    }
 
     func transcribe(
         audioURL: URL,
@@ -70,7 +86,11 @@ actor SherpaOnnxTranscriptionService: TranscriptionService {
                 maxNewTokens: 256
             )
             let modelConfig = sherpaOnnxOfflineModelConfig(
-                tokens: "", numThreads: 4, provider: "cpu", qwen3Asr: qwen3)
+                tokens: "",
+                numThreads: 4,
+                provider: try Self.qwenCPUProvider(),
+                qwen3Asr: qwen3
+            )
             let featureConfig = sherpaOnnxFeatureConfig(sampleRate: 16_000, featureDim: 80)
             var recognizerConfig = sherpaOnnxOfflineRecognizerConfig(
                 featConfig: featureConfig, modelConfig: modelConfig)
