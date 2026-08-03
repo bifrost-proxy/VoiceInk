@@ -282,6 +282,7 @@ enum BackupImporter {
 
         do {
             try modelContext.save()
+            NotificationCenter.default.post(name: .portableConfigurationDidChange, object: nil)
             print(
                 "Successfully imported \(insertedWords) vocabulary words and \(insertedReplacements) word replacements to SwiftData."
             )

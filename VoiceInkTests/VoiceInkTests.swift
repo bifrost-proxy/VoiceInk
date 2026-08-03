@@ -587,6 +587,141 @@ struct VoiceInkTests {
         )
     }
 
+    @MainActor
+    @Test func cloudConfigurationSyncWritesOnlyForEditsAndPullsLastEditWithoutEchoing() async throws {
+        let temporaryRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("VoiceInkConfigurationSyncTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: temporaryRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temporaryRoot) }
+
+        let suiteAName = "VoiceInkTests.ConfigurationSync.A.\(UUID().uuidString)"
+        let suiteBName = "VoiceInkTests.ConfigurationSync.B.\(UUID().uuidString)"
+        let defaultsA = try #require(UserDefaults(suiteName: suiteAName))
+        let defaultsB = try #require(UserDefaults(suiteName: suiteBName))
+        defaultsA.removePersistentDomain(forName: suiteAName)
+        defaultsB.removePersistentDomain(forName: suiteBName)
+        defer {
+            defaultsA.removePersistentDomain(forName: suiteAName)
+            defaultsB.removePersistentDomain(forName: suiteBName)
+        }
+        defaultsA.set(true, forKey: CloudSyncSettingsKeys.configurationSyncEnabled)
+        defaultsB.set(true, forKey: CloudSyncSettingsKeys.configurationSyncEnabled)
+
+        let schema = Schema([VocabularyWord.self, WordReplacement.self])
+        let containerA = try ModelContainer(
+            for: schema,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        let containerB = try ModelContainer(
+            for: schema,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        let serviceA = CloudConfigurationSyncService(
+            defaults: defaultsA,
+            iCloudDriveRootURL: temporaryRoot,
+            preferencesDomainName: suiteAName
+        )
+        let serviceB = CloudConfigurationSyncService(
+            defaults: defaultsB,
+            iCloudDriveRootURL: temporaryRoot,
+            preferencesDomainName: suiteBName
+        )
+        serviceA.start(modelContext: containerA.mainContext, onRemoteConfigurationApplied: {})
+        serviceB.start(modelContext: containerB.mainContext, onRemoteConfigurationApplied: {})
+
+        let configurationURL = try #require(serviceA.configurationFileURL)
+        #expect(!FileManager.default.fileExists(atPath: configurationURL.path))
+
+        let enhancementOff = try JSONSerialization.data(
+            withJSONObject: ["Dictation": ["isAIEnhancementEnabled": false]],
+            options: [.sortedKeys]
+        )
+        defaultsA.set(enhancementOff, forKey: "modeConfigurationsV2")
+        serviceA.portableContentDidChange()
+
+        let firstSnapshot = try await waitForConfigurationSnapshot(at: configurationURL)
+        serviceB.syncNow()
+        #expect(defaultsB.data(forKey: "modeConfigurationsV2") == enhancementOff)
+
+        let firstModificationDate = try configurationURL.resourceValues(
+            forKeys: [.contentModificationDateKey]
+        ).contentModificationDate
+        serviceA.syncNow()
+        serviceB.syncNow()
+        try await Task.sleep(for: .milliseconds(1_000))
+        let unchangedSnapshot = try decodeConfigurationSnapshot(at: configurationURL)
+        let unchangedModificationDate = try configurationURL.resourceValues(
+            forKeys: [.contentModificationDateKey]
+        ).contentModificationDate
+        #expect(unchangedSnapshot.revision == firstSnapshot.revision)
+        #expect(unchangedModificationDate == firstModificationDate)
+
+        let enhancementOn = try JSONSerialization.data(
+            withJSONObject: ["Dictation": ["isAIEnhancementEnabled": true]],
+            options: [.sortedKeys]
+        )
+        defaultsA.set(enhancementOn, forKey: "modeConfigurationsV2")
+        serviceA.portableContentDidChange()
+        let secondSnapshot = try await waitForConfigurationSnapshot(
+            at: configurationURL,
+            after: firstSnapshot.revision
+        )
+        #expect(secondSnapshot.updatedAt > firstSnapshot.updatedAt)
+
+        serviceB.syncNow()
+        #expect(defaultsB.data(forKey: "modeConfigurationsV2") == enhancementOn)
+        try await Task.sleep(for: .milliseconds(1_000))
+        let pulledSnapshot = try decodeConfigurationSnapshot(at: configurationURL)
+        #expect(pulledSnapshot.revision == secondSnapshot.revision)
+
+        let laterDeviceBEdit = try JSONSerialization.data(
+            withJSONObject: ["Dictation": ["isAIEnhancementEnabled": false, "language": "zh"]],
+            options: [.sortedKeys]
+        )
+        defaultsB.set(laterDeviceBEdit, forKey: "modeConfigurationsV2")
+        serviceB.portableContentDidChange()
+        let thirdSnapshot = try await waitForConfigurationSnapshot(
+            at: configurationURL,
+            after: secondSnapshot.revision
+        )
+        #expect(thirdSnapshot.updatedAt > secondSnapshot.updatedAt)
+
+        serviceA.syncNow()
+        #expect(defaultsA.data(forKey: "modeConfigurationsV2") == laterDeviceBEdit)
+        try await Task.sleep(for: .milliseconds(1_000))
+        let lastWriterSnapshot = try decodeConfigurationSnapshot(at: configurationURL)
+        #expect(lastWriterSnapshot.revision == thirdSnapshot.revision)
+
+        serviceA.setEnabled(false)
+        serviceB.setEnabled(false)
+    }
+
+    private func decodeConfigurationSnapshot(
+        at url: URL
+    ) throws -> CloudConfigurationSyncService.Snapshot {
+        try PropertyListDecoder().decode(
+            CloudConfigurationSyncService.Snapshot.self,
+            from: Data(contentsOf: url)
+        )
+    }
+
+    private func waitForConfigurationSnapshot(
+        at url: URL,
+        after revision: UUID? = nil
+    ) async throws -> CloudConfigurationSyncService.Snapshot {
+        let timeout = Date().addingTimeInterval(5)
+        while Date() < timeout {
+            if let snapshot = try? decodeConfigurationSnapshot(at: url),
+                snapshot.revision != revision
+            {
+                return snapshot
+            }
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        Issue.record("Timed out waiting for a configuration sync write")
+        return try decodeConfigurationSnapshot(at: url)
+    }
+
     @Test func volcanoArkUsesOpenAICompatibleChatEndpoint() {
         #expect(AIProvider.ark.baseURL == "https://ark.cn-beijing.volces.com/api/v3/chat/completions")
         #expect(AIProvider.ark.requiresAPIKey)

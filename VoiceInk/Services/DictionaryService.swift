@@ -50,6 +50,7 @@ enum DictionaryService {
         context.insert(entry)
         do {
             try context.save()
+            NotificationCenter.default.post(name: .portableConfigurationDidChange, object: nil)
             return nil
         } catch {
             context.delete(entry)
@@ -153,6 +154,7 @@ enum DictionaryService {
         context.insert(entry)
         do {
             try context.save()
+            NotificationCenter.default.post(name: .portableConfigurationDidChange, object: nil)
             return nil
         } catch {
             context.delete(entry)
