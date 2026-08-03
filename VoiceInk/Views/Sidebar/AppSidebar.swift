@@ -48,6 +48,9 @@ struct AppSidebar: View {
                     viewType: viewType,
                     isSelected: selectedView == viewType
                 ) {
+                    guard selectedView != viewType else {
+                        return
+                    }
                     selectedView = viewType
                 }
             }

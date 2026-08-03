@@ -35,6 +35,10 @@ final class MainWindowNavigation: ObservableObject {
     }
 
     func navigate(to destination: ViewType) {
+        guard selectedView != destination else {
+            return
+        }
+
         logger.notice(
             "🧭 Main-window navigation updated. destination=\(destination.rawValue, privacy: .public); selectedBefore=\(self.selectedView.rawValue, privacy: .public); selectedAfter=\(destination.rawValue, privacy: .public)"
         )
@@ -89,25 +93,24 @@ struct ContentView: View {
         .ignoresSafeArea(.container, edges: .top)
     }
 
-    @ViewBuilder
-    private func detailView(for viewType: ViewType) -> some View {
+    private func detailView(for viewType: ViewType) -> AnyView {
         switch viewType {
         case .dashboard:
-            DashboardView()
+            AnyView(DashboardView())
         case .models:
-            ModelManagementView()
+            AnyView(ModelManagementView())
         case .transcribeAudio:
-            AudioTranscribeView()
+            AnyView(AudioTranscribeView())
         case .history:
-            InlineHistoryView()
+            AnyView(InlineHistoryView())
         case .audio:
-            AudioSetupView()
+            AnyView(AudioSetupView())
         case .dictionary:
-            DictionarySettingsView()
+            AnyView(DictionarySettingsView())
         case .modes:
-            ModeView()
+            AnyView(ModeView())
         case .settings:
-            SettingsView()
+            AnyView(SettingsView())
         }
     }
 }
