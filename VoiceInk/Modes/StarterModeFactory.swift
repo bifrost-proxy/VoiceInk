@@ -3,6 +3,7 @@ import Foundation
 
 enum StarterModeFactory {
     static let defaultTranscriptionModelName = "sensevoice-small"
+    static let chineseOnboardingTranscriptionModelName = "qwen3-asr-0.6b-mlx-int8-streaming"
 
     static func install(
         kinds: [StarterModeKind],

@@ -24,8 +24,10 @@ struct ModelOfficialSourceCatalogTests {
 
         let qwen = try #require(models.first { $0.name == "qwen3-asr-0.6b-int8" })
         #expect(qwen.officialSourceURL?.path.hasPrefix("/Qwen/") == true)
-        let qwenMLX = try #require(models.first { $0.name == "qwen3-asr-0.6b-mlx-streaming" })
-        #expect(qwenMLX.officialSourceURL?.path.hasPrefix("/Qwen/") == true)
+        let qwenMLXINT8 = try #require(models.first { $0.name == "qwen3-asr-0.6b-mlx-int8-streaming" })
+        #expect(qwenMLXINT8.officialSourceURL?.path.hasPrefix("/mlx-community/") == true)
+        let qwenMLXFP16 = try #require(models.first { $0.name == "qwen3-asr-0.6b-mlx-streaming" })
+        #expect(qwenMLXFP16.officialSourceURL?.path.hasPrefix("/Qwen/") == true)
 
         let whisper = try #require(models.first { $0.name == "ggml-small" })
         #expect(whisper.officialSourceURL?.absoluteString == "https://github.com/openai/whisper")

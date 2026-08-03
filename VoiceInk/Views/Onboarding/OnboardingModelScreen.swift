@@ -2,16 +2,16 @@ import SwiftUI
 
 struct OnboardingModelScreen: View {
     let contentMaxWidth: CGFloat
-    let localModel: FluidAudioModel?
+    let localModel: (any TranscriptionModel)?
     let setupKind: OnboardingTranscriptionSetupKind
     let providerOptions: [any CloudProvider]
     @Binding var selectedProviderKey: String
     let isLocalDownloaded: Bool
     let isLocalDownloading: Bool
-    let localDownloadStatus: FluidAudioDownloadStatus?
+    let localDownloadStatus: OnboardingTranscriptionDownloadStatus?
     let isSetupReady: Bool
     let onSelectSetupKind: (OnboardingTranscriptionSetupKind) -> Void
-    let onDownload: (FluidAudioModel) -> Void
+    let onDownload: (any TranscriptionModel) -> Void
     let onVerificationChanged: () -> Void
     let onBack: () -> Void
     let onContinue: () -> Void

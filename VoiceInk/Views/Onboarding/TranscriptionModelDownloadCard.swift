@@ -1,10 +1,16 @@
 import SwiftUI
 
+struct OnboardingTranscriptionDownloadStatus: Equatable {
+    let fractionCompleted: Double
+    let message: String
+    let isIndeterminate: Bool
+}
+
 struct TranscriptionModelDownloadCard: View {
-    let model: FluidAudioModel
+    let model: any TranscriptionModel
     let isDownloaded: Bool
     let isDownloading: Bool
-    let status: FluidAudioDownloadStatus?
+    let status: OnboardingTranscriptionDownloadStatus?
     let onDownload: () -> Void
 
     var body: some View {
@@ -30,10 +36,10 @@ struct TranscriptionModelDownloadCard: View {
                         .font(.system(size: 17, weight: .semibold))
                         .foregroundColor(AppTheme.Text.primary)
 
-                    Text("Fast multilingual transcription that runs locally on Mac.")
+                    Text(model.description)
                         .font(.system(size: 12))
                         .foregroundColor(AppTheme.Text.secondary)
-                        .lineLimit(1)
+                        .lineLimit(2)
                         .minimumScaleFactor(0.92)
                 }
             }
@@ -58,20 +64,40 @@ struct TranscriptionModelDownloadCard: View {
         }
     }
 
+    @ViewBuilder
     private var modelLogo: some View {
-        Image("nvidia-logo")
-            .resizable()
-            .scaledToFit()
-            .frame(width: 34, height: 28)
-            .frame(width: 38, height: 38)
-            .accessibilityLabel(Text(verbatim: "NVIDIA"))
+        if model.name.hasPrefix("parakeet-") || model.name.hasPrefix("nemotron-") {
+            Image("nvidia-logo")
+                .resizable()
+                .scaledToFit()
+                .frame(width: 34, height: 28)
+                .frame(width: 38, height: 38)
+                .accessibilityLabel(Text(verbatim: "NVIDIA"))
+        } else {
+            Image(systemName: model.provider == .qwenMlx ? "waveform.badge.magnifyingglass" : "waveform")
+                .font(.system(size: 21, weight: .semibold))
+                .foregroundStyle(AppTheme.Accent.primary)
+                .frame(width: 38, height: 38)
+                .background(Circle().fill(AppTheme.Accent.primary.opacity(0.12)))
+                .accessibilityLabel(Text(model.provider.rawValue))
+        }
     }
 
     private var modelMetadata: some View {
         HStack(spacing: 6) {
-            metadataPill(model.size)
-            localizedMetadataPill("25+ languages")
+            metadataPill(modelSize)
+            metadataPill(model.provider.rawValue)
             localizedMetadataPill("Local")
+        }
+    }
+
+    private var modelSize: String {
+        switch model {
+        case let model as FluidAudioModel: model.size
+        case let model as SherpaOnnxModel: model.size
+        case let model as QwenMLXModel: model.size
+        case let model as WhisperModel: model.size
+        default: String(localized: "Local")
         }
     }
 
@@ -93,7 +119,7 @@ struct TranscriptionModelDownloadCard: View {
             .background(Capsule().fill(AppTheme.Surface.subtle))
     }
 
-    private func progressPanel(_ status: FluidAudioDownloadStatus) -> some View {
+    private func progressPanel(_ status: OnboardingTranscriptionDownloadStatus) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Text(status.message)

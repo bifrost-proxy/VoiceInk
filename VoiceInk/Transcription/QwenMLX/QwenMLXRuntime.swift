@@ -99,6 +99,11 @@ actor QwenMLXRuntime {
         stopImmediately()
     }
 
+    func stopIfLoaded(model: QwenMLXModel) {
+        guard loadedModelPath == QwenMLXPaths.modelDirectory(for: model).path else { return }
+        stop()
+    }
+
     private func launchProcess() throws {
         guard FileManager.default.isExecutableFile(atPath: QwenMLXPaths.pythonURL.path) else {
             throw QwenMLXRuntimeError.runtimeNotInstalled

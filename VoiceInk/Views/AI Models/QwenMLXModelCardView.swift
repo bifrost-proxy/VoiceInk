@@ -10,6 +10,15 @@ struct QwenMLXModelCardView: View {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(model.displayName)
                         .font(.system(size: 13, weight: .semibold))
+                    if model.precision.isRecommended {
+                        Text("Recommended")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(AppTheme.Status.positive)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(AppTheme.Status.positive.opacity(0.12))
+                            .clipShape(Capsule())
+                    }
                     ModelRealtimeCapabilityBadge(model: model)
                     Label("Metal GPU", systemImage: "gpu")
                         .font(.system(size: 10, weight: .medium))
@@ -39,8 +48,13 @@ struct QwenMLXModelCardView: View {
 
                 VStack(alignment: .leading, spacing: 3) {
                     Label("30 种语言 · 22 种中文方言 · 自动语言识别", systemImage: "character.bubble")
-                    Label("M4 Max 实测：热态批量 0.27 秒 · 原生流式 7.3× 实时", systemImage: "speedometer")
-                    Label("准确率 9.6 · 上游 vLLM 流式平均 WER 4.40 · 本地 MLX 一致性 0.90", systemImage: "checkmark.seal")
+                    if model.precision == .int8 {
+                        Label("INT8 group 64 · 实测常驻约 1.15 GB · 比 FP16 少约 42%", systemImage: "memorychip")
+                        Label("上游 LibriSpeech test-clean：WER 2.33 · FP16 为 2.29", systemImage: "checkmark.seal")
+                    } else {
+                        Label("FP16 全参数 · 实测常驻约 1.97 GB", systemImage: "memorychip")
+                        Label("M4 Max 实测：热态批量 0.27 秒 · 原生流式 7.3× 实时", systemImage: "speedometer")
+                    }
                 }
                 .font(.system(size: 10))
                 .foregroundStyle(.tertiary)
@@ -107,7 +121,7 @@ struct QwenMLXModelCardView: View {
                             .background(Capsule().fill(AppTheme.Accent.primary))
                     }
                     .buttonStyle(.plain)
-                    .disabled(downloading || !SystemArchitecture.isAppleSilicon)
+                    .disabled(manager.isDownloadingAnyModel || !SystemArchitecture.isAppleSilicon)
                 }
             }
 

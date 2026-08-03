@@ -89,6 +89,7 @@ enum ModelOfficialSourceCatalog {
         "sensevoice-small": "https://huggingface.co/FunAudioLLM/SenseVoiceSmall",
         "paraformer-large-zh": "https://modelscope.cn/models/iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
         "qwen3-asr-0.6b-int8": "https://huggingface.co/Qwen/Qwen3-ASR-0.6B",
+        "qwen3-asr-0.6b-mlx-int8-streaming": "https://huggingface.co/mlx-community/Qwen3-ASR-0.6B-8bit",
         "qwen3-asr-0.6b-mlx-streaming": "https://huggingface.co/Qwen/Qwen3-ASR-0.6B",
         "sherpa-zipformer-ctc-zh-int8": "https://k2-fsa.github.io/sherpa/onnx/pretrained_models/offline-ctc/icefall/zipformer.html",
     ]
@@ -195,6 +196,13 @@ struct SherpaOnnxModel: TranscriptionModel {
 /// This is intentionally a separate provider from the sherpa-onnx INT8 model:
 /// the latter remains a CPU sliding-window implementation, while this provider
 /// owns an incremental decoder state and reuses its KV cache between chunks.
+enum QwenMLXPrecision: String, Hashable {
+    case int8 = "INT8"
+    case fp16 = "FP16"
+
+    var isRecommended: Bool { self == .int8 }
+}
+
 struct QwenMLXModel: TranscriptionModel {
     let id = UUID()
     let name: String
@@ -206,8 +214,11 @@ struct QwenMLXModel: TranscriptionModel {
     /// Product-facing integration consistency score from VoiceInk's local
     /// streaming benchmark. This is not presented as an upstream WER/CER.
     let accuracy: Double
+    let precision: QwenMLXPrecision
     let repositoryID: String
     let revision: String
+    let modelSHA256: String
+    let expectedDownloadBytes: Int64
     let supportedLanguages: [String: String]
     let supportsStreaming = true
 

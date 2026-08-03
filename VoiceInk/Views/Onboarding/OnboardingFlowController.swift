@@ -261,19 +261,32 @@ final class OnboardingFlowController {
     }
 
     func downloadTranscriptionModel(
-        _ model: FluidAudioModel,
-        modelManager: FluidAudioModelManager
+        _ model: any TranscriptionModel,
+        modelManager: FluidAudioModelManager,
+        qwenMLXModelManager: QwenMLXModelManager
     ) {
-        guard coordinator.requiredPermissionsGranted,
-            coordinator.hasSelectedOnboardingMicrophone,
-            !modelManager.isFluidAudioModelDownloaded(model),
-            !modelManager.isFluidAudioModelDownloading(model)
-        else {
+        guard coordinator.requiredPermissionsGranted, coordinator.hasSelectedOnboardingMicrophone else { return }
+
+        if let fluidAudioModel = model as? FluidAudioModel {
+            guard !modelManager.isFluidAudioModelDownloaded(fluidAudioModel),
+                !modelManager.isFluidAudioModelDownloading(fluidAudioModel)
+            else {
+                return
+            }
+
+            Task {
+                await modelManager.downloadFluidAudioModel(fluidAudioModel)
+            }
             return
         }
 
-        Task {
-            await modelManager.downloadFluidAudioModel(model)
+        if let qwenMLXModel = model as? QwenMLXModel {
+            guard !qwenMLXModelManager.isReady(qwenMLXModel), !qwenMLXModelManager.isDownloadingAnyModel else {
+                return
+            }
+            Task {
+                await qwenMLXModelManager.download(qwenMLXModel)
+            }
         }
     }
 

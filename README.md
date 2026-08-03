@@ -37,9 +37,11 @@ VoiceInk 是一款 macOS 原生应用，可以快速将语音转换为文字。�
 
 在 **AI 模型 → 本地** 中可以直接下载并使用以下中文模型：
 
-- **FunASR SenseVoice Small**：支持普通话、粤语、英语、日语和韩语；新安装默认使用该模型
+- **FunASR SenseVoice Small**：支持普通话、粤语、英语、日语和韩语
 - **FunASR Paraformer Large (中文)**：面向普通话优化
 - **Qwen3-ASR 0.6B INT8**：通过 sherpa-onnx 在本机推理，支持中文、方言和多语言
+- **Qwen3-ASR 0.6B MLX INT8**：Apple Silicon Metal GPU 原生流式量化版本；中文系统首次引导优先推荐，约占用 1.15 GB 常驻内存
+- **Qwen3-ASR 0.6B MLX FP16**：独立下载的未量化 Metal GPU 原生流式版本，适合希望保留 FP16 全参数权重的用户
 - **sherpa-onnx Zipformer CTC 中文 INT8**：轻量中文模型
 - **Parakeet CTC 0.6B zh-CN**：Core ML 中文模型
 - **Whisper 多语言系列**：Tiny、Base、Small、Medium、Large v2/v3 和 Large v3 Turbo 均可识别中文；带 `.en` 的模型只支持英语
@@ -128,6 +130,7 @@ VoiceInk 使用火山方舟北京地域固定的 OpenAI 兼容接口，无需配
 - [FluidAudio](https://github.com/FluidInference/FluidAudio)：用于实现 Parakeet 模型
 - [FunASR](https://github.com/modelscope/FunASR)：SenseVoice 与 Paraformer 中文语音模型
 - [Qwen3-ASR](https://github.com/QwenLM/Qwen3-ASR)：Qwen 本地多语言语音识别模型
+- [mlx-qwen3-asr](https://github.com/moona3k/mlx-qwen3-asr)：Qwen3-ASR 的 Apple Silicon Metal GPU 原生流式运行时
 - [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx)：Qwen3-ASR 与 Zipformer 的本地 ONNX 推理
 
 ### 主要依赖

@@ -17,7 +17,7 @@ struct QwenMLXRuntimeIntegrationTests {
 
         let model = try #require(
             TranscriptionModelRegistry.models.first {
-                $0.name == "qwen3-asr-0.6b-mlx-streaming"
+                $0.name == "qwen3-asr-0.6b-mlx-int8-streaming"
             } as? QwenMLXModel
         )
         let runtime = QwenMLXRuntime.shared
