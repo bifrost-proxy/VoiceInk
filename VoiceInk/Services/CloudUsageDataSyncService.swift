@@ -62,11 +62,12 @@ final class CloudUsageDataSyncService: ObservableObject {
     }
 
     struct Snapshot: Codable, Equatable, Sendable {
-        static let currentSchemaVersion = 1
+        static let currentSchemaVersion = 2
 
         let schemaVersion: Int
         let revisionID: UUID
         let sourceDeviceID: String
+        let sourceDeviceName: String?
         let updatedAt: Date
         let transcription: TranscriptionPayload
         let metric: MetricPayload?
@@ -74,7 +75,7 @@ final class CloudUsageDataSyncService: ObservableObject {
     }
 
     struct DeviceManifest: Codable, Equatable, Sendable {
-        static let currentSchemaVersion = 1
+        static let currentSchemaVersion = 2
 
         struct Entry: Codable, Equatable, Sendable {
             let transcriptionID: UUID
@@ -84,6 +85,7 @@ final class CloudUsageDataSyncService: ObservableObject {
 
         let schemaVersion: Int
         let sourceDeviceID: String
+        let sourceDeviceName: String?
         let updatedAt: Date
         var entries: [UUID: Entry]
     }
@@ -112,6 +114,7 @@ final class CloudUsageDataSyncService: ObservableObject {
     @Published private(set) var lastExportCandidateCount = 0
     @Published private(set) var lastImportCandidateCount = 0
     @Published private(set) var lastSyncUsedLegacyScan = false
+    @Published private(set) var localDeviceName: String
 
     var statusText: String { state.displayText }
     var errorText: String? {
@@ -142,6 +145,9 @@ final class CloudUsageDataSyncService: ObservableObject {
     private static let pendingRecordIDsKey = metadataPrefix + "pendingRecordIDs"
     private static let localBootstrapCompletedKey = metadataPrefix + "localBootstrapCompletedV2"
     private static let legacyImportCompletedKey = metadataPrefix + "legacyImportCompletedV2"
+    private static let localIdentityVersionKey = metadataPrefix + "localIdentityVersionV2"
+    private static let identityMigrationRepublishPendingKey = metadataPrefix + "identityMigrationRepublishPendingV2"
+    private static let currentLocalIdentityVersion = 2
     private static let reconciliationInterval: TimeInterval = 5 * 60
     private let defaults: UserDefaults
     private let fileManager: FileManager
@@ -160,11 +166,13 @@ final class CloudUsageDataSyncService: ObservableObject {
     init(
         defaults: UserDefaults = .standard,
         fileManager: FileManager = .default,
-        iCloudDriveRootURL: URL? = nil
+        iCloudDriveRootURL: URL? = nil,
+        deviceName: String? = nil
     ) {
         self.defaults = defaults
         self.fileManager = fileManager
         self.iCloudDriveRootOverride = iCloudDriveRootURL
+        self.localDeviceName = Self.normalizedDeviceName(deviceName ?? Self.currentDeviceName())
     }
 
     func start(modelContext: ModelContext) {
@@ -189,6 +197,7 @@ final class CloudUsageDataSyncService: ObservableObject {
             return
         }
 
+        prepareLocalIdentityIfNeeded()
         prepareInitialPendingRecordsIfNeeded()
         timer = Timer.scheduledTimer(withTimeInterval: Self.reconciliationInterval, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.syncNow() }
@@ -389,6 +398,7 @@ final class CloudUsageDataSyncService: ObservableObject {
         state = .syncing
         do {
             let deviceID = self.deviceID
+            let deviceName = localDeviceName
             let pendingRecordIDs = loadPendingRecordIDs()
             let exports = try collectExportItems(
                 recordIDs: pendingRecordIDs,
@@ -401,6 +411,7 @@ final class CloudUsageDataSyncService: ObservableObject {
                     exports,
                     root: root,
                     sourceDeviceID: deviceID,
+                    sourceDeviceName: deviceName,
                     audioEnabled: audioEnabled
                 )
             }.value
@@ -433,6 +444,11 @@ final class CloudUsageDataSyncService: ObservableObject {
             remainingPending.subtract(pendingRecordIDs)
             remainingPending.formUnion(recordIDsQueuedDuringSync)
             recordIDsQueuedDuringSync.removeAll()
+            if defaults.bool(forKey: Self.identityMigrationRepublishPendingKey) {
+                let localRecordIDs = try modelContext.fetch(FetchDescriptor<Transcription>()).map(\.id)
+                remainingPending.formUnion(localRecordIDs)
+                defaults.removeObject(forKey: Self.identityMigrationRepublishPendingKey)
+            }
             persistPendingRecordIDs(remainingPending)
             defaults.set(true, forKey: Self.localBootstrapCompletedKey)
             defaults.set(true, forKey: Self.legacyImportCompletedKey)
@@ -599,10 +615,45 @@ final class CloudUsageDataSyncService: ObservableObject {
     }
 
     private var deviceID: String {
+        prepareLocalIdentityIfNeeded()
         if let existing = defaults.string(forKey: Self.deviceIDKey) { return existing }
         let created = UUID().uuidString
         defaults.set(created, forKey: Self.deviceIDKey)
         return created
+    }
+
+    private func prepareLocalIdentityIfNeeded() {
+        guard defaults.integer(forKey: Self.localIdentityVersionKey) < Self.currentLocalIdentityVersion else {
+            if defaults.string(forKey: Self.deviceIDKey) == nil {
+                defaults.set(UUID().uuidString, forKey: Self.deviceIDKey)
+            }
+            return
+        }
+
+        let hadLegacyIdentity = defaults.string(forKey: Self.deviceIDKey) != nil
+        defaults.set(UUID().uuidString, forKey: Self.deviceIDKey)
+        defaults.set(Self.currentLocalIdentityVersion, forKey: Self.localIdentityVersionKey)
+
+        guard hadLegacyIdentity else { return }
+
+        // Before v2, CloudUsageDataSync.* was accidentally eligible for
+        // configuration sync. Reset every potentially copied cursor and import
+        // the shared legacy manifest before republishing this Mac's records.
+        defaults.removeObject(forKey: Self.appliedRevisionsKey)
+        defaults.removeObject(forKey: Self.pendingRecordIDsKey)
+        defaults.set(true, forKey: Self.localBootstrapCompletedKey)
+        defaults.removeObject(forKey: Self.legacyImportCompletedKey)
+        defaults.set(true, forKey: Self.identityMigrationRepublishPendingKey)
+        logger.notice("Migrated usage sync to a local-only device identity for \(self.localDeviceName, privacy: .public)")
+    }
+
+    nonisolated private static func currentDeviceName() -> String {
+        Host.current().localizedName ?? ProcessInfo.processInfo.hostName
+    }
+
+    nonisolated private static func normalizedDeviceName(_ value: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "Mac" : String(trimmed.prefix(120))
     }
 
     nonisolated private static var localRecordingsDirectory: URL {
@@ -618,6 +669,7 @@ final class CloudUsageDataSyncService: ObservableObject {
         _ exports: [ExportItem],
         root: URL,
         sourceDeviceID: String,
+        sourceDeviceName: String,
         audioEnabled: Bool
     ) throws -> ExportResult {
         let recordsRoot = root.appendingPathComponent("Records", isDirectory: true)
@@ -633,10 +685,12 @@ final class CloudUsageDataSyncService: ObservableObject {
             ?? DeviceManifest(
                 schemaVersion: DeviceManifest.currentSchemaVersion,
                 sourceDeviceID: sourceDeviceID,
+                sourceDeviceName: sourceDeviceName,
                 updatedAt: .distantPast,
                 entries: [:]
             )
-        var manifestChanged = false
+        var manifestChanged = manifest.schemaVersion != DeviceManifest.currentSchemaVersion
+            || manifest.sourceDeviceName != sourceDeviceName
         var writtenRecordCount = 0
 
         for item in exports {
@@ -691,6 +745,7 @@ final class CloudUsageDataSyncService: ObservableObject {
                     schemaVersion: Snapshot.currentSchemaVersion,
                     revisionID: UUID(),
                     sourceDeviceID: item.sourceDeviceID,
+                    sourceDeviceName: sourceDeviceName,
                     updatedAt: item.updatedAt,
                     transcription: item.transcription,
                     metric: item.metric,
@@ -715,6 +770,7 @@ final class CloudUsageDataSyncService: ObservableObject {
             manifest = DeviceManifest(
                 schemaVersion: DeviceManifest.currentSchemaVersion,
                 sourceDeviceID: sourceDeviceID,
+                sourceDeviceName: sourceDeviceName,
                 updatedAt: Date(),
                 entries: manifest.entries
             )

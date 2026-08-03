@@ -118,6 +118,9 @@ final class CloudConfigurationSyncService: ObservableObject {
 
     private static let excludedPrefixes = [
         metadataPrefix,
+        // Usage synchronization cursors and device identity are local-only.
+        // Syncing these values makes different Macs impersonate one another.
+        "CloudUsageDataSync.",
         "LocalKeychain_",
         "onboarding",
         "NSWindow Frame ",

@@ -134,6 +134,7 @@ struct VoiceInkTests {
             schemaVersion: CloudUsageDataSyncService.Snapshot.currentSchemaVersion,
             revisionID: UUID(),
             sourceDeviceID: "test-mac",
+            sourceDeviceName: "Test Mac",
             updatedAt: Date(timeIntervalSince1970: 1_700_000_010),
             transcription: payload,
             metric: nil,
@@ -150,6 +151,23 @@ struct VoiceInkTests {
 
         #expect(decoded == snapshot)
         #expect(decodedPerformance == performance)
+
+        var legacyPropertyList = try #require(
+            PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
+        )
+        legacyPropertyList["schemaVersion"] = 1
+        legacyPropertyList.removeValue(forKey: "sourceDeviceName")
+        let legacyData = try PropertyListSerialization.data(
+            fromPropertyList: legacyPropertyList,
+            format: .binary,
+            options: 0
+        )
+        let legacySnapshot = try PropertyListDecoder().decode(
+            CloudUsageDataSyncService.Snapshot.self,
+            from: legacyData
+        )
+        #expect(legacySnapshot.schemaVersion == 1)
+        #expect(legacySnapshot.sourceDeviceName == nil)
     }
 
     @MainActor
@@ -225,14 +243,16 @@ struct VoiceInkTests {
 
         let serviceA = CloudUsageDataSyncService(
             defaults: defaultsA,
-            iCloudDriveRootURL: temporaryRoot
+            iCloudDriveRootURL: temporaryRoot,
+            deviceName: "Mac A"
         )
         serviceA.start(modelContext: containerA.mainContext)
         try await waitForUsageSync(serviceA)
 
         let serviceB = CloudUsageDataSyncService(
             defaults: defaultsB,
-            iCloudDriveRootURL: temporaryRoot
+            iCloudDriveRootURL: temporaryRoot,
+            deviceName: "Mac B"
         )
         serviceB.start(modelContext: containerB.mainContext)
         try await waitForUsageSync(serviceB)
@@ -339,7 +359,117 @@ struct VoiceInkTests {
             from: Data(contentsOf: manifestURL)
         )
         #expect(manifest.entries.count == 2)
+        #expect(manifest.sourceDeviceName == service.localDeviceName)
         service.setEnabled(false)
+    }
+
+    @MainActor
+    @Test func cloudUsageSyncMigratesSharedLegacyIdentityBeforeRepublishing() async throws {
+        let temporaryRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("VoiceInkIdentityMigrationTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: temporaryRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temporaryRoot) }
+
+        let sharedLegacyID = "D2254664-D184-4EEB-AA7D-6C118425D74E"
+        let cloudSuiteName = "VoiceInkTests.IdentityMigration.Cloud.\(UUID().uuidString)"
+        let localSuiteName = "VoiceInkTests.IdentityMigration.Local.\(UUID().uuidString)"
+        let cloudDefaults = try #require(UserDefaults(suiteName: cloudSuiteName))
+        let localDefaults = try #require(UserDefaults(suiteName: localSuiteName))
+        defer {
+            cloudDefaults.removePersistentDomain(forName: cloudSuiteName)
+            localDefaults.removePersistentDomain(forName: localSuiteName)
+        }
+
+        cloudDefaults.set(true, forKey: CloudSyncSettingsKeys.usageDataSyncEnabled)
+        cloudDefaults.set(sharedLegacyID, forKey: "CloudUsageDataSync.deviceID")
+        cloudDefaults.set(2, forKey: "CloudUsageDataSync.localIdentityVersionV2")
+
+        let schema = Schema([Transcription.self, SessionMetric.self])
+        let cloudContainer = try ModelContainer(
+            for: schema,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        let existingID = UUID()
+        let remoteOnlyID = UUID()
+        let cloudExisting = Transcription(text: "already local", duration: 1)
+        cloudExisting.id = existingID
+        let cloudRemoteOnly = Transcription(text: "from another Mac", duration: 2)
+        cloudRemoteOnly.id = remoteOnlyID
+        cloudContainer.mainContext.insert(cloudExisting)
+        cloudContainer.mainContext.insert(cloudRemoteOnly)
+        try cloudContainer.mainContext.save()
+
+        let cloudService = CloudUsageDataSyncService(
+            defaults: cloudDefaults,
+            iCloudDriveRootURL: temporaryRoot,
+            deviceName: "Other Mac"
+        )
+        cloudService.start(modelContext: cloudContainer.mainContext)
+        try await waitForUsageSync(cloudService)
+        cloudService.setEnabled(false)
+
+        let legacySnapshotURL = temporaryRoot
+            .appendingPathComponent("VoiceInk/UsageData/v1/Records", isDirectory: true)
+            .appendingPathComponent(remoteOnlyID.uuidString, isDirectory: true)
+            .appendingPathComponent(sharedLegacyID + ".plist")
+        let legacySnapshot = try PropertyListDecoder().decode(
+            CloudUsageDataSyncService.Snapshot.self,
+            from: Data(contentsOf: legacySnapshotURL)
+        )
+
+        localDefaults.set(true, forKey: CloudSyncSettingsKeys.usageDataSyncEnabled)
+        localDefaults.set(sharedLegacyID, forKey: "CloudUsageDataSync.deviceID")
+        localDefaults.set(true, forKey: "CloudUsageDataSync.localBootstrapCompletedV2")
+        localDefaults.set(true, forKey: "CloudUsageDataSync.legacyImportCompletedV2")
+        localDefaults.set(
+            try JSONEncoder().encode([remoteOnlyID.uuidString: legacySnapshot.revisionID.uuidString]),
+            forKey: "CloudUsageDataSync.appliedRevisions"
+        )
+
+        let localContainer = try ModelContainer(
+            for: schema,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        let localExisting = Transcription(text: "already local", duration: 1)
+        localExisting.id = existingID
+        localContainer.mainContext.insert(localExisting)
+        try localContainer.mainContext.save()
+
+        let localService = CloudUsageDataSyncService(
+            defaults: localDefaults,
+            iCloudDriveRootURL: temporaryRoot,
+            deviceName: "Eden Mac Studio"
+        )
+        localService.start(modelContext: localContainer.mainContext)
+
+        let timeout = Date().addingTimeInterval(5)
+        var migratedManifest: CloudUsageDataSyncService.DeviceManifest?
+        repeat {
+            let migratedID = localDefaults.string(forKey: "CloudUsageDataSync.deviceID") ?? ""
+            let manifestURL = temporaryRoot
+                .appendingPathComponent("VoiceInk/UsageData/v1/Devices", isDirectory: true)
+                .appendingPathComponent(migratedID + ".plist")
+            if let data = try? Data(contentsOf: manifestURL),
+                let manifest = try? PropertyListDecoder().decode(
+                    CloudUsageDataSyncService.DeviceManifest.self,
+                    from: data
+                ), manifest.entries.count == 2
+            {
+                migratedManifest = manifest
+                break
+            }
+            try await Task.sleep(for: .milliseconds(25))
+        } while Date() < timeout
+
+        let migratedID = try #require(localDefaults.string(forKey: "CloudUsageDataSync.deviceID"))
+        let localRecords = try localContainer.mainContext.fetch(FetchDescriptor<Transcription>())
+        #expect(migratedID != sharedLegacyID)
+        #expect(localRecords.count == 2)
+        #expect(localRecords.contains { $0.id == remoteOnlyID && $0.text == "from another Mac" })
+        #expect(migratedManifest?.sourceDeviceID == migratedID)
+        #expect(migratedManifest?.sourceDeviceName == "Eden Mac Studio")
+        #expect(migratedManifest?.entries.count == 2)
+        localService.setEnabled(false)
     }
 
     @MainActor
@@ -410,6 +540,8 @@ struct VoiceInkTests {
         #expect(!CloudConfigurationSyncService.isEligiblePreferenceKey("onboardingStage"))
         #expect(!CloudConfigurationSyncService.isEligiblePreferenceKey("NSWindow Frame main"))
         #expect(!CloudConfigurationSyncService.isEligiblePreferenceKey("CloudConfigurationSync.deviceID"))
+        #expect(!CloudConfigurationSyncService.isEligiblePreferenceKey("CloudUsageDataSync.deviceID"))
+        #expect(!CloudConfigurationSyncService.isEligiblePreferenceKey("CloudUsageDataSync.appliedRevisions"))
         #expect(!CloudConfigurationSyncService.isEligiblePreferenceKey(CloudSyncSettingsKeys.configurationSyncEnabled))
         #expect(!CloudConfigurationSyncService.isEligiblePreferenceKey(CloudSyncSettingsKeys.usageDataSyncEnabled))
         #expect(!CloudConfigurationSyncService.isEligiblePreferenceKey(CloudSyncSettingsKeys.usageAudioSyncEnabled))
