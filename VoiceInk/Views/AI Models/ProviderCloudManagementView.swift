@@ -1,9 +1,37 @@
 import AppKit
 import SwiftUI
 
+enum CloudProviderCapabilityFilter: String, CaseIterable, Identifiable {
+    case all
+    case transcription
+    case enhancement
+
+    var id: String { rawValue }
+
+    var title: LocalizedStringKey {
+        switch self {
+        case .all: "All"
+        case .transcription: "Transcription Model"
+        case .enhancement: "Enhancement Model"
+        }
+    }
+
+    func includes(_ descriptor: ProviderDescriptor) -> Bool {
+        switch self {
+        case .all:
+            true
+        case .transcription:
+            descriptor.hasTranscription
+        case .enhancement:
+            descriptor.hasEnhancement
+        }
+    }
+}
+
 struct CloudProviderManagementView: View {
     let selectedProviderID: String?
     let onSelectProvider: (ProviderDescriptor) -> Void
+    @State private var selectedCapabilityFilter: CloudProviderCapabilityFilter = .all
 
     static var providerDescriptors: [ProviderDescriptor] {
         let enhancementProviders: [AIProvider] = [
@@ -58,14 +86,20 @@ struct CloudProviderManagementView: View {
 
     var providerDescriptors: [ProviderDescriptor] { Self.providerDescriptors }
 
+    var filteredProviderDescriptors: [ProviderDescriptor] {
+        Self.providerDescriptors.filter(selectedCapabilityFilter.includes)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
+            capabilityFilterPicker
+
             ProviderSectionHeader(
                 title: "Cloud Providers",
                 subtitle: "Connect providers here, then choose models inside Modes."
             )
 
-            ForEach(providerDescriptors) { descriptor in
+            ForEach(filteredProviderDescriptors) { descriptor in
                 ProviderListRow(
                     descriptor: descriptor,
                     isSelected: selectedProviderID == descriptor.id,
@@ -73,6 +107,20 @@ struct CloudProviderManagementView: View {
                         onSelectProvider(descriptor)
                     }
                 )
+            }
+        }
+    }
+
+    private var capabilityFilterPicker: some View {
+        ModelCatalogFilterBar(title: "Model Type", systemImage: "square.grid.2x2") {
+            ForEach(CloudProviderCapabilityFilter.allCases) { filter in
+                ModelCatalogFilterChip(
+                    title: filter.title,
+                    isSelected: selectedCapabilityFilter == filter,
+                    accessibilityIdentifier: "cloud-capability-filter-\(filter.rawValue)"
+                ) {
+                    selectedCapabilityFilter = filter
+                }
             }
         }
     }
