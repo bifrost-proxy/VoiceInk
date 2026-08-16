@@ -197,15 +197,11 @@ final class HistoryStorageManager: ObservableObject {
             transcription.text, transcription.enhancedText, transcription.audioFileURL,
             transcription.transcriptionModelName, transcription.aiEnhancementModelName,
             transcription.promptName, transcription.aiRequestSystemMessage, transcription.aiRequestUserMessage,
-            transcription.deliveredText, transcription.finalEditedText, transcription.pasteTargetApplicationName,
-            transcription.pasteTargetBundleIdentifier, transcription.pasteTargetWindowTitle,
-            transcription.pasteTargetElementRole, transcription.pasteTargetElementIdentifier,
-            transcription.pasteTrackingStatus, transcription.modeName, transcription.modeEmoji,
+            transcription.modeName, transcription.modeEmoji,
             transcription.transcriptionStatus,
         ]
         let textBytes = strings.compactMap { $0 }.reduce(0) { $0 + $1.utf8.count }
-        let dataBytes = (transcription.postPasteEditHistoryData?.count ?? 0)
-            + (transcription.performanceData?.count ?? 0)
+        let dataBytes = transcription.performanceData?.count ?? 0
         return Int64(textBytes + dataBytes + 512)
     }
 

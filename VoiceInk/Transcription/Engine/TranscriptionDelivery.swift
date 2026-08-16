@@ -1,5 +1,4 @@
 import Foundation
-import SwiftData
 import os
 
 @MainActor
@@ -7,16 +6,13 @@ final class TranscriptionDelivery {
     typealias PasteAtCursor = @MainActor (String) async -> CursorPaster.PasteResult
 
     private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "TranscriptionDelivery")
-    private let postPasteEditTracker: PostPasteEditTracker
     private let pasteAtCursor: PasteAtCursor
 
     init(
-        modelContext: ModelContext,
         pasteAtCursor: @escaping PasteAtCursor = { text in
             await CursorPaster.pasteAtCursorAndWaitUntilPosted(text)
         }
     ) {
-        self.postPasteEditTracker = PostPasteEditTracker(modelContext: modelContext)
         self.pasteAtCursor = pasteAtCursor
     }
 
@@ -61,12 +57,7 @@ final class TranscriptionDelivery {
         }
 
         if let text = request.text {
-            await paste(
-                text,
-                transcription: request.transcription,
-                output: request.output,
-                actions: actions
-            )
+            await paste(text, output: request.output, actions: actions)
         } else {
             await actions.dismiss()
         }
@@ -175,7 +166,6 @@ final class TranscriptionDelivery {
 
     private func paste(
         _ text: String,
-        transcription: Transcription,
         output: OutputRuntimeConfiguration,
         actions: Actions
     ) async {
@@ -184,21 +174,11 @@ final class TranscriptionDelivery {
         SoundManager.shared.playStopSound()
         await actions.dismiss()
 
-        let trackingPreparation = postPasteEditTracker.prepare(
-            transcription: transcription,
-            deliveredText: pastedText
-        )
-        let pasteResult = await pasteAtCursor(pastedText)
+        _ = await pasteAtCursor(pastedText)
 
         let autoSendKey = output.outputMode == .paste ? output.autoSendKey : .none
-        Task { @MainActor in
-            await postPasteEditTracker.completePaste(
-                preparation: trackingPreparation,
-                result: pasteResult,
-                autoSent: autoSendKey.isEnabled
-            )
-
-            if autoSendKey.isEnabled {
+        if autoSendKey.isEnabled {
+            Task { @MainActor in
                 try? await Task.sleep(nanoseconds: 500_000_000)
                 CursorPaster.performAutoSend(autoSendKey)
             }

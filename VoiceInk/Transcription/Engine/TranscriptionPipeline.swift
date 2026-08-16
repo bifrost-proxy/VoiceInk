@@ -36,7 +36,7 @@ class TranscriptionPipeline {
         self.modelContext = modelContext
         self.serviceRegistry = serviceRegistry
         self.enhancementService = enhancementService
-        self.delivery = TranscriptionDelivery(modelContext: modelContext)
+        self.delivery = TranscriptionDelivery()
     }
 
     /// Run the full pipeline for a given transcription record.

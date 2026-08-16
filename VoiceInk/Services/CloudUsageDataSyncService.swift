@@ -29,15 +29,6 @@ final class CloudUsageDataSyncService: ObservableObject {
         let promptName: String?
         let transcriptionDuration: TimeInterval?
         let enhancementDuration: TimeInterval?
-        let deliveredText: String?
-        let finalEditedText: String?
-        let pasteTargetApplicationName: String?
-        let pasteTargetBundleIdentifier: String?
-        let pasteTargetElementRole: String?
-        let pasteTrackingStatus: String?
-        let pasteStartedAt: Date?
-        let pasteTrackingFinishedAt: Date?
-        let postPasteEditHistoryData: Data?
         let modeName: String?
         let modeEmoji: String?
         let transcriptionStatus: String?
@@ -601,8 +592,7 @@ final class CloudUsageDataSyncService: ObservableObject {
     }
 
     private func effectiveModifiedAt(for transcription: Transcription) -> Date {
-        let editDate = transcription.postPasteEditRecords.last?.timestamp
-        return [transcription.syncModifiedAt, transcription.pasteTrackingFinishedAt, editDate, transcription.timestamp]
+        return [transcription.syncModifiedAt, transcription.timestamp]
             .compactMap { $0 }
             .max() ?? transcription.timestamp
     }
@@ -973,15 +963,6 @@ final class CloudUsageDataSyncService: ObservableObject {
             promptName: transcription.promptName,
             transcriptionDuration: transcription.transcriptionDuration,
             enhancementDuration: transcription.enhancementDuration,
-            deliveredText: transcription.deliveredText,
-            finalEditedText: transcription.finalEditedText,
-            pasteTargetApplicationName: transcription.pasteTargetApplicationName,
-            pasteTargetBundleIdentifier: transcription.pasteTargetBundleIdentifier,
-            pasteTargetElementRole: transcription.pasteTargetElementRole,
-            pasteTrackingStatus: transcription.pasteTrackingStatus,
-            pasteStartedAt: transcription.pasteStartedAt,
-            pasteTrackingFinishedAt: transcription.pasteTrackingFinishedAt,
-            postPasteEditHistoryData: transcription.postPasteEditHistoryData,
             modeName: transcription.modeName,
             modeEmoji: transcription.modeEmoji,
             transcriptionStatus: transcription.transcriptionStatus,
@@ -1018,15 +999,6 @@ final class CloudUsageDataSyncService: ObservableObject {
         transcription.promptName = payload.promptName
         transcription.transcriptionDuration = payload.transcriptionDuration
         transcription.enhancementDuration = payload.enhancementDuration
-        transcription.deliveredText = payload.deliveredText
-        transcription.finalEditedText = payload.finalEditedText
-        transcription.pasteTargetApplicationName = payload.pasteTargetApplicationName
-        transcription.pasteTargetBundleIdentifier = payload.pasteTargetBundleIdentifier
-        transcription.pasteTargetElementRole = payload.pasteTargetElementRole
-        transcription.pasteTrackingStatus = payload.pasteTrackingStatus
-        transcription.pasteStartedAt = payload.pasteStartedAt
-        transcription.pasteTrackingFinishedAt = payload.pasteTrackingFinishedAt
-        transcription.postPasteEditHistoryData = payload.postPasteEditHistoryData
         transcription.modeName = payload.modeName
         transcription.modeEmoji = payload.modeEmoji
         transcription.transcriptionStatus = payload.transcriptionStatus

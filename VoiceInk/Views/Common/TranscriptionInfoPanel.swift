@@ -8,7 +8,6 @@ struct TranscriptionInfoPanel: View {
     var body: some View {
         Form {
             detailsSection
-            pasteTrackingSection
             aiRequestSection
         }
         .formStyle(.grouped)
@@ -81,49 +80,6 @@ struct TranscriptionInfoPanel: View {
             }
         } header: {
             Text("Details")
-        }
-    }
-
-    // MARK: - Delivery & Editing Section
-
-    @ViewBuilder
-    private var pasteTrackingSection: some View {
-        if let deliveredText = transcription.deliveredText {
-            Section {
-                if let appName = transcription.pasteTargetApplicationName {
-                    metadataRow(icon: "app.fill", label: "Target App", value: appName)
-                }
-
-                if let bundleIdentifier = transcription.pasteTargetBundleIdentifier {
-                    metadataRow(icon: "shippingbox.fill", label: "Bundle ID", value: bundleIdentifier)
-                }
-
-                if let windowTitle = transcription.pasteTargetWindowTitle, !windowTitle.isEmpty {
-                    requestMessageBlock(title: "Window", message: windowTitle)
-                }
-
-                if let role = transcription.pasteTargetElementRole {
-                    metadataRow(icon: "text.cursor", label: "Target Control", value: role)
-                }
-
-                if let status = transcription.pasteTrackingStatusValue {
-                    metadataRow(icon: "eye.fill", label: "Edit Tracking", value: status.displayName)
-                }
-
-                metadataRow(
-                    icon: "pencil.line",
-                    label: "Captured Changes",
-                    value: transcription.postPasteEditRecords.count.formatted()
-                )
-
-                requestMessageBlock(title: "Delivered Output", message: deliveredText)
-
-                if let finalEditedText = transcription.finalEditedText {
-                    requestMessageBlock(title: "Final Text in App", message: finalEditedText)
-                }
-            } header: {
-                Text("Delivery & Editing")
-            }
         }
     }
 

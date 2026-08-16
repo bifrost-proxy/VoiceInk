@@ -39,8 +39,7 @@ struct InlineHistoryView: View {
             if !searchText.isEmpty {
                 descriptor.predicate = #Predicate<Transcription> { transcription in
                     (transcription.text.localizedStandardContains(searchText)
-                        || (transcription.enhancedText?.localizedStandardContains(searchText) ?? false)
-                        || (transcription.finalEditedText?.localizedStandardContains(searchText) ?? false))
+                        || (transcription.enhancedText?.localizedStandardContains(searchText) ?? false))
                         && transcription.timestamp < timestamp
                 }
             } else {
@@ -49,10 +48,9 @@ struct InlineHistoryView: View {
                 }
             }
         } else if !searchText.isEmpty {
-                descriptor.predicate = #Predicate<Transcription> { transcription in
-                    transcription.text.localizedStandardContains(searchText)
-                        || (transcription.enhancedText?.localizedStandardContains(searchText) ?? false)
-                        || (transcription.finalEditedText?.localizedStandardContains(searchText) ?? false)
+            descriptor.predicate = #Predicate<Transcription> { transcription in
+                transcription.text.localizedStandardContains(searchText)
+                    || (transcription.enhancedText?.localizedStandardContains(searchText) ?? false)
             }
         }
 
@@ -442,7 +440,6 @@ struct InlineHistoryView: View {
                 allDescriptor.predicate = #Predicate<Transcription> { transcription in
                     transcription.text.localizedStandardContains(searchText)
                         || (transcription.enhancedText?.localizedStandardContains(searchText) ?? false)
-                        || (transcription.finalEditedText?.localizedStandardContains(searchText) ?? false)
                 }
             }
 
@@ -521,7 +518,7 @@ private struct HistoryCardRow: View {
                         .foregroundColor(.secondary)
 
                     if !isExpanded {
-                        Text(transcription.preferredHistoryDisplayText)
+                        Text(transcription.enhancedText ?? transcription.text)
                             .font(.system(size: 13))
                             .lineLimit(2)
                             .foregroundColor(.primary)
