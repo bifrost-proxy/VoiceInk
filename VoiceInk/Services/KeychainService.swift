@@ -57,7 +57,7 @@ final class KeychainService {
             }
         #endif
 
-        let query = baseQuery(forKey: key, syncable: syncable)
+        let query = baseQuery(forKey: key, syncable: syncable, storagePolicy: storagePolicy)
         let attributes = [kSecValueData as String: data]
         let updateStatus = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
 
@@ -125,7 +125,7 @@ final class KeychainService {
             }
         #endif
 
-        var query = baseQuery(forKey: key, syncable: syncable)
+        var query = baseQuery(forKey: key, syncable: syncable, storagePolicy: storagePolicy)
         query[kSecReturnData as String] = kCFBooleanTrue
         query[kSecMatchLimit as String] = kSecMatchLimitOne
 
@@ -157,7 +157,7 @@ final class KeychainService {
             }
         #endif
 
-        let query = baseQuery(forKey: key, syncable: syncable)
+        let query = baseQuery(forKey: key, syncable: syncable, storagePolicy: storagePolicy)
         let status = SecItemDelete(query as CFDictionary)
 
         if status == errSecSuccess || status == errSecItemNotFound {
@@ -185,7 +185,7 @@ final class KeychainService {
             }
         #endif
 
-        var query = baseQuery(forKey: key, syncable: syncable)
+        var query = baseQuery(forKey: key, syncable: syncable, storagePolicy: storagePolicy)
         query[kSecReturnData as String] = kCFBooleanFalse
 
         let status = SecItemCopyMatching(query as CFDictionary, nil)
@@ -195,14 +195,27 @@ final class KeychainService {
     // MARK: - Private Helpers
 
     /// Creates base Keychain query dictionary.
-    private func baseQuery(forKey key: String, syncable: Bool) -> [String: Any] {
+    private func baseQuery(
+        forKey key: String,
+        syncable: Bool,
+        storagePolicy: KeychainStoragePolicy
+    ) -> [String: Any] {
         var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: key,
-            kSecUseDataProtectionKeychain as String: true,
         ]
 
+        #if LOCAL_BUILD
+            // Ad-hoc builds do not have the application-identifier entitlement
+            // required by the data-protection Keychain. Keychain-only secrets
+            // stay encrypted in the user's login Keychain without iCloud sync.
+            if storagePolicy == .keychainOnly {
+                return query
+            }
+        #endif
+
+        query[kSecUseDataProtectionKeychain as String] = true
         if syncable {
             query[kSecAttrSynchronizable as String] = kCFBooleanTrue
         }

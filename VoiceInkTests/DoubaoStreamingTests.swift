@@ -83,6 +83,38 @@ struct DoubaoStreamingTests {
         #expect(APIKeyManager.storagePolicy(forProvider: "Deepgram") == .standard)
     }
 
+    #if LOCAL_BUILD
+        @Test func keychainOnlyStorageRoundTripsInAdHocBuild() {
+            let testKey = "doubaoSpeechKeychainTest-\(UUID().uuidString)"
+            defer {
+                _ = KeychainService.shared.delete(
+                    forKey: testKey,
+                    storagePolicy: .keychainOnly
+                )
+            }
+
+            #expect(
+                KeychainService.shared.save(
+                    "temporary-test-value",
+                    forKey: testKey,
+                    storagePolicy: .keychainOnly
+                )
+            )
+            #expect(
+                KeychainService.shared.getString(
+                    forKey: testKey,
+                    storagePolicy: .keychainOnly
+                ) == "temporary-test-value"
+            )
+            #expect(
+                KeychainService.shared.exists(
+                    forKey: testKey,
+                    storagePolicy: .keychainOnly
+                )
+            )
+        }
+    #endif
+
     @Test func catalogExposesBothDoubaoTwoPointZeroBillingResources() throws {
         let provider = try #require(CloudProviderRegistry.provider(for: .doubaoSpeech))
         let models = provider.models
