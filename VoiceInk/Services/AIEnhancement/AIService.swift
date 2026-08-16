@@ -208,7 +208,10 @@ class AIService: ObservableObject {
         didSet {
             userDefaults.set(selectedProvider.rawValue, forKey: "selectedAIProvider")
             if selectedProvider.requiresAPIKey {
-                if let savedKey = APIKeyManager.shared.getAPIKey(forProvider: selectedProvider.rawValue) {
+                if let savedKey = APIKeyManager.shared.getAPIKey(
+                    forProvider: selectedProvider.rawValue,
+                    allowAuthenticationUI: false
+                ) {
                     self.apiKey = savedKey
                     self.isAPIKeyValid = true
                 } else {
@@ -321,7 +324,10 @@ class AIService: ObservableObject {
         }
 
         if selectedProvider.requiresAPIKey {
-            if let savedKey = APIKeyManager.shared.getAPIKey(forProvider: selectedProvider.rawValue) {
+            if let savedKey = APIKeyManager.shared.getAPIKey(
+                forProvider: selectedProvider.rawValue,
+                allowAuthenticationUI: false
+            ) {
                 self.apiKey = savedKey
                 self.isAPIKeyValid = true
             }
@@ -361,7 +367,10 @@ class AIService: ObservableObject {
         }
 
         if selectedProvider.requiresAPIKey {
-            if let savedKey = APIKeyManager.shared.getAPIKey(forProvider: selectedProvider.rawValue) {
+            if let savedKey = APIKeyManager.shared.getAPIKey(
+                forProvider: selectedProvider.rawValue,
+                allowAuthenticationUI: false
+            ) {
                 apiKey = savedKey
                 isAPIKeyValid = true
             } else {

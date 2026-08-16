@@ -5,6 +5,8 @@ struct AudioSetupView: View {
     @ObservedObject private var audioDeviceManager = AudioDeviceManager.shared
     @ObservedObject private var mediaController = MediaController.shared
     @ObservedObject private var playbackController = PlaybackController.shared
+    @AppStorage(RecordingDurationSettings.maximumRecordingMinutesKey)
+    private var maximumRecordingDurationMinutes = RecordingDurationSettings.defaultMinutes
     @State private var microphoneSourceBeforePriorityOrder: MicrophoneSourceSelection = .systemDefault
     @State private var refreshIconRotation = 0.0
 
@@ -31,6 +33,17 @@ struct AudioSetupView: View {
             }
 
             Section {
+                Picker("Maximum Recording Duration", selection: maximumRecordingDurationBinding) {
+                    ForEach(RecordingDurationSettings.allowedMinutes, id: \.self) { minutes in
+                        Text(String(format: String(localized: "%d min"), minutes)).tag(minutes)
+                    }
+                }
+                .pickerStyle(.menu)
+
+                Text("VoiceInk automatically stops and transcribes when this limit is reached.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
                 Toggle("Mute Audio While Recording", isOn: $mediaController.isSystemMuteEnabled)
 
                 Toggle("Pause Media While Recording", isOn: $playbackController.isPauseMediaEnabled)
@@ -47,10 +60,19 @@ struct AudioSetupView: View {
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
         .onAppear {
+            maximumRecordingDurationMinutes = RecordingDurationSettings.normalizedMinutes(
+                maximumRecordingDurationMinutes)
             if !usesPriorityOrder {
                 microphoneSourceBeforePriorityOrder = currentMicrophoneSource
             }
         }
+    }
+
+    private var maximumRecordingDurationBinding: Binding<Int> {
+        Binding(
+            get: { RecordingDurationSettings.normalizedMinutes(maximumRecordingDurationMinutes) },
+            set: { maximumRecordingDurationMinutes = RecordingDurationSettings.normalizedMinutes($0) }
+        )
     }
 
     @ViewBuilder

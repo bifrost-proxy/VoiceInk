@@ -19742,6 +19742,134 @@
         }
       }
     },
+    "%d min" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%d Min."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%d 分钟"
+          }
+        }
+      }
+    },
+    "Maximum Recording Duration" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Maximale Aufnahmedauer"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "最长录音时长"
+          }
+        }
+      }
+    },
+    "Recording stopped after reaching the duration limit" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Die Aufnahme wurde nach Erreichen des Zeitlimits beendet"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已达到时长上限，录音已自动停止"
+          }
+        }
+      }
+    },
+    "VoiceInk automatically stops and transcribes when this limit is reached." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "VoiceInk beendet die Aufnahme automatisch und transkribiert sie, sobald dieses Limit erreicht ist."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "达到此上限后，VoiceInk 会自动停止录音并开始转写。"
+          }
+        }
+      }
+    },
+    "%@ is not connected. Configure its API key to use this mode." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ ist nicht verbunden. Konfiguriere den API-Schlüssel, um diesen Modus zu verwenden."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ 尚未连接。请配置 API Key 后再使用此模式。"
+          }
+        }
+      }
+    },
+    "%@ is not fully configured. Finish its setup to use this mode." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ ist nicht vollständig konfiguriert. Schließe die Einrichtung ab, um diesen Modus zu verwenden."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ 尚未完成配置。请完成设置后再使用此模式。"
+          }
+        }
+      }
+    },
+    "Configure API Key" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "API-Schlüssel konfigurieren"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "配置 API Key"
+          }
+        }
+      }
+    },
+    "Stored only in this Mac's Keychain. API keys do not sync between devices." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nur im Schlüsselbund dieses Macs gespeichert. API-Schlüssel werden nicht zwischen Geräten synchronisiert."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "仅存储在此 Mac 的钥匙串中。API Key 不会在设备间同步。"
+          }
+        }
+      }
+    },
     "When enabled, VoiceInk checks for a new version at launch and once every hour. Downloaded updates are verified before VoiceInk installs and restarts automatically." : {
       "localizations" : {
         "de" : {

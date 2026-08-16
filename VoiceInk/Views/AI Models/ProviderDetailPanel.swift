@@ -283,11 +283,12 @@ struct ProviderDetailPanel: View {
                 .help(String(format: String(localized: "Open %@ API key page"), descriptor.displayName))
             }
 
-            if descriptor.providerKey == "Doubao Speech" {
-                Label("Stored only in macOS Keychain", systemImage: "lock.shield.fill")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+            Label(
+                "Stored only in this Mac's Keychain. API keys do not sync between devices.",
+                systemImage: "lock.shield.fill"
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
         }
         .padding(12)
         .background(ProviderSurface(cornerRadius: 8))

@@ -225,7 +225,12 @@ final class CustomAIProviderManager: ObservableObject {
     }
 
     private func hasAPIKey(for provider: CustomAIProviderConfig) -> Bool {
-        guard let key = APIKeyManager.shared.getCustomAIProviderAPIKey(forProviderId: provider.id) else {
+        guard
+            let key = APIKeyManager.shared.getCustomAIProviderAPIKey(
+                forProviderId: provider.id,
+                allowAuthenticationUI: false
+            )
+        else {
             return false
         }
 

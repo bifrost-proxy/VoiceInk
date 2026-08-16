@@ -5,7 +5,7 @@ struct CloudProviderManagementView: View {
     let selectedProviderID: String?
     let onSelectProvider: (ProviderDescriptor) -> Void
 
-    var providerDescriptors: [ProviderDescriptor] {
+    static var providerDescriptors: [ProviderDescriptor] {
         let enhancementProviders: [AIProvider] = [
             .openAI,
             .openRouter,
@@ -56,6 +56,8 @@ struct CloudProviderManagementView: View {
         }
     }
 
+    var providerDescriptors: [ProviderDescriptor] { Self.providerDescriptors }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             ProviderSectionHeader(
@@ -75,7 +77,7 @@ struct CloudProviderManagementView: View {
         }
     }
 
-    private func matchingCloudProvider(for aiProvider: AIProvider) -> (any CloudProvider)? {
+    private static func matchingCloudProvider(for aiProvider: AIProvider) -> (any CloudProvider)? {
         CloudProviderRegistry.allProviders.first {
             $0.providerKey.caseInsensitiveCompare(aiProvider.rawValue) == .orderedSame
         }

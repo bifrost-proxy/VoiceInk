@@ -86,10 +86,11 @@ struct DoubaoStreamingTests {
         }
     }
 
-    @Test func doubaoAKAlwaysUsesSystemKeychain() {
+    @Test func allProviderKeysAlwaysUseSystemKeychain() {
         #expect(APIKeyManager.storagePolicy(forProvider: "Doubao Speech") == .keychainOnly)
         #expect(APIKeyManager.storagePolicy(forProvider: "doubao speech") == .keychainOnly)
-        #expect(APIKeyManager.storagePolicy(forProvider: "Deepgram") == .standard)
+        #expect(APIKeyManager.storagePolicy(forProvider: "Volcengine Ark") == .keychainOnly)
+        #expect(APIKeyManager.storagePolicy(forProvider: "Deepgram") == .keychainOnly)
     }
 
     #if LOCAL_BUILD
@@ -121,6 +122,30 @@ struct DoubaoStreamingTests {
                     storagePolicy: .keychainOnly
                 )
             )
+        }
+
+        @Test func legacyLocalCredentialMigratesIntoKeychain() {
+            let testKey = "legacyKeychainMigrationTest-\(UUID().uuidString)"
+            let legacyDefaultsKey = "LocalKeychain_\(testKey)"
+            let legacyData = Data("temporary-migration-value".utf8)
+            UserDefaults.standard.set(legacyData, forKey: legacyDefaultsKey)
+            defer {
+                UserDefaults.standard.removeObject(forKey: legacyDefaultsKey)
+                _ = KeychainService.shared.delete(
+                    forKey: testKey,
+                    syncable: false,
+                    storagePolicy: .keychainOnly
+                )
+            }
+
+            #expect(
+                KeychainService.shared.getString(
+                    forKey: testKey,
+                    syncable: false,
+                    storagePolicy: .keychainOnly
+                ) == "temporary-migration-value"
+            )
+            #expect(UserDefaults.standard.data(forKey: legacyDefaultsKey) == nil)
         }
     #endif
 

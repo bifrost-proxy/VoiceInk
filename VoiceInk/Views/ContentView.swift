@@ -20,6 +20,7 @@ final class MainWindowNavigation: ObservableObject {
     private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "MenuBarWindowFlow")
 
     @Published var selectedView: ViewType = .dashboard
+    @Published private(set) var requestedCloudProviderKey: String?
 
     private init() {}
 
@@ -43,6 +44,14 @@ final class MainWindowNavigation: ObservableObject {
             "🧭 Main-window navigation updated. destination=\(destination.rawValue, privacy: .public); selectedBefore=\(self.selectedView.rawValue, privacy: .public); selectedAfter=\(destination.rawValue, privacy: .public)"
         )
         selectedView = destination
+    }
+
+    func requestCloudProvider(_ providerKey: String) {
+        requestedCloudProviderKey = providerKey
+    }
+
+    func consumeCloudProviderRequest() {
+        requestedCloudProviderKey = nil
     }
 }
 

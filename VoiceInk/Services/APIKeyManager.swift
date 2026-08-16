@@ -8,7 +8,7 @@ final class APIKeyManager {
     private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "APIKeyManager")
     private let keychain = KeychainService.shared
 
-    /// Provider to Keychain identifier mapping (iOS compatible for iCloud sync).
+    /// Stable provider-to-Keychain identifiers retained for migration compatibility.
     private static let providerToKeychainKey: [String: String] = [
         "groq": "groqAPIKey",
         "deepgram": "deepgramAPIKey",
@@ -38,6 +38,7 @@ final class APIKeyManager {
         let success = keychain.save(
             key,
             forKey: keyIdentifier,
+            syncable: false,
             storagePolicy: Self.storagePolicy(forProvider: provider)
         )
         if success {
@@ -49,11 +50,13 @@ final class APIKeyManager {
     }
 
     /// Retrieves an API key for a provider.
-    func getAPIKey(forProvider provider: String) -> String? {
+    func getAPIKey(forProvider provider: String, allowAuthenticationUI: Bool = true) -> String? {
         let keyIdentifier = keychainIdentifier(forProvider: provider)
         return keychain.getString(
             forKey: keyIdentifier,
-            storagePolicy: Self.storagePolicy(forProvider: provider)
+            syncable: false,
+            storagePolicy: Self.storagePolicy(forProvider: provider),
+            allowAuthenticationUI: allowAuthenticationUI
         )
     }
 
@@ -63,6 +66,7 @@ final class APIKeyManager {
         let keyIdentifier = keychainIdentifier(forProvider: provider)
         let success = keychain.delete(
             forKey: keyIdentifier,
+            syncable: false,
             storagePolicy: Self.storagePolicy(forProvider: provider)
         )
         if success {
@@ -76,6 +80,7 @@ final class APIKeyManager {
         let keyIdentifier = keychainIdentifier(forProvider: provider)
         return keychain.exists(
             forKey: keyIdentifier,
+            syncable: false,
             storagePolicy: Self.storagePolicy(forProvider: provider)
         )
     }
@@ -86,7 +91,7 @@ final class APIKeyManager {
     @discardableResult
     func saveCustomModelAPIKey(_ key: String, forModelId modelId: UUID) -> Bool {
         let keyIdentifier = customModelKeyIdentifier(for: modelId)
-        let success = keychain.save(key, forKey: keyIdentifier)
+        let success = keychain.save(key, forKey: keyIdentifier, syncable: false, storagePolicy: .keychainOnly)
         if success {
             logger.info("Saved API key for custom model: \(modelId.uuidString, privacy: .public)")
         }
@@ -94,16 +99,21 @@ final class APIKeyManager {
     }
 
     /// Retrieves an API key for a custom model.
-    func getCustomModelAPIKey(forModelId modelId: UUID) -> String? {
+    func getCustomModelAPIKey(forModelId modelId: UUID, allowAuthenticationUI: Bool = true) -> String? {
         let keyIdentifier = customModelKeyIdentifier(for: modelId)
-        return keychain.getString(forKey: keyIdentifier)
+        return keychain.getString(
+            forKey: keyIdentifier,
+            syncable: false,
+            storagePolicy: .keychainOnly,
+            allowAuthenticationUI: allowAuthenticationUI
+        )
     }
 
     /// Deletes an API key for a custom model.
     @discardableResult
     func deleteCustomModelAPIKey(forModelId modelId: UUID) -> Bool {
         let keyIdentifier = customModelKeyIdentifier(for: modelId)
-        let success = keychain.delete(forKey: keyIdentifier)
+        let success = keychain.delete(forKey: keyIdentifier, syncable: false, storagePolicy: .keychainOnly)
         if success {
             logger.info("Deleted API key for custom model: \(modelId.uuidString, privacy: .public)")
         }
@@ -115,22 +125,30 @@ final class APIKeyManager {
     @discardableResult
     func saveCustomAIProviderAPIKey(_ key: String, forProviderId providerId: UUID) -> Bool {
         let keyIdentifier = customAIProviderKeyIdentifier(for: providerId)
-        let success = keychain.save(key, forKey: keyIdentifier)
+        let success = keychain.save(key, forKey: keyIdentifier, syncable: false, storagePolicy: .keychainOnly)
         if success {
             logger.info("Saved API key for custom AI provider: \(providerId.uuidString, privacy: .public)")
         }
         return success
     }
 
-    func getCustomAIProviderAPIKey(forProviderId providerId: UUID) -> String? {
+    func getCustomAIProviderAPIKey(
+        forProviderId providerId: UUID,
+        allowAuthenticationUI: Bool = true
+    ) -> String? {
         let keyIdentifier = customAIProviderKeyIdentifier(for: providerId)
-        return keychain.getString(forKey: keyIdentifier)
+        return keychain.getString(
+            forKey: keyIdentifier,
+            syncable: false,
+            storagePolicy: .keychainOnly,
+            allowAuthenticationUI: allowAuthenticationUI
+        )
     }
 
     @discardableResult
     func deleteCustomAIProviderAPIKey(forProviderId providerId: UUID) -> Bool {
         let keyIdentifier = customAIProviderKeyIdentifier(for: providerId)
-        let success = keychain.delete(forKey: keyIdentifier)
+        let success = keychain.delete(forKey: keyIdentifier, syncable: false, storagePolicy: .keychainOnly)
         if success {
             logger.info("Deleted API key for custom AI provider: \(providerId.uuidString, privacy: .public)")
         }
@@ -149,7 +167,7 @@ final class APIKeyManager {
     }
 
     static func storagePolicy(forProvider provider: String) -> KeychainStoragePolicy {
-        provider.caseInsensitiveCompare("Doubao Speech") == .orderedSame ? .keychainOnly : .standard
+        .keychainOnly
     }
 
     /// Generates Keychain identifier for custom model API key.

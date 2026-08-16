@@ -20,6 +20,28 @@ enum RecorderDisplaySettingsKeys {
     static let showLiveTranscript = "ShowLiveTranscript"
 }
 
+enum RecordingDurationSettings {
+    static let maximumRecordingMinutesKey = "MaximumRecordingDurationMinutes"
+    static let defaultMinutes = 5
+    static let allowedMinutes = 1...10
+
+    static func normalizedMinutes(_ minutes: Int) -> Int {
+        min(max(minutes, allowedMinutes.lowerBound), allowedMinutes.upperBound)
+    }
+
+    @discardableResult
+    static func currentMinutes(in defaults: UserDefaults = .standard) -> Int {
+        let storedMinutes = defaults.object(forKey: maximumRecordingMinutesKey) == nil
+            ? defaultMinutes
+            : defaults.integer(forKey: maximumRecordingMinutesKey)
+        let normalizedMinutes = normalizedMinutes(storedMinutes)
+        if storedMinutes != normalizedMinutes {
+            defaults.set(normalizedMinutes, forKey: maximumRecordingMinutesKey)
+        }
+        return normalizedMinutes
+    }
+}
+
 enum AppDefaults {
     static func registerDefaults(in defaults: UserDefaults = .standard) {
         defaults.register(defaults: [
@@ -48,6 +70,7 @@ enum AppDefaults {
             "AppendTrailingSpace": true,
             "RecorderType": "mini",
             RecorderDisplaySettingsKeys.showLiveTranscript: true,
+            RecordingDurationSettings.maximumRecordingMinutesKey: RecordingDurationSettings.defaultMinutes,
 
             // Cleanup
             CleanupSettingsKeys.isTranscriptionCleanupEnabled: false,
