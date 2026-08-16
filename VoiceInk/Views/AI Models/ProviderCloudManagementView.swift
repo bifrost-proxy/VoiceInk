@@ -43,7 +43,8 @@ struct CloudProviderManagementView: View {
         }
 
         let preferredOrder = [
-            "Groq", "Cerebras", "Gemini", "OpenAI", "Volcengine Ark", "OpenRouter", "Anthropic", "Mistral",
+            "Groq", "Cerebras", "Gemini", "OpenAI", "Volcengine Ark", "Doubao Speech",
+            "OpenRouter", "Anthropic", "Mistral",
             "Deepgram", "ElevenLabs", "Soniox", "Speechmatics", "AssemblyAI", "xAI", "Cartesia",
         ]
 
@@ -133,6 +134,8 @@ struct ProviderDescriptor: Identifiable {
             return "provider-xai"
         case "cartesia":
             return "provider-cartesia"
+        case "doubao speech":
+            return nil
         default:
             return nil
         }
@@ -170,6 +173,8 @@ struct ProviderDescriptor: Identifiable {
             return URL(string: "https://console.x.ai/")
         case "cartesia":
             return URL(string: "https://play.cartesia.ai/keys")
+        case "doubao speech":
+            return URL(string: "https://console.volcengine.com/speech/new/setting/apikeys?projectName=default")
         default:
             return nil
         }

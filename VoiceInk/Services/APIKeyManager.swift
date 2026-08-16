@@ -21,6 +21,7 @@ final class APIKeyManager {
         "assemblyai": "assemblyAIAPIKey",
         "xai": "xaiAPIKey",
         "cartesia": "cartesiaAPIKey",
+        "doubao speech": "doubaoSpeechAPIKey",
         "openai": "openAIAPIKey",
         "anthropic": "anthropicAPIKey",
         "openrouter": "openRouterAPIKey",
@@ -34,7 +35,11 @@ final class APIKeyManager {
     @discardableResult
     func saveAPIKey(_ key: String, forProvider provider: String) -> Bool {
         let keyIdentifier = keychainIdentifier(forProvider: provider)
-        let success = keychain.save(key, forKey: keyIdentifier)
+        let success = keychain.save(
+            key,
+            forKey: keyIdentifier,
+            storagePolicy: Self.storagePolicy(forProvider: provider)
+        )
         if success {
             logger.info(
                 "Saved API key for provider: \(provider, privacy: .public) with key: \(keyIdentifier, privacy: .public)"
@@ -46,14 +51,20 @@ final class APIKeyManager {
     /// Retrieves an API key for a provider.
     func getAPIKey(forProvider provider: String) -> String? {
         let keyIdentifier = keychainIdentifier(forProvider: provider)
-        return keychain.getString(forKey: keyIdentifier)
+        return keychain.getString(
+            forKey: keyIdentifier,
+            storagePolicy: Self.storagePolicy(forProvider: provider)
+        )
     }
 
     /// Deletes an API key for a provider.
     @discardableResult
     func deleteAPIKey(forProvider provider: String) -> Bool {
         let keyIdentifier = keychainIdentifier(forProvider: provider)
-        let success = keychain.delete(forKey: keyIdentifier)
+        let success = keychain.delete(
+            forKey: keyIdentifier,
+            storagePolicy: Self.storagePolicy(forProvider: provider)
+        )
         if success {
             logger.info("Deleted API key for provider: \(provider, privacy: .public)")
         }
@@ -63,7 +74,10 @@ final class APIKeyManager {
     /// Checks if an API key exists for a provider.
     func hasAPIKey(forProvider provider: String) -> Bool {
         let keyIdentifier = keychainIdentifier(forProvider: provider)
-        return keychain.exists(forKey: keyIdentifier)
+        return keychain.exists(
+            forKey: keyIdentifier,
+            storagePolicy: Self.storagePolicy(forProvider: provider)
+        )
     }
 
     // MARK: - Custom Model API Keys
@@ -132,6 +146,10 @@ final class APIKeyManager {
             return mapped
         }
         return "\(lowercased)APIKey"
+    }
+
+    static func storagePolicy(forProvider provider: String) -> KeychainStoragePolicy {
+        provider.caseInsensitiveCompare("Doubao Speech") == .orderedSame ? .keychainOnly : .standard
     }
 
     /// Generates Keychain identifier for custom model API key.
