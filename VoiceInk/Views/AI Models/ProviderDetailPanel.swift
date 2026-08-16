@@ -223,7 +223,7 @@ struct ProviderDetailPanel: View {
                 providerDetailIcon("key.fill")
 
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("API Key")
+                    Text(descriptor.providerKey == "Doubao Speech" ? "AK (API Key)" : "API Key")
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(.primary)
                 }
@@ -281,6 +281,12 @@ struct ProviderDetailPanel: View {
                 }
                 .buttonStyle(.plain)
                 .help(String(format: String(localized: "Open %@ API key page"), descriptor.displayName))
+            }
+
+            if descriptor.providerKey == "Doubao Speech" {
+                Label("Stored only in macOS Keychain", systemImage: "lock.shield.fill")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         .padding(12)
