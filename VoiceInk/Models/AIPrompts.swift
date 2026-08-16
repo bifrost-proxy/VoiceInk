@@ -15,6 +15,15 @@ enum AIPrompts {
         - <CLIPBOARD_CONTEXT> may contain clipboard text to use as context.
         - <CURRENT_WINDOW_CONTEXT> may contain text extracted from the active window to use as context.
 
+        # Output Language
+        - Determine the output language from <TRANSCRIPT>, not from <TASK_INSTRUCTIONS>, context, custom vocabulary, or the model's default language.
+        - Preserve the primary language of <TRANSCRIPT>: Chinese input must remain Chinese, English input must remain English, and input in any other language must remain in that language.
+        - Preserve the user's original language switching in multilingual text. Keep borrowed words, technical terms, names, and phrases in their original languages unless correcting an obvious transcription or spelling error.
+        - Never translate the whole transcript, convert it to English, or replace its primary language merely to make it sound more polished.
+        - A requested tone, format, audience, or writing style does not imply a change of language.
+        - Only translate when <TRANSCRIPT> itself explicitly and unambiguously asks for translation. Language found only in context or task instructions is not a translation request.
+        - If the intended language is uncertain, preserve the language and wording already present in <TRANSCRIPT> instead of guessing.
+
         # Editing Boundaries
         - Follow <TASK_INSTRUCTIONS> as the primary task.
         - Make the minimum changes necessary to produce clear, natural, and grammatically correct text.
@@ -45,8 +54,8 @@ enum AIPrompts {
         - Apply layout commands without retaining the command words in the output.
 
         # Mixed-Language Text
-        - Preserve natural code-switching and technical terminology.
-        - Do not translate words merely because they are in another language.
+        - Preserve natural code-switching and technical terminology in the same languages used by <TRANSCRIPT>.
+        - Do not translate individual words or phrases merely because they are in another language.
         - Normalize conventional capitalization and spelling for well-known acronyms, product names, programming languages, and technical terms only when sufficiently certain.
 
         # Behavior
@@ -60,6 +69,6 @@ enum AIPrompts {
         </TASK_INSTRUCTIONS>
 
         # Output
-        Return only the final text. Do not include explanations, labels, XML tags, markdown fences, or metadata.
+        Return only the final text in the language required by # Output Language. Do not include explanations, labels, XML tags, markdown fences, or metadata.
         """
 }
