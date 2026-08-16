@@ -82,11 +82,11 @@ final class OnboardingCoordinator: ObservableObject {
         self.hasRequestedScreenRecording = defaults.bool(forKey: OnboardingStorageKeys.requestedScreenRecording)
         self.experienceStepIndex = defaults.integer(forKey: OnboardingStorageKeys.experienceIndex)
         self.storedOnboardingAIProvider =
-            defaults.string(forKey: OnboardingStorageKeys.aiProvider) ?? AIProvider.groq.rawValue
+            defaults.string(forKey: OnboardingStorageKeys.aiProvider) ?? AIProvider.ark.rawValue
         self.storedTranscriptionSetupKind =
             defaults.string(
                 forKey: OnboardingStorageKeys.transcriptionSetupKind
-            ) ?? OnboardingTranscriptionSetupKind.local.rawValue
+            ) ?? OnboardingTranscriptionSetupKind.cloud.rawValue
         self.storedOnboardingTranscriptionProvider =
             defaults.string(
                 forKey: OnboardingStorageKeys.transcriptionProvider
@@ -229,6 +229,7 @@ final class OnboardingCoordinator: ObservableObject {
 
     var onboardingProviderOptions: [AIProvider] {
         let preferredOrder: [AIProvider] = [
+            .ark,
             .groq,
             .cerebras,
             .gemini,
@@ -260,7 +261,7 @@ final class OnboardingCoordinator: ObservableObject {
 
     var onboardingTranscriptionProviderOptions: [any CloudProvider] {
         let preferredOrder = [
-            "AssemblyAI", "Cartesia", "Deepgram", "ElevenLabs", "Soniox",
+            "Doubao Speech", "AssemblyAI", "Cartesia", "Deepgram", "ElevenLabs", "Soniox",
             "Speechmatics", "xAI", "Mistral", "Groq", "Gemini",
         ]
 
@@ -308,8 +309,12 @@ final class OnboardingCoordinator: ObservableObject {
 
     var recommendedOnboardingTranscriptionProvider: (any CloudProvider)? {
         onboardingTranscriptionProviderOptions.first {
-            $0.providerKey.caseInsensitiveCompare("AssemblyAI") == .orderedSame
+            $0.providerKey.caseInsensitiveCompare("Doubao Speech") == .orderedSame
         }
+    }
+
+    var recommendedOnboardingProvider: AIProvider? {
+        onboardingProviderOptions.first { $0 == .ark }
     }
 
     var activeExperienceSteps: [OnboardingExperienceStep] {
@@ -357,11 +362,7 @@ final class OnboardingCoordinator: ObservableObject {
             return storedProvider
         }
 
-        if onboardingProviderOptions.contains(.groq) {
-            return .groq
-        }
-
-        return onboardingProviderOptions.first ?? .groq
+        return recommendedOnboardingProvider ?? onboardingProviderOptions.first ?? .ark
     }
 
     var recommendedLocalTranscriptionModelName: String {
@@ -398,7 +399,7 @@ final class OnboardingCoordinator: ObservableObject {
     func selectedOnboardingProviderBinding(aiService: AIService) -> Binding<AIProvider> {
         Binding(
             get: { [weak self] in
-                self?.selectedOnboardingProvider ?? .groq
+                self?.selectedOnboardingProvider ?? .ark
             },
             set: { [weak self] provider in
                 self?.flow.selectOnboardingProvider(provider, aiService: aiService)

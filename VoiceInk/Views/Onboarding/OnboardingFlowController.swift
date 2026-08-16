@@ -395,10 +395,10 @@ final class OnboardingFlowController {
             return
         }
 
-        let defaultProvider: AIProvider =
-            coordinator.onboardingProviderOptions.contains(.groq)
-            ? .groq
-            : coordinator.onboardingProviderOptions.first ?? .groq
+        let defaultProvider =
+            coordinator.recommendedOnboardingProvider
+            ?? coordinator.onboardingProviderOptions.first
+            ?? .ark
         coordinator.storedOnboardingAIProvider = defaultProvider.rawValue
     }
 
