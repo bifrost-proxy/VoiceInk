@@ -5,7 +5,7 @@ struct CloudProviderManagementView: View {
     let selectedProviderID: String?
     let onSelectProvider: (ProviderDescriptor) -> Void
 
-    private var providerDescriptors: [ProviderDescriptor] {
+    var providerDescriptors: [ProviderDescriptor] {
         let enhancementProviders: [AIProvider] = [
             .openAI,
             .openRouter,
@@ -43,7 +43,7 @@ struct CloudProviderManagementView: View {
         }
 
         let preferredOrder = [
-            "Groq", "Cerebras", "Gemini", "OpenAI", "Volcengine Ark", "Doubao Speech",
+            "Volcengine Ark", "Doubao Speech", "Groq", "Cerebras", "Gemini", "OpenAI",
             "OpenRouter", "Anthropic", "Mistral",
             "Deepgram", "ElevenLabs", "Soniox", "Speechmatics", "AssemblyAI", "xAI", "Cartesia",
         ]

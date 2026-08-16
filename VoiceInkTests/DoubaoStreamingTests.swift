@@ -3,6 +3,15 @@ import Testing
 @testable import VoiceInk
 
 struct DoubaoStreamingTests {
+    @Test func cloudProviderCatalogPinsVolcengineAndDoubaoFirst() {
+        let view = CloudProviderManagementView(selectedProviderID: nil) { _ in }
+
+        #expect(Array(view.providerDescriptors.prefix(2).map(\.displayName)) == [
+            "Volcengine Ark",
+            "Doubao Speech",
+        ])
+    }
+
     @Test func fullClientRequestUsesDocumentedPCMFormatWithoutCompression() throws {
         let frame = try DoubaoStreamingProtocol.makeFullClientRequest(
             customVocabulary: ["VoiceInk", "豆包"]
@@ -126,6 +135,48 @@ struct DoubaoStreamingTests {
         #expect(models.map(\.supportsStreaming) == [true, true])
         let defaultModel = try #require(models.first)
         #expect(TranscriptionRealtimeSupport.isRequired(for: defaultModel))
+    }
+
+    @MainActor
+    @Test func newOnboardingDefaultsToDoubaoSpeechAndVolcengineArk() throws {
+        let suiteName = "VoiceInkTests.DoubaoArkOnboarding.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let coordinator = OnboardingCoordinator(
+            defaults: defaults,
+            preferredLanguages: ["zh-Hans-CN"],
+            supportsQwenMLX: true
+        )
+
+        #expect(coordinator.transcriptionSetupKind == .cloud)
+        #expect(coordinator.selectedOnboardingTranscriptionProvider?.providerKey == "Doubao Speech")
+        #expect(coordinator.selectedOnboardingTranscriptionModel?.name == DoubaoSpeechProvider.defaultResourceID)
+        #expect(coordinator.selectedOnboardingTranscriptionModel?.displayName == "Doubao Streaming ASR 2.0")
+        #expect(coordinator.selectedOnboardingProvider == .ark)
+    }
+
+    @MainActor
+    @Test func onboardingPreservesExistingProviderSelections() throws {
+        let suiteName = "VoiceInkTests.ExistingOnboardingProviders.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(
+            OnboardingTranscriptionSetupKind.local.rawValue,
+            forKey: OnboardingStorageKeys.transcriptionSetupKind
+        )
+        defaults.set("Deepgram", forKey: OnboardingStorageKeys.transcriptionProvider)
+        defaults.set(AIProvider.gemini.rawValue, forKey: OnboardingStorageKeys.aiProvider)
+
+        let coordinator = OnboardingCoordinator(
+            defaults: defaults,
+            preferredLanguages: ["en-US"],
+            supportsQwenMLX: true
+        )
+
+        #expect(coordinator.transcriptionSetupKind == .local)
+        #expect(coordinator.selectedOnboardingTranscriptionProvider?.providerKey == "Deepgram")
+        #expect(coordinator.selectedOnboardingProvider == .gemini)
     }
 
     private func readUInt32(_ bytes: [UInt8], offset: Int) -> UInt32 {
