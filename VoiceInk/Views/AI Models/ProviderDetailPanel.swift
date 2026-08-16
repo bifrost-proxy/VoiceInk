@@ -546,7 +546,21 @@ struct ProviderDetailPanel: View {
                 verificationSucceeded = result.isValid
 
                 if result.isValid {
-                    APIKeyManager.shared.saveAPIKey(trimmedKey, forProvider: descriptor.providerKey)
+                    let didSave = APIKeyManager.shared.saveAPIKey(
+                        trimmedKey,
+                        forProvider: descriptor.providerKey
+                    )
+                    guard didSave else {
+                        verificationSucceeded = false
+                        verificationMessage = String(
+                            localized: "The API key is valid, but VoiceInk could not save it to macOS Keychain."
+                        )
+                        verificationDetailMessage = String(
+                            localized: "The key was not cleared. Check Keychain access and try again."
+                        )
+                        return
+                    }
+
                     if let provider = descriptor.aiProvider {
                         if provider == .ark {
                             aiService.selectModel(arkVerificationModel, for: provider)
@@ -557,7 +571,7 @@ struct ProviderDetailPanel: View {
                         }
                     }
                     apiKey = ""
-                    verificationMessage = nil
+                    verificationMessage = String(localized: "API key verified and saved to macOS Keychain.")
                     verificationDetailMessage = nil
                     transcriptionModelManager.refreshAllAvailableModels()
                     NotificationCenter.default.post(name: .aiProviderKeyChanged, object: nil)
