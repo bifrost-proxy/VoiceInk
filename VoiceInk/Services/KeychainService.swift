@@ -1,4 +1,5 @@
 import Foundation
+import LocalAuthentication
 import Security
 import os
 
@@ -9,9 +10,10 @@ enum KeychainStoragePolicy: Equatable {
     case keychainOnly
 }
 
-/// Securely stores and retrieves API keys using Keychain with iCloud sync.
-/// Standard credentials use UserDefaults in local builds for compatibility;
-/// callers can require Keychain storage with the `.keychainOnly` policy.
+/// Securely stores and retrieves secrets using Keychain. Synchronization is
+/// controlled independently with `syncable`; API key callers disable it.
+/// Standard credentials use UserDefaults in local builds for compatibility,
+/// while `.keychainOnly` never permits that fallback.
 final class KeychainService {
     static let shared = KeychainService()
 
@@ -62,6 +64,7 @@ final class KeychainService {
         let updateStatus = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
 
         if updateStatus == errSecSuccess {
+            removeLegacyLocalFallback(forKey: key, storagePolicy: storagePolicy)
             logger.info("Successfully updated keychain item for key: \(key, privacy: .public)")
             return true
         }
@@ -78,6 +81,7 @@ final class KeychainService {
         let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
 
         if addStatus == errSecSuccess {
+            removeLegacyLocalFallback(forKey: key, storagePolicy: storagePolicy)
             logger.info("Successfully saved keychain item for key: \(key, privacy: .public)")
             return true
         }
@@ -85,6 +89,7 @@ final class KeychainService {
         if addStatus == errSecDuplicateItem {
             let retryStatus = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
             if retryStatus == errSecSuccess {
+                removeLegacyLocalFallback(forKey: key, storagePolicy: storagePolicy)
                 logger.info("Successfully updated concurrently created keychain item for key: \(key, privacy: .public)")
                 return true
             }
@@ -105,9 +110,17 @@ final class KeychainService {
     func getString(
         forKey key: String,
         syncable: Bool = true,
-        storagePolicy: KeychainStoragePolicy = .standard
+        storagePolicy: KeychainStoragePolicy = .standard,
+        allowAuthenticationUI: Bool = true
     ) -> String? {
-        guard let data = getData(forKey: key, syncable: syncable, storagePolicy: storagePolicy) else {
+        guard
+            let data = getData(
+                forKey: key,
+                syncable: syncable,
+                storagePolicy: storagePolicy,
+                allowAuthenticationUI: allowAuthenticationUI
+            )
+        else {
             return nil
         }
         return String(data: data, encoding: .utf8)
@@ -117,7 +130,8 @@ final class KeychainService {
     func getData(
         forKey key: String,
         syncable: Bool = true,
-        storagePolicy: KeychainStoragePolicy = .standard
+        storagePolicy: KeychainStoragePolicy = .standard,
+        allowAuthenticationUI: Bool = true
     ) -> Data? {
         #if LOCAL_BUILD
             if storagePolicy == .standard {
@@ -128,6 +142,9 @@ final class KeychainService {
         var query = baseQuery(forKey: key, syncable: syncable, storagePolicy: storagePolicy)
         query[kSecReturnData as String] = kCFBooleanTrue
         query[kSecMatchLimit as String] = kSecMatchLimitOne
+        if !allowAuthenticationUI {
+            preventAuthenticationUI(in: &query)
+        }
 
         var result: AnyObject?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
@@ -139,6 +156,16 @@ final class KeychainService {
                 "Failed to retrieve keychain item for key: \(key, privacy: .public), status: \(status, privacy: .public)"
             )
         }
+
+        #if LOCAL_BUILD
+            if storagePolicy == .keychainOnly,
+                let legacyData = defaults.data(forKey: localPrefix + key),
+                save(data: legacyData, forKey: key, syncable: syncable, storagePolicy: .keychainOnly)
+            {
+                logger.info("Migrated legacy local credential into Keychain for key: \(key, privacy: .public)")
+                return legacyData
+            }
+        #endif
 
         return nil
     }
@@ -161,6 +188,7 @@ final class KeychainService {
         let status = SecItemDelete(query as CFDictionary)
 
         if status == errSecSuccess || status == errSecItemNotFound {
+            removeLegacyLocalFallback(forKey: key, storagePolicy: storagePolicy)
             if status == errSecSuccess {
                 logger.info("Successfully deleted keychain item for key: \(key, privacy: .public)")
             }
@@ -183,16 +211,51 @@ final class KeychainService {
             if storagePolicy == .standard {
                 return defaults.data(forKey: localPrefix + key) != nil
             }
+            if storagePolicy == .keychainOnly {
+                return getData(
+                    forKey: key,
+                    syncable: syncable,
+                    storagePolicy: storagePolicy,
+                    allowAuthenticationUI: false
+                ) != nil
+            }
         #endif
 
         var query = baseQuery(forKey: key, syncable: syncable, storagePolicy: storagePolicy)
-        query[kSecReturnData as String] = kCFBooleanFalse
+        // A metadata-only query can report an item that this unsigned build
+        // cannot decrypt without showing a Keychain authorization dialog.
+        // Verify readable data without UI so background status checks never
+        // block app startup or recording preflight.
+        query[kSecReturnData as String] = kCFBooleanTrue
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        preventAuthenticationUI(in: &query)
 
-        let status = SecItemCopyMatching(query as CFDictionary, nil)
+        var result: AnyObject?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
         return status == errSecSuccess
     }
 
     // MARK: - Private Helpers
+
+    private func removeLegacyLocalFallback(forKey key: String, storagePolicy: KeychainStoragePolicy) {
+        #if LOCAL_BUILD
+            if storagePolicy == .keychainOnly {
+                defaults.removeObject(forKey: localPrefix + key)
+            }
+        #endif
+    }
+
+    private func preventAuthenticationUI(in query: inout [String: Any]) {
+        let context = LAContext()
+        context.interactionNotAllowed = true
+        query[kSecUseAuthenticationContext as String] = context
+
+        // The login Keychain used by ad-hoc builds still relies on its legacy
+        // ACL path and does not consistently honor LAContext alone. Supplying
+        // both options prevents an unsigned background status check from
+        // waiting indefinitely for a system authorization dialog.
+        query[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUIFail
+    }
 
     /// Creates base Keychain query dictionary.
     private func baseQuery(

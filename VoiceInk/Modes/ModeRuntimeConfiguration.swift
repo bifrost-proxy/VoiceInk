@@ -65,6 +65,59 @@ enum ModeTranscriptionModelResolution {
     case available(mode: ModeConfig, model: any TranscriptionModel)
 }
 
+enum ModeProviderConnectionIssue: Equatable {
+    case missingAPIKey(providerKey: String)
+    case incompleteConfiguration(providerKey: String)
+
+    var providerKey: String {
+        switch self {
+        case .missingAPIKey(let providerKey), .incompleteConfiguration(let providerKey):
+            return providerKey
+        }
+    }
+}
+
+enum ModeConnectionRequirements {
+    static func transcriptionIssue(
+        for model: any TranscriptionModel,
+        hasAPIKey: (String) -> Bool
+    ) -> ModeProviderConnectionIssue? {
+        guard let provider = CloudProviderRegistry.provider(for: model.provider),
+            !hasAPIKey(provider.providerKey)
+        else {
+            return nil
+        }
+        return .missingAPIKey(providerKey: provider.providerKey)
+    }
+
+    static func enhancementIssue(
+        for mode: ModeConfig?,
+        hasAPIKey: (String) -> Bool
+    ) -> ModeProviderConnectionIssue? {
+        guard let mode,
+            mode.isAIEnhancementEnabled,
+            let providerName = mode.selectedAIProvider,
+            let provider = AIProvider(rawValue: providerName),
+            provider.requiresAPIKey,
+            provider != .custom
+        else {
+            return nil
+        }
+
+        guard hasAPIKey(provider.rawValue) else {
+            return .missingAPIKey(providerKey: provider.rawValue)
+        }
+
+        if provider == .ark,
+            (mode.selectedAIModel ?? provider.defaultModel).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        {
+            return .incompleteConfiguration(providerKey: provider.rawValue)
+        }
+
+        return nil
+    }
+}
+
 @MainActor
 enum ModeRuntimeResolver {
     static func transcriptionModelResolution(
@@ -203,8 +256,7 @@ enum ModeRuntimeResolver {
         aiService: AIService
     ) -> AIProvider? {
         if let providerName,
-            let provider = AIProvider(rawValue: providerName),
-            aiService.connectedProviders.contains(provider)
+            let provider = AIProvider(rawValue: providerName)
         {
             return provider
         }

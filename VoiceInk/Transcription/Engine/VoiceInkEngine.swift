@@ -82,6 +82,46 @@ private final class RealtimeAudioChunkGate: @unchecked Sendable {
 }
 
 @MainActor
+final class RecordingDurationLimiter {
+    static let absoluteMaximumDuration: Duration = .seconds(600)
+
+    private var limitTask: Task<Void, Never>?
+    private(set) var scheduledRecordingID: UUID?
+
+    static func clampedDuration(_ duration: Duration) -> Duration {
+        min(max(duration, .zero), absoluteMaximumDuration)
+    }
+
+    func schedule(
+        recordingID: UUID,
+        duration: Duration,
+        onLimitReached: @MainActor @escaping (UUID) async -> Void
+    ) {
+        cancel()
+        scheduledRecordingID = recordingID
+        let effectiveDuration = Self.clampedDuration(duration)
+        limitTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(for: effectiveDuration)
+            } catch {
+                return
+            }
+
+            guard let self, scheduledRecordingID == recordingID else { return }
+            scheduledRecordingID = nil
+            limitTask = nil
+            await onLimitReached(recordingID)
+        }
+    }
+
+    func cancel() {
+        limitTask?.cancel()
+        limitTask = nil
+        scheduledRecordingID = nil
+    }
+}
+
+@MainActor
 class VoiceInkEngine: NSObject, ObservableObject {
     private enum RecordingUseCase {
         case newSession
@@ -104,6 +144,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
     private var activePipelineUseCase: RecordingUseCase = .newSession
     private var activeRecordingContextStore: RecordingContextSnapshotStore?
     private var activeRecordingContextTasks: [Task<Void, Never>] = []
+    private let recordingDurationLimiter = RecordingDurationLimiter()
 
     let recorder = Recorder()
     var recordedFile: URL? = nil
@@ -185,6 +226,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
         }
 
         if recordingState == .recording {
+            recordingDurationLimiter.cancel()
             activePipelineUseCase = activeRecordingUseCase
             activeRecordingUseCase = .newSession
             activeRecordingStartID = nil
@@ -225,6 +267,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
             let recordingUseCase: RecordingUseCase = canContinueAssistantSession ? .assistantFollowUp : .newSession
 
             activePipelineTranscriptionID = nil
+            recordingDurationLimiter.cancel()
             shouldCancelRecording = false
             partialTranscript = ""
             activeRecordingUseCase = recordingUseCase
@@ -237,7 +280,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
             requestRecordPermission { [self] granted in
                 if granted {
                     Task { @MainActor [self] in
-                        guard await self.passesRecordingPreflight() else { return }
+                        guard await self.passesRecordingPreflight(modeId: modeId) else { return }
 
                         let startID = UUID()
                         self.activeRecordingStartID = startID
@@ -277,6 +320,13 @@ class VoiceInkEngine: NSObject, ObservableObject {
                             }
 
                             self.recordingState = .recording
+                            let recordingDurationMinutes = RecordingDurationSettings.currentMinutes()
+                            self.recordingDurationLimiter.schedule(
+                                recordingID: startID,
+                                duration: .seconds(recordingDurationMinutes * 60)
+                            ) { [weak self] recordingID in
+                                await self?.stopRecordingAtDurationLimit(recordingID: recordingID)
+                            }
 
                             await activeModeTask.value
 
@@ -292,12 +342,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
                             let modelResolution = ModeRuntimeResolver.transcriptionModelResolution(
                                 transcriptionModelManager: self.transcriptionModelManager
                             )
-                            guard
-                                let transcriptionConfiguration = ModeRuntimeResolver.transcriptionConfiguration(
-                                    from: modelResolution
-                                )
-                            else {
-                                let failure = self.recordingModelFailure(for: modelResolution)
+                            if let failure = self.recordingReadinessFailure(for: modelResolution) {
                                 NotificationManager.shared.showNotification(
                                     title: failure.title,
                                     type: .error,
@@ -313,6 +358,13 @@ class VoiceInkEngine: NSObject, ObservableObject {
                                 await self.cleanupResources()
                                 await self.recorderUIManager?.dismissRecorderPanel()
                                 return
+                            }
+                            guard
+                                let transcriptionConfiguration = ModeRuntimeResolver.transcriptionConfiguration(
+                                    from: modelResolution
+                                )
+                            else {
+                                preconditionFailure("Recording readiness accepted an unavailable transcription model")
                             }
 
                             if self.serviceRegistry.shouldUseRealtimeTranscription(for: transcriptionConfiguration) {
@@ -411,6 +463,18 @@ class VoiceInkEngine: NSObject, ObservableObject {
         response(true)
     }
 
+    private func stopRecordingAtDurationLimit(recordingID: UUID) async {
+        guard activeRecordingStartID == recordingID, recordingState == .recording else { return }
+
+        logger.notice("Stopping recording after reaching the configured duration limit")
+        NotificationManager.shared.showNotification(
+            title: String(localized: "Recording stopped after reaching the duration limit"),
+            type: .warning,
+            duration: 5.0
+        )
+        await toggleRecord()
+    }
+
     // MARK: - Recording Preflight
 
     @MainActor
@@ -442,7 +506,23 @@ class VoiceInkEngine: NSObject, ObservableObject {
                 String(localized: "Manage Modes"),
                 ModeSetupNavigator.openModesSettings
             )
-        case .unavailable(let mode, let model), .available(let mode, let model):
+        case .unavailable(let mode, let model):
+            if let issue = ModeConnectionRequirements.transcriptionIssue(
+                for: model,
+                hasAPIKey: APIKeyManager.shared.hasAPIKey
+            ) {
+                return providerConnectionFailure(for: issue)
+            }
+            return (
+                String(
+                    format: String(localized: "'%@' is not available for the %@ mode"),
+                    model.displayName,
+                    mode.name
+                ),
+                String(localized: "Manage AI Models"),
+                ModeSetupNavigator.openModelsSettings
+            )
+        case .available(let mode, let model):
             return (
                 String(
                     format: String(localized: "'%@' is not available for the %@ mode"),
@@ -455,14 +535,78 @@ class VoiceInkEngine: NSObject, ObservableObject {
         }
     }
 
+    private func providerConnectionFailure(
+        for issue: ModeProviderConnectionIssue
+    ) -> (title: String, actionLabel: String, action: () -> Void) {
+        let title: String
+        switch issue {
+        case .missingAPIKey(let providerKey):
+            title = String(
+                format: String(localized: "%@ is not connected. Configure its API key to use this mode."),
+                providerKey
+            )
+        case .incompleteConfiguration(let providerKey):
+            title = String(
+                format: String(localized: "%@ is not fully configured. Finish its setup to use this mode."),
+                providerKey
+            )
+        }
+
+        return (
+            title,
+            String(localized: "Configure API Key"),
+            { ModeSetupNavigator.openModelsSettings(forProvider: issue.providerKey) }
+        )
+    }
+
+    private func recordingReadinessFailure(
+        for transcriptionResolution: ModeTranscriptionModelResolution
+    ) -> (title: String, actionLabel: String, action: () -> Void)? {
+        guard ModeRuntimeResolver.transcriptionConfiguration(from: transcriptionResolution) != nil else {
+            return recordingModelFailure(for: transcriptionResolution)
+        }
+
+        let mode: ModeConfig?
+        switch transcriptionResolution {
+        case .available(let resolvedMode, _):
+            mode = resolvedMode
+        case .noMode, .noSelection, .modelNotFound, .unavailable:
+            mode = nil
+        }
+
+        if let issue = ModeConnectionRequirements.enhancementIssue(
+            for: mode,
+            hasAPIKey: APIKeyManager.shared.hasAPIKey
+        ) {
+            return providerConnectionFailure(for: issue)
+        }
+
+        return nil
+    }
+
     /// Checks requirements that do not depend on asynchronous app and URL mode resolution.
     @MainActor
-    private func passesRecordingPreflight() async -> Bool {
+    private func passesRecordingPreflight(modeId: UUID?) async -> Bool {
         if !ModeManager.shared.hasEnabledConfiguration {
             await failRecordingPreflight(
                 title: String(localized: "No mode configured"),
                 actionLabel: String(localized: "Manage Modes"),
                 action: ModeSetupNavigator.openModesSettings
+            )
+            return false
+        }
+
+        let mode = modeId.flatMap(ModeManager.shared.getConfiguration(with:))
+            ?? ModeManager.shared.currentEffectiveConfiguration
+        let resolution = ModeRuntimeResolver.transcriptionModelResolution(
+            mode: mode,
+            transcriptionModelManager: transcriptionModelManager
+        )
+        if let failure = recordingReadinessFailure(for: resolution) {
+            await failRecordingPreflight(
+                title: failure.title,
+                actionLabel: failure.actionLabel,
+                action: failure.action
             )
             return false
         }
@@ -779,6 +923,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
 
     func cleanupResources() async {
         logger.notice("cleanupResources: releasing model resources")
+        recordingDurationLimiter.cancel()
         activeRecordingStartID = nil
         activeRecordingUseCase = .newSession
         await whisperModelManager.cleanupResources()

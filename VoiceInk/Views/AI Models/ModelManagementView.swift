@@ -53,6 +53,7 @@ struct ModelManagementView: View {
     @EnvironmentObject private var whisperModelManager: WhisperModelManager
     @EnvironmentObject private var fluidAudioModelManager: FluidAudioModelManager
     @EnvironmentObject private var transcriptionModelManager: TranscriptionModelManager
+    @EnvironmentObject private var mainWindowNavigation: MainWindowNavigation
     @StateObject private var customModelManager = CustomCloudModelManager.shared
     @StateObject private var customAIProviderManager = CustomAIProviderManager.shared
     @ObservedObject private var warmupCoordinator = WhisperModelWarmupCoordinator.shared
@@ -145,6 +146,22 @@ struct ModelManagementView: View {
                 secondaryButton: .cancel()
             )
         }
+        .onAppear(perform: openRequestedCloudProviderIfNeeded)
+        .onChange(of: mainWindowNavigation.requestedCloudProviderKey) { _, _ in
+            openRequestedCloudProviderIfNeeded()
+        }
+    }
+
+    private func openRequestedCloudProviderIfNeeded() {
+        guard let providerKey = mainWindowNavigation.requestedCloudProviderKey else { return }
+
+        selectedFilter = .cloud
+        if let descriptor = CloudProviderManagementView.providerDescriptors.first(where: {
+            $0.providerKey.caseInsensitiveCompare(providerKey) == .orderedSame
+        }) {
+            activePanel = .cloudProvider(descriptor)
+        }
+        mainWindowNavigation.consumeCloudProviderRequest()
     }
 
     private var headerSection: some View {

@@ -10,6 +10,11 @@ enum ModeSetupNavigator {
         open(destination: .models)
     }
 
+    static func openModelsSettings(forProvider providerKey: String) {
+        MainWindowNavigation.shared.requestCloudProvider(providerKey)
+        open(destination: .models)
+    }
+
     private static func open(destination: ViewType) {
         MainWindowNavigation.shared.navigate(to: destination)
 
