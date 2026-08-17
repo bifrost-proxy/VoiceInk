@@ -20484,7 +20484,7 @@
     },
     "Multi-threshold VAD" : {
       "localizations" : {
-        "de" : { "stringUnit" : { "state" : "translated", "value" : "Mehrstufige VAD" } },
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Mehrschwellen-VAD" } },
         "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "多阈值 VAD" } }
       }
     },
