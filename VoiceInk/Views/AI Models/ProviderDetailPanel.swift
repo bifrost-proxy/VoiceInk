@@ -17,9 +17,28 @@ struct ProviderDetailPanel: View {
     @State private var isShowingRemoveAPIKeyConfirmation = false
     @State private var activeDescriptorID = ""
     @State private var arkModel = ""
+    @AppStorage(DoubaoSpeechSettings.Keys.enableTwoPassRecognition)
+    private var doubaoEnableTwoPassRecognition = DoubaoSpeechSettings.defaults.enableTwoPassRecognition
+    @AppStorage(DoubaoSpeechSettings.Keys.enableTextNormalization)
+    private var doubaoEnableTextNormalization = DoubaoSpeechSettings.defaults.enableTextNormalization
+    @AppStorage(DoubaoSpeechSettings.Keys.enablePunctuation)
+    private var doubaoEnablePunctuation = DoubaoSpeechSettings.defaults.enablePunctuation
+    @AppStorage(DoubaoSpeechSettings.Keys.enableSemanticSmoothing)
+    private var doubaoEnableSemanticSmoothing = DoubaoSpeechSettings.defaults.enableSemanticSmoothing
+    @AppStorage(DoubaoSpeechSettings.Keys.enableFirstTextAcceleration)
+    private var doubaoEnableFirstTextAcceleration = DoubaoSpeechSettings.defaults.enableFirstTextAcceleration
+    @AppStorage(DoubaoSpeechSettings.Keys.firstTextAccelerationLevel)
+    private var doubaoFirstTextAccelerationLevel = DoubaoSpeechSettings.defaults.firstTextAccelerationLevel
+    @AppStorage(DoubaoSpeechSettings.Keys.silenceFinalizationMilliseconds)
+    private var doubaoSilenceFinalizationMilliseconds =
+        DoubaoSpeechSettings.defaults.silenceFinalizationMilliseconds
 
     private var isConfigured: Bool {
         APIKeyManager.shared.hasAPIKey(forProvider: descriptor.providerKey)
+    }
+
+    private var isDoubaoSpeech: Bool {
+        descriptor.providerKey.caseInsensitiveCompare("Doubao Speech") == .orderedSame
     }
 
     private var iconName: String {
@@ -35,6 +54,10 @@ struct ProviderDetailPanel: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     apiKeySection
+
+                    if isDoubaoSpeech {
+                        doubaoRecognitionSettingsSection
+                    }
 
                     if descriptor.hasTranscription {
                         transcriptionModelsSection
@@ -101,6 +124,127 @@ struct ProviderDetailPanel: View {
                 verificationStatusMessage
             }
         }
+    }
+
+    private var doubaoRecognitionSettingsSection: some View {
+        ProviderConfigurationGroup(title: "Recognition Options") {
+            VStack(alignment: .leading, spacing: 0) {
+                doubaoToggleRow(
+                    title: "Two-pass recognition",
+                    detail: "Uses a second recognition pass for more accurate final text.",
+                    isOn: $doubaoEnableTwoPassRecognition
+                )
+                .accessibilityIdentifier("doubao.settings.twoPassRecognition")
+                Divider()
+                doubaoToggleRow(
+                    title: "Text normalization",
+                    detail: "Converts spoken numbers, dates, and amounts to written form.",
+                    isOn: $doubaoEnableTextNormalization
+                )
+                .accessibilityIdentifier("doubao.settings.textNormalization")
+                Divider()
+                doubaoToggleRow(
+                    title: "Automatic punctuation",
+                    detail: "Adds punctuation to improve readability.",
+                    isOn: $doubaoEnablePunctuation
+                )
+                .accessibilityIdentifier("doubao.settings.automaticPunctuation")
+                Divider()
+                doubaoToggleRow(
+                    title: "Semantic smoothing",
+                    detail: "Removes filler words and repeated phrases from recognition results.",
+                    isOn: $doubaoEnableSemanticSmoothing
+                )
+                .accessibilityIdentifier("doubao.settings.semanticSmoothing")
+                Divider()
+                doubaoToggleRow(
+                    title: "Accelerate first text",
+                    detail: "Returns initial text sooner, with a possible reduction in early accuracy.",
+                    isOn: $doubaoEnableFirstTextAcceleration
+                )
+                .accessibilityIdentifier("doubao.settings.firstTextAcceleration")
+                Divider()
+                doubaoStepperRow(
+                    title: "First-text acceleration level",
+                    detail: "Higher values return the first text faster (0–20).",
+                    value: $doubaoFirstTextAccelerationLevel,
+                    range: DoubaoSpeechSettings.accelerationLevelRange,
+                    step: 1,
+                    suffix: ""
+                )
+                .accessibilityIdentifier("doubao.settings.firstTextAccelerationLevel")
+                .disabled(!doubaoEnableFirstTextAcceleration)
+                .opacity(doubaoEnableFirstTextAcceleration ? 1 : 0.55)
+                Divider()
+                doubaoStepperRow(
+                    title: "Silence finalization threshold",
+                    detail: "Lower values finalize sentences sooner but may split speech early.",
+                    value: $doubaoSilenceFinalizationMilliseconds,
+                    range: DoubaoSpeechSettings.silenceFinalizationRange,
+                    step: 100,
+                    suffix: " ms"
+                )
+                .accessibilityIdentifier("doubao.settings.silenceFinalization")
+            }
+            .padding(.horizontal, 12)
+            .background(ProviderSurface(cornerRadius: 10))
+            .accessibilityIdentifier("doubao.settings.recognitionOptions")
+
+            Label(
+                "These non-sensitive options sync through iCloud configuration sync.",
+                systemImage: "icloud"
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+    }
+
+    private func doubaoToggleRow(
+        title: LocalizedStringKey,
+        detail: LocalizedStringKey,
+        isOn: Binding<Bool>
+    ) -> some View {
+        Toggle(isOn: isOn) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.system(size: 12, weight: .medium))
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .toggleStyle(.switch)
+        .padding(.vertical, 10)
+    }
+
+    private func doubaoStepperRow(
+        title: LocalizedStringKey,
+        detail: LocalizedStringKey,
+        value: Binding<Int>,
+        range: ClosedRange<Int>,
+        step: Int,
+        suffix: String
+    ) -> some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.system(size: 12, weight: .medium))
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 12)
+
+            Stepper(value: value, in: range, step: step) {
+                Text("\(value.wrappedValue)\(suffix)")
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .frame(minWidth: 52, alignment: .trailing)
+            }
+        }
+        .padding(.vertical, 10)
     }
 
     private var arkModelInputRow: some View {
@@ -493,6 +637,18 @@ struct ProviderDetailPanel: View {
         verificationDetailMessage = nil
         isShowingRemoveAPIKeyConfirmation = false
         arkModel = descriptor.aiProvider == .ark ? aiService.selectedModel(for: .ark) : ""
+        normalizeDoubaoNumericSettingsIfNeeded()
+    }
+
+    private func normalizeDoubaoNumericSettingsIfNeeded() {
+        guard isDoubaoSpeech else { return }
+        let settings = DoubaoSpeechSettings.current()
+        if doubaoFirstTextAccelerationLevel != settings.firstTextAccelerationLevel {
+            doubaoFirstTextAccelerationLevel = settings.firstTextAccelerationLevel
+        }
+        if doubaoSilenceFinalizationMilliseconds != settings.silenceFinalizationMilliseconds {
+            doubaoSilenceFinalizationMilliseconds = settings.silenceFinalizationMilliseconds
+        }
     }
 
     private var canVerifyAPIKey: Bool {

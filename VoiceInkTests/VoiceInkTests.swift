@@ -565,6 +565,34 @@ struct VoiceInkTests {
     }
 
     @MainActor
+    @Test func legacyVocabularyDataDefaultsToOrdinaryVocabulary() throws {
+        let legacyBackup = try JSONDecoder().decode(
+            WordBackup.self,
+            from: Data(#"{"word":"LegacyTerm"}"#.utf8)
+        )
+        #expect(legacyBackup.word == "LegacyTerm")
+        #expect(legacyBackup.kindRawValue == nil)
+
+        let legacyCloudData = try PropertyListSerialization.data(
+            fromPropertyList: [
+                "word": "LegacyCloudTerm",
+                "dateAdded": Date(timeIntervalSince1970: 1_700_000_000),
+            ],
+            format: .binary,
+            options: 0
+        )
+        let legacyCloudItem = try PropertyListDecoder().decode(
+            CloudConfigurationSyncService.VocabularyItem.self,
+            from: legacyCloudData
+        )
+        #expect(legacyCloudItem.word == "LegacyCloudTerm")
+        #expect(legacyCloudItem.kindRawValue == nil)
+
+        let legacyModel = VocabularyWord(word: "ExistingTerm")
+        #expect(legacyModel.kind == .vocabulary)
+    }
+
+    @MainActor
     @Test func cloudConfigurationSyncIgnoresRepeatedContentNotifications() {
         let original = CloudConfigurationSyncService.Content(
             preferences: ["mode": Data("original".utf8)],

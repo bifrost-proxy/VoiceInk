@@ -103,22 +103,7 @@ class CloudTranscriptionService: TranscriptionService {
     }
 
     private func getCustomDictionaryTerms() -> [String] {
-        let descriptor = FetchDescriptor<VocabularyWord>(sortBy: [SortDescriptor(\.word)])
-        guard let vocabularyWords = try? modelContext.fetch(descriptor) else {
-            return []
-        }
-        var seen = Set<String>()
-        var unique: [String] = []
-        for word in vocabularyWords {
-            let trimmed = word.word.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else { continue }
-            let key = trimmed.lowercased()
-            if !seen.contains(key) {
-                seen.insert(key)
-                unique.append(trimmed)
-            }
-        }
-        return unique
+        TranscriptionVocabularyContext.uniqueTerms(from: modelContext)
     }
 
     private func mapLLMKitError(_ error: LLMKitError) -> CloudTranscriptionError {

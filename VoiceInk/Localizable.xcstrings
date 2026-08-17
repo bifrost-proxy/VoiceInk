@@ -17908,6 +17908,120 @@
         }
       }
     },
+    "Add a proper noun" : {
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Eigennamen hinzufügen" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "添加专有词" } }
+      }
+    },
+    "Accelerate first text" : {
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Erste Textausgabe beschleunigen" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "加速首字返回" } }
+      }
+    },
+    "Adds punctuation to improve readability." : {
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Fügt Satzzeichen für bessere Lesbarkeit hinzu." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "添加标点以提高可读性。" } }
+      }
+    },
+    "Automatic punctuation" : {
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Automatische Zeichensetzung" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "自动标点" } }
+      }
+    },
+    "Converts spoken numbers, dates, and amounts to written form." : {
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Wandelt gesprochene Zahlen, Daten und Beträge in Schriftform um." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "将口述数字、日期和金额转换为书面格式。" } }
+      }
+    },
+    "Entry Type" : {
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Eintragstyp" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "条目类型" } }
+      }
+    },
+    "First-text acceleration level" : {
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Beschleunigungsstufe der ersten Textausgabe" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "首字加速档位" } }
+      }
+    },
+    "Higher values return the first text faster (0–20)." : {
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Höhere Werte liefern den ersten Text schneller (0–20)." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "数值越高，首字返回越快（0–20）。" } }
+      }
+    },
+    "Lower values finalize sentences sooner but may split speech early." : {
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Niedrigere Werte schließen Sätze früher ab, können Sprache aber vorzeitig teilen." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "数值越低，分句越快确定，但可能提前切分语音。" } }
+      }
+    },
+    "Proper Noun" : {
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Eigenname" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "专有词" } }
+      }
+    },
+    "Recognition Options" : {
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Erkennungsoptionen" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "识别选项" } }
+      }
+    },
+    "Removes filler words and repeated phrases from recognition results." : {
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Entfernt Füllwörter und wiederholte Ausdrücke aus Erkennungsergebnissen." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "从识别结果中删除语气词和重复表达。" } }
+      }
+    },
+    "Returns initial text sooner, with a possible reduction in early accuracy." : {
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Liefert den ersten Text früher, möglicherweise mit geringerer Anfangsgenauigkeit." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "更快返回首字，但早期结果准确率可能降低。" } }
+      }
+    },
+    "Semantic smoothing" : {
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Semantische Glättung" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "语义顺滑" } }
+      }
+    },
+    "Silence finalization threshold" : {
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Stille-Schwelle für Satzabschluss" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "静音判停阈值" } }
+      }
+    },
+    "Text normalization" : {
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Textnormalisierung" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "文本规范化" } }
+      }
+    },
+    "These non-sensitive options sync through iCloud configuration sync." : {
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Diese nicht vertraulichen Optionen werden über die iCloud-Konfigurationssynchronisierung synchronisiert." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "这些非敏感选项会通过 iCloud 配置同步。" } }
+      }
+    },
+    "Two-pass recognition" : {
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Zweistufige Erkennung" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "二遍识别" } }
+      }
+    },
+    "Uses a second recognition pass for more accurate final text." : {
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Verwendet einen zweiten Erkennungsdurchlauf für genaueren finalen Text." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "使用第二遍识别提高最终文本准确率。" } }
+      }
+    },
     "Vocabulary" : {
       "localizations" : {
         "de" : {
@@ -17922,6 +18036,24 @@
             "value" : "词汇"
           }
         }
+      }
+    },
+    "Vocabulary & Proper Nouns" : {
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Vokabular & Eigennamen" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "词汇与专有词" } }
+      }
+    },
+    "Vocabulary & Proper Nouns (%lld)" : {
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Vokabular & Eigennamen (%lld)" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "词汇与专有词（%lld）" } }
+      }
+    },
+    "Vocabulary and proper nouns are supplied to supported transcription models as hotwords or context." : {
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Vokabular und Eigennamen werden unterstützten Transkriptionsmodellen als Hotwords oder Kontext bereitgestellt." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "词汇和专有词会作为热词或上下文提供给支持的转写模型。" } }
       }
     },
     "Vocabulary is used only with AI enhancement to preserve important names, technical terms, and unique spellings in the final output." : {
@@ -18731,6 +18863,12 @@
             "value" : "词语替换会在转写之后运行，用于替换听错的词语、短语、缩写或模板文本。"
           }
         }
+      }
+    },
+    "Word Replacements run after transcription. Vocabulary and proper nouns provide hotwords or context to supported transcription models." : {
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Wortersetzungen werden nach der Transkription ausgeführt. Vokabular und Eigennamen liefern Hotwords oder Kontext für unterstützte Transkriptionsmodelle." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "词语替换会在转写后执行；词汇与专有词会为支持的转写模型提供热词或上下文。" } }
       }
     },
     "Word Replacements run after transcription. Vocabulary is used with AI enhancement to better understand names, technical terms, and unique spellings in your transcript." : {

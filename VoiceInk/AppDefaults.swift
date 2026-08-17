@@ -69,6 +69,20 @@ enum AppDefaults {
             "RecorderType": "mini",
             RecorderDisplaySettingsKeys.showLiveTranscript: true,
             RecordingDurationSettings.maximumRecordingMinutesKey: RecordingDurationSettings.defaultMinutes,
+            DoubaoSpeechSettings.Keys.enableTwoPassRecognition:
+                DoubaoSpeechSettings.defaults.enableTwoPassRecognition,
+            DoubaoSpeechSettings.Keys.enableTextNormalization:
+                DoubaoSpeechSettings.defaults.enableTextNormalization,
+            DoubaoSpeechSettings.Keys.enablePunctuation:
+                DoubaoSpeechSettings.defaults.enablePunctuation,
+            DoubaoSpeechSettings.Keys.enableSemanticSmoothing:
+                DoubaoSpeechSettings.defaults.enableSemanticSmoothing,
+            DoubaoSpeechSettings.Keys.enableFirstTextAcceleration:
+                DoubaoSpeechSettings.defaults.enableFirstTextAcceleration,
+            DoubaoSpeechSettings.Keys.firstTextAccelerationLevel:
+                DoubaoSpeechSettings.defaults.firstTextAccelerationLevel,
+            DoubaoSpeechSettings.Keys.silenceFinalizationMilliseconds:
+                DoubaoSpeechSettings.defaults.silenceFinalizationMilliseconds,
 
             // Cleanup
             CleanupSettingsKeys.isTranscriptionCleanupEnabled: false,

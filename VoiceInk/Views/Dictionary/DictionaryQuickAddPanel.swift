@@ -121,11 +121,12 @@ class DictionaryQuickAddPanel: NSPanel {
 
 struct DictionaryQuickAddView: View {
     enum Mode: CaseIterable {
-        case vocabulary, replacement
+        case vocabulary, properNoun, replacement
 
         var label: LocalizedStringKey {
             switch self {
             case .vocabulary: return "Vocabulary"
+            case .properNoun: return "Proper Noun"
             case .replacement: return "Word Replacement"
             }
         }
@@ -133,6 +134,7 @@ struct DictionaryQuickAddView: View {
         var icon: String {
             switch self {
             case .vocabulary: return "character.book.closed.fill"
+            case .properNoun: return "person.text.rectangle"
             case .replacement: return "arrow.2.squarepath"
             }
         }
@@ -140,8 +142,13 @@ struct DictionaryQuickAddView: View {
         var panelHeight: CGFloat {
             switch self {
             case .vocabulary: return 130
+            case .properNoun: return 130
             case .replacement: return 164
             }
+        }
+
+        var isVocabularyEntry: Bool {
+            self == .vocabulary || self == .properNoun
         }
     }
 
@@ -196,7 +203,7 @@ struct DictionaryQuickAddView: View {
             replacementInput = ""
             errorMessage = nil
             DispatchQueue.main.async {
-                focusedField = newMode == .vocabulary ? .word : .original
+                focusedField = newMode.isVocabularyEntry ? .word : .original
             }
             onResize(newMode.panelHeight)
         }
@@ -234,13 +241,14 @@ struct DictionaryQuickAddView: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 7)
+        .accessibilityIdentifier("dictionary.quickAdd.entryType")
     }
 
     // MARK: - Input Area
 
     @ViewBuilder
     private var inputArea: some View {
-        if mode == .vocabulary {
+        if mode.isVocabularyEntry {
             vocabularyInput
         } else {
             replacementInputView
@@ -249,7 +257,7 @@ struct DictionaryQuickAddView: View {
 
     private var vocabularyInput: some View {
         HStack(spacing: 11) {
-            Image(systemName: "character.book.closed.fill")
+            Image(systemName: mode.icon)
                 .font(.system(size: 14))
                 .foregroundStyle(.secondary)
             TextField("", text: $wordInput, prompt: Text("e.g. Prakash, VoiceInk").foregroundColor(.secondary))
@@ -325,7 +333,11 @@ struct DictionaryQuickAddView: View {
         let input = wordInput.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !input.isEmpty else { return }
         if let error = DictionaryService.addVocabularyWords(
-            input, existing: Array(vocabularyWords), context: modelContext)
+            input,
+            existing: Array(vocabularyWords),
+            context: modelContext,
+            kind: mode == .properNoun ? .properNoun : .vocabulary
+        )
         {
             errorMessage = error
             return
