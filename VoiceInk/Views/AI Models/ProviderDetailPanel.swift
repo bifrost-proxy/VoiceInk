@@ -76,7 +76,16 @@ struct ProviderDetailPanel: View {
     }
 
     private var aliyunAPIHostValidationMessage: String? {
-        guard isAliyunQwen, !aliyunAPIHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        guard isAliyunQwen else { return nil }
+        let trimmedHost = aliyunAPIHost.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedHost.isEmpty, trimmedKey.lowercased().hasPrefix("sk-ws-") {
+            return String(
+                localized:
+                    "This dedicated API key requires the API Host shown on the Alibaba Cloud key page."
+            )
+        }
+        guard !trimmedHost.isEmpty else {
             return nil
         }
         do {
@@ -165,6 +174,10 @@ struct ProviderDetailPanel: View {
                     arkModelInputRow
                 }
 
+                if isAliyunQwen {
+                    aliyunConnectionSettings
+                }
+
                 if isConfigured {
                     verifiedAPIKeyRow
                 } else {
@@ -174,6 +187,63 @@ struct ProviderDetailPanel: View {
                 verificationStatusMessage
             }
         }
+    }
+
+    private var aliyunConnectionSettings: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Service region")
+                        .font(.system(size: 12, weight: .medium))
+                    Text("The API key and endpoint must belong to the same region.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 12)
+                Picker("Service region", selection: $aliyunRegion) {
+                    ForEach(AliyunQwenRegion.allCases) { region in
+                        Text(region.displayName).tag(region.rawValue)
+                    }
+                }
+                .labelsHidden()
+                .frame(width: 190)
+            }
+            .padding(.vertical, 10)
+            .accessibilityIdentifier("aliyun.settings.region")
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("API host")
+                    .font(.system(size: 12, weight: .medium))
+                TextField(aliyunSelectedRegion.sharedHost, text: $aliyunAPIHost)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 11, design: .monospaced))
+                    .accessibilityIdentifier("aliyun.settings.apiHost")
+                Text(
+                    "For a dedicated voice-input key, paste API Host from the same key page. Host, OpenAI-compatible, and DashScope URLs are accepted."
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                if let message = aliyunAPIHostValidationMessage {
+                    Text(message)
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.Status.error)
+                }
+            }
+            .padding(.vertical, 10)
+
+            Label(
+                "The API host stays on this Mac and does not sync through iCloud.",
+                systemImage: "lock.shield.fill"
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .padding(.bottom, 10)
+        }
+        .padding(.horizontal, 12)
+        .background(ProviderSurface(cornerRadius: 10))
+        .accessibilityIdentifier("aliyun.settings.connection")
     }
 
     private var doubaoRecognitionSettingsSection: some View {
@@ -252,47 +322,6 @@ struct ProviderDetailPanel: View {
     private var aliyunRecognitionSettingsSection: some View {
         ProviderConfigurationGroup(title: "Recognition Options") {
             VStack(alignment: .leading, spacing: 0) {
-                HStack(spacing: 12) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("Service region")
-                            .font(.system(size: 12, weight: .medium))
-                        Text("The API key and endpoint must belong to the same region.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer(minLength: 12)
-                    Picker("Service region", selection: $aliyunRegion) {
-                        ForEach(AliyunQwenRegion.allCases) { region in
-                            Text(region.displayName).tag(region.rawValue)
-                        }
-                    }
-                    .labelsHidden()
-                    .frame(width: 190)
-                }
-                .padding(.vertical, 10)
-                .accessibilityIdentifier("aliyun.settings.region")
-
-                Divider()
-
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("API host")
-                        .font(.system(size: 12, weight: .medium))
-                    TextField(aliyunSelectedRegion.sharedHost, text: $aliyunAPIHost)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(size: 11, design: .monospaced))
-                        .accessibilityIdentifier("aliyun.settings.apiHost")
-                    Text("Leave blank to use the shared endpoint, or enter the dedicated Workspace endpoint.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    if let message = aliyunAPIHostValidationMessage {
-                        Text(message)
-                            .font(.caption)
-                            .foregroundStyle(AppTheme.Status.error)
-                    }
-                }
-                .padding(.vertical, 10)
-
-                Divider()
                 optionToggleRow(
                     title: "Semantic sentence segmentation",
                     detail: "Uses semantic boundaries for higher accuracy, with greater final-result latency.",
@@ -391,7 +420,7 @@ struct ProviderDetailPanel: View {
             .accessibilityIdentifier("aliyun.settings.recognitionOptions")
 
             Label(
-                "Recognition options sync through iCloud; the API host and context stay on this Mac.",
+                "Recognition options sync through iCloud; recognition context stays on this Mac.",
                 systemImage: "icloud"
             )
             .font(.caption)
@@ -990,10 +1019,28 @@ struct ProviderDetailPanel: View {
                 } else {
                     verificationMessage = String(
                         localized: "Could not verify this API key. Check the key and try again.")
-                    verificationDetailMessage = result.errorMessage
+                    verificationDetailMessage = aliyunVerificationDetail(
+                        serviceError: result.errorMessage,
+                        key: trimmedKey
+                    )
                 }
             }
         }
+    }
+
+    private func aliyunVerificationDetail(serviceError: String?, key: String) -> String? {
+        guard isAliyunQwen else { return serviceError }
+        let trimmedHost = aliyunAPIHost.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmedHost.isEmpty || key.lowercased().hasPrefix("sk-ws-") else {
+            return serviceError
+        }
+
+        let guidance = String(
+            localized:
+                "Dedicated voice-input API keys must use the API Host displayed on the same Alibaba Cloud key page."
+        )
+        guard let serviceError, !serviceError.isEmpty else { return guidance }
+        return "\(serviceError)\n\(guidance)"
     }
 
     private func verifyAndSaveArkModel() {

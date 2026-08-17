@@ -20146,6 +20146,36 @@
         "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "VoiceInk 会保持一个 Codex App Server 进程运行，并为每次润色创建隔离会话。建议使用低推理强度以加快润色速度。" } }
       }
     },
+    "Dedicated voice-input API keys must use the API Host displayed on the same Alibaba Cloud key page." : {
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Dedizierte API-Schlüssel für die Spracheingabe müssen den API-Host verwenden, der auf derselben Alibaba-Cloud-Schlüsselseite angezeigt wird." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "专属语音输入 API 密钥必须使用同一阿里云密钥页面上显示的 API Host。" } }
+      }
+    },
+    "For a dedicated voice-input key, paste API Host from the same key page. Host, OpenAI-compatible, and DashScope URLs are accepted." : {
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Füge für einen dedizierten Spracheingabe-Schlüssel den API-Host von derselben Schlüsselseite ein. Host-, OpenAI-kompatible und DashScope-URLs werden akzeptiert." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "使用专属语音输入密钥时，请粘贴同一密钥页面上的 API Host。支持 Host、OpenAI 兼容地址和 DashScope 地址。" } }
+      }
+    },
+    "Recognition options sync through iCloud; recognition context stays on this Mac." : {
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Erkennungsoptionen werden über iCloud synchronisiert; der Erkennungskontext bleibt auf diesem Mac." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "识别选项会通过 iCloud 同步；识别上下文仅保留在此 Mac 上。" } }
+      }
+    },
+    "The API host stays on this Mac and does not sync through iCloud." : {
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Der API-Host bleibt auf diesem Mac und wird nicht über iCloud synchronisiert." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "API Host 仅保留在此 Mac 上，不会通过 iCloud 同步。" } }
+      }
+    },
+    "This dedicated API key requires the API Host shown on the Alibaba Cloud key page." : {
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Dieser dedizierte API-Schlüssel benötigt den API-Host, der auf der Alibaba-Cloud-Schlüsselseite angezeigt wird." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "此专属 API 密钥需要填写阿里云密钥页面上显示的 API Host。" } }
+      }
+    },
     "When enabled, VoiceInk checks for a new version at launch and once every hour. Downloaded updates are verified before VoiceInk installs and restarts automatically." : {
       "localizations" : {
         "de" : {
