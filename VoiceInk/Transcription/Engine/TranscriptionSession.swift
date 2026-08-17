@@ -13,11 +13,16 @@ protocol TranscriptionSession: AnyObject {
     /// Cancel the session and clean up resources.
     func cancel()
 
+    /// Records audio discarded before it reached the session's streaming queue.
+    func recordDroppedAudioChunks(_ count: Int)
+
     var performanceSnapshot: TranscriptionPerformanceSnapshot? { get }
 }
 
 extension TranscriptionSession {
     var performanceSnapshot: TranscriptionPerformanceSnapshot? { nil }
+
+    func recordDroppedAudioChunks(_ count: Int) {}
 }
 
 // MARK: - File-Based Session
@@ -146,7 +151,17 @@ final class StreamingTranscriptionSession: TranscriptionSession {
         // A buffered local model may still be loading when the user releases the shortcut.
         // Let startup finish so queued audio can drain instead of treating it as disconnected.
         if let startupTask {
-            await startupTask.value
+            let startedInTime = await StreamingAudioIntegrityPolicy.waitForCompletion(
+                of: startupTask,
+                timeout: StreamingAudioIntegrityPolicy.startupTimeout
+            )
+            if !startedInTime {
+                logger.warning("Streaming startup exceeded the reliability deadline; retrying the complete audio file")
+                streamingFailed = true
+                startupTaskID = nil
+                self.startupTask = nil
+                streamingService.cancel()
+            }
         }
 
         if !streamingFailed {
@@ -219,5 +234,9 @@ final class StreamingTranscriptionSession: TranscriptionSession {
         startupTask = nil
         startupTaskID = nil
         streamingService.cancel()
+    }
+
+    func recordDroppedAudioChunks(_ count: Int) {
+        streamingService.recordDroppedAudioChunks(count)
     }
 }

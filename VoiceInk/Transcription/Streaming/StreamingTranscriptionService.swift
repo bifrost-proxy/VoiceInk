@@ -10,7 +10,7 @@ private final class AudioChunkSource: @unchecked Sendable {
     init() {
         let (stream, continuation) = AsyncStream.makeStream(
             of: Data.self,
-            bufferingPolicy: .bufferingOldest(2_048)
+            bufferingPolicy: .bufferingOldest(StreamingAudioIntegrityPolicy.bufferCapacity)
         )
         self.stream = stream
         self.continuation = continuation
@@ -33,6 +33,84 @@ private final class AudioChunkSource: @unchecked Sendable {
 
     func finish() {
         continuation.finish()
+    }
+}
+
+private actor StreamingTaskCompletionRace {
+    private var result: Bool?
+    private var waiter: CheckedContinuation<Bool, Never>?
+
+    func wait() async -> Bool {
+        if let result { return result }
+        return await withCheckedContinuation { continuation in
+            waiter = continuation
+        }
+    }
+
+    func resolve(_ value: Bool) {
+        guard result == nil else { return }
+        result = value
+        waiter?.resume(returning: value)
+        waiter = nil
+    }
+}
+
+private final class StreamingOperationFailureBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedDescription: String?
+
+    var description: String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedDescription
+    }
+
+    func record(_ error: Error) {
+        lock.lock()
+        storedDescription = error.localizedDescription
+        lock.unlock()
+    }
+}
+
+enum StreamingAudioIntegrityPolicy {
+    static let bufferCapacity = 2_048
+    static let startupTimeout: Duration = .seconds(12)
+    static let drainTimeout: Duration = .seconds(10)
+    static let commitTimeout: Duration = .seconds(10)
+    static let disconnectTimeout: Duration = .seconds(3)
+
+    static func requiresBatchFallback(droppedChunks: Int, drainedInTime: Bool) -> Bool {
+        droppedChunks > 0 || !drainedInTime
+    }
+
+    /// Waits for an unstructured task without making a non-cooperative provider
+    /// a permanent blocker. The underlying task is cancelled on timeout; the
+    /// caller can immediately recover from the complete recorded WAV file.
+    static func waitForCompletion(
+        of task: Task<Void, Never>,
+        timeout: Duration
+    ) async -> Bool {
+        let race = StreamingTaskCompletionRace()
+        let completionWatcher = Task.detached {
+            await task.value
+            await race.resolve(true)
+        }
+        let timeoutWatcher = Task.detached(priority: .userInitiated) {
+            do {
+                try await Task.sleep(for: timeout)
+                await race.resolve(false)
+            } catch {
+                // The operation completed before the deadline.
+            }
+        }
+
+        let completed = await race.wait()
+        if !completed {
+            task.cancel()
+        }
+        completionWatcher.cancel()
+        timeoutWatcher.cancel()
+        return completed
     }
 }
 
@@ -74,6 +152,13 @@ private final class StreamingMetrics: @unchecked Sendable {
         lock.lock()
         droppedChunks += 1
         droppedBytes += byteCount
+        lock.unlock()
+    }
+
+    func recordDroppedChunks(_ count: Int) {
+        guard count > 0 else { return }
+        lock.lock()
+        droppedChunks += count
         lock.unlock()
     }
 
@@ -156,7 +241,7 @@ class StreamingTranscriptionService {
     private let customVocabulary: [String]
     private let fluidAudioService: FluidAudioTranscriptionService?
     private let sherpaOnnxService: SherpaOnnxTranscriptionService?
-    private var onPartialTranscript: ((String) -> Void)?
+    private var onPartialTranscript: (@MainActor (String) -> Void)?
     private let metrics = StreamingMetrics()
     private var stopStartedAt: Date?
     private var firstPartialLogged = false
@@ -171,7 +256,7 @@ class StreamingTranscriptionService {
     init(
         modelContext: ModelContext, fluidAudioService: FluidAudioTranscriptionService? = nil,
         sherpaOnnxService: SherpaOnnxTranscriptionService? = nil,
-        onPartialTranscript: ((String) -> Void)? = nil
+        onPartialTranscript: (@MainActor (String) -> Void)? = nil
     ) {
         self.customVocabulary = TranscriptionVocabularyContext.uniqueTerms(from: modelContext)
         self.fluidAudioService = fluidAudioService
@@ -272,6 +357,13 @@ class StreamingTranscriptionService {
         }
     }
 
+    /// Includes chunks lost by the pre-session gate in the same integrity
+    /// decision used for the streaming queue. Their bytes are unavailable, but
+    /// any positive count is enough to require the complete-file fallback.
+    nonisolated func recordDroppedAudioChunks(_ count: Int) {
+        metrics.recordDroppedChunks(count)
+    }
+
     /// Stops streaming and follows the provider's requested finalization path.
     func stopAndFinalize() async throws -> StreamingStopResult {
         guard let provider = provider, state == .streaming else {
@@ -293,22 +385,54 @@ class StreamingTranscriptionService {
         )
 
         // Finish the chunk source so the send loop drains remaining chunks and exits naturally.
-        await drainRemainingChunks()
+        let drainedInTime = await drainRemainingChunks()
+        let afterDrain = metrics.snapshot()
+        if StreamingAudioIntegrityPolicy.requiresBatchFallback(
+            droppedChunks: afterDrain.droppedChunks,
+            drainedInTime: drainedInTime
+        ) {
+            logger.warning(
+                "Streaming audio integrity lost; retrying complete file droppedChunks=\(afterDrain.droppedChunks, privacy: .public) drainedInTime=\(drainedInTime, privacy: .public)"
+            )
+            state = .done
+            await cleanupStreaming()
+            return .requiresBatchFallback
+        }
 
         // Set up the commit signal BEFORE sending commit to avoid a race with the response.
         let (signalStream, signalContinuation) = AsyncStream.makeStream(of: Void.self)
         self.commitSignal = signalContinuation
 
-        // Send commit to finalize any remaining audio
-        do {
-            try await provider.commit()
-        } catch {
+        // A provider is not allowed to keep the pipeline stuck forever while
+        // committing. A timeout falls through to the session's full-file retry.
+        let commitFailure = StreamingOperationFailureBox()
+        let commitTask = Task.detached(priority: .userInitiated) {
+            do {
+                try await provider.commit()
+            } catch {
+                commitFailure.record(error)
+            }
+        }
+        let committedInTime = await StreamingAudioIntegrityPolicy.waitForCompletion(
+            of: commitTask,
+            timeout: StreamingAudioIntegrityPolicy.commitTimeout
+        )
+        if !committedInTime || commitFailure.description != nil {
             commitSignal?.finish()
             commitSignal = nil
-            logger.error("Failed to send commit: \(error, privacy: .public)")
+            if let description = commitFailure.description {
+                logger.error("Failed to send commit: \(description, privacy: .public)")
+            } else {
+                logger.warning("Streaming commit exceeded the reliability deadline")
+            }
             state = .failed
             await cleanupStreaming()
-            throw error
+            if !committedInTime {
+                throw StreamingTranscriptionError.timeout
+            }
+            throw StreamingTranscriptionError.connectionFailed(
+                commitFailure.description ?? "Commit failed"
+            )
         }
 
         // Wait for the server to acknowledge our commit (or timeout)
@@ -434,16 +558,28 @@ class StreamingTranscriptionService {
     }
 
     /// Finishes the chunk source and waits for the send loop to process all remaining buffered chunks.
-    private func drainRemainingChunks() async {
+    private func drainRemainingChunks() async -> Bool {
         let start = Date()
         chunkSource.finish()
-        await sendTask?.value
+        let completed: Bool
+        if let sendTask {
+            completed = await StreamingAudioIntegrityPolicy.waitForCompletion(
+                of: sendTask,
+                timeout: StreamingAudioIntegrityPolicy.drainTimeout
+            )
+        } else {
+            completed = true
+        }
         sendTask = nil
         let snapshot = metrics.snapshot()
         drainDuration = Date().timeIntervalSince(start)
         logger.notice(
             "Streaming drain finished elapsed=\(Date().timeIntervalSince(start), format: .fixed(precision: 3), privacy: .public)s receivedChunks=\(snapshot.receivedChunks, privacy: .public) sentChunks=\(snapshot.sentChunks, privacy: .public) droppedChunks=\(snapshot.droppedChunks, privacy: .public) receivedBytes=\(snapshot.receivedBytes, privacy: .public) sentBytes=\(snapshot.sentBytes, privacy: .public) droppedBytes=\(snapshot.droppedBytes, privacy: .public)"
         )
+        if !completed {
+            logger.warning("Streaming audio drain exceeded the reliability deadline")
+        }
+        return completed
     }
 
     /// Consumes transcription events throughout the session, accumulating committed segments.
@@ -573,7 +709,18 @@ class StreamingTranscriptionService {
         chunkSource.finish()
         commitSignal?.finish()
         commitSignal = nil
-        await provider?.disconnect()
+        if let provider {
+            let disconnectTask = Task.detached(priority: .utility) {
+                await provider.disconnect()
+            }
+            let disconnected = await StreamingAudioIntegrityPolicy.waitForCompletion(
+                of: disconnectTask,
+                timeout: StreamingAudioIntegrityPolicy.disconnectTimeout
+            )
+            if !disconnected {
+                logger.warning("Streaming disconnect exceeded the reliability deadline")
+            }
+        }
         provider = nil
         state = .idle
         committedSegments = []

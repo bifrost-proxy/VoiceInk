@@ -495,15 +495,13 @@ class VoiceInkEngine: NSObject, ObservableObject {
         let session = serviceRegistry.createSession(
             for: transcriptionConfiguration,
             onPartialTranscript: { [weak self] partial in
-                Task { @MainActor in
-                    guard let self,
-                        self.activeRecordingStartID == startID,
-                        self.recordingState == .recording
-                    else {
-                        return
-                    }
-                    self.partialTranscript = partial
+                guard let self,
+                    self.activeRecordingStartID == startID,
+                    self.recordingState == .recording
+                else {
+                    return
                 }
+                self.partialTranscript = partial
             }
         )
         currentSession = session
@@ -513,6 +511,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
         if let realCallback {
             let droppedStartupChunks = realtimeAudioGate.activate(realCallback)
             if droppedStartupChunks > 0 {
+                session.recordDroppedAudioChunks(droppedStartupChunks)
                 logger.warning(
                     "Realtime startup audio gate dropped \(droppedStartupChunks, privacy: .public) chunks before streaming became active"
                 )

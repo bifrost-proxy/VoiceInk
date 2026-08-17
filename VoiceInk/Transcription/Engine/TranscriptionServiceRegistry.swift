@@ -55,7 +55,8 @@ class TranscriptionServiceRegistry {
 
     /// Creates a streaming or file-based session for the resolved transcription configuration.
     func createSession(
-        for configuration: TranscriptionRuntimeConfiguration, onPartialTranscript: ((String) -> Void)? = nil
+        for configuration: TranscriptionRuntimeConfiguration,
+        onPartialTranscript: (@MainActor (String) -> Void)? = nil
     ) -> TranscriptionSession {
         let model = configuration.model
 
