@@ -1,6 +1,198 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "Allow Accessibility Access" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zugriff auf Bedienungshilfen erlauben"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "允许辅助功能权限"
+          }
+        }
+      }
+    },
+    "Allow Microphone Access" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mikrofonzugriff erlauben"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "允许访问麦克风"
+          }
+        }
+      }
+    },
+    "Allow Screen Recording Access" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bildschirmaufnahme erlauben"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "允许屏幕录制权限"
+          }
+        }
+      }
+    },
+    "Complete the macOS permission request. VoiceInk will stay responsive while it waits." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Schließen Sie die macOS-Berechtigungsanfrage ab. VoiceInk bleibt während des Wartens reaktionsfähig."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请完成 macOS 权限请求。等待期间 VoiceInk 会保持响应。"
+          }
+        }
+      }
+    },
+    "Open System Settings" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Systemeinstellungen öffnen"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "打开系统设置"
+          }
+        }
+      }
+    },
+    "Permissions Are Ready" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Berechtigungen sind bereit"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "权限已就绪"
+          }
+        }
+      }
+    },
+    "Press your shortcut again or select Start Recording below." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Drücken Sie Ihr Tastenkürzel erneut oder wählen Sie unten „Aufnahme starten“."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请再次按下快捷键，或选择下方的“开始录音”。"
+          }
+        }
+      }
+    },
+    "Start Recording" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aufnahme starten"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "开始录音"
+          }
+        }
+      }
+    },
+    "This mode uses screen context. Allow VoiceInk under Screen & System Audio Recording, then return here. macOS may require VoiceInk to restart." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dieser Modus verwendet Bildschirmkontext. Erlauben Sie VoiceInk unter „Bildschirm- & Systemaudioaufnahme“ und kehren Sie dann hierher zurück. macOS erfordert möglicherweise einen Neustart von VoiceInk."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此模式会使用屏幕上下文。请在“屏幕与系统音频录制”中允许 VoiceInk，然后返回此处。macOS 可能要求重新启动 VoiceInk。"
+          }
+        }
+      }
+    },
+    "VoiceInk needs Accessibility access to detect shortcuts and type transcriptions. Enable VoiceInk in System Settings, then return here." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "VoiceInk benötigt Zugriff auf Bedienungshilfen, um Tastenkürzel zu erkennen und Transkriptionen einzugeben. Aktivieren Sie VoiceInk in den Systemeinstellungen und kehren Sie dann hierher zurück."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "VoiceInk 需要辅助功能权限才能检测快捷键并输入转录文本。请在“系统设置”中启用 VoiceInk，然后返回此处。"
+          }
+        }
+      }
+    },
+    "VoiceInk needs microphone access before it can record. Allow VoiceInk in System Settings, then return here." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "VoiceInk benötigt Mikrofonzugriff, bevor es aufnehmen kann. Erlauben Sie VoiceInk in den Systemeinstellungen den Zugriff und kehren Sie dann hierher zurück."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "VoiceInk 需要麦克风权限才能录音。请在“系统设置”中允许 VoiceInk，然后返回此处。"
+          }
+        }
+      }
+    },
+    "Waiting for Permission…" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Warten auf Berechtigung …"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在等待授权…"
+          }
+        }
+      }
+    },
     "" : {
       "localizations" : {
         "de" : {

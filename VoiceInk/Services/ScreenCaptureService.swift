@@ -24,17 +24,20 @@ class ScreenCaptureService: ObservableObject {
             return true
         }
 
-        if CGRequestScreenCaptureAccess() {
-            return true
+        // CGRequestScreenCaptureAccess blocks the calling thread while macOS
+        // owns the permission dialog. Keep it off MainActor so recorder UI,
+        // shortcut handling, and other app work remain responsive.
+        return await performPermissionRequest {
+            CGRequestScreenCaptureAccess()
         }
+    }
 
-        do {
-            _ = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
-        } catch {
-            return CGPreflightScreenCaptureAccess()
-        }
-
-        return CGPreflightScreenCaptureAccess()
+    static func performPermissionRequest(
+        _ request: @escaping @Sendable () -> Bool
+    ) async -> Bool {
+        await Task.detached(priority: .userInitiated) {
+            request()
+        }.value
     }
 
     func captureAndExtractText() async -> String? {

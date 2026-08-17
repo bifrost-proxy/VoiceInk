@@ -146,6 +146,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
     private var activeRecordingContextStore: RecordingContextSnapshotStore?
     private var activeRecordingContextTasks: [Task<Void, Never>] = []
     private var pendingPermissionModeId: UUID?
+    private var isPermissionAuthorizationInProgress = false
     private let recordingDurationLimiter = RecordingDurationLimiter()
 
     let recorder = Recorder()
@@ -278,7 +279,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
                 assistantSession.reset()
             }
 
-            guard await ensureRecordingPermissions(modeId: modeId) else { return }
+            guard ensureRecordingPermissions(modeId: modeId) else { return }
 
             requestRecordPermission { [self] granted in
                 if granted {
@@ -494,26 +495,59 @@ class VoiceInkEngine: NSObject, ObservableObject {
 
     // MARK: - Recording Preflight
 
-    func beginRecordingPermissionRecovery(modeId: UUID? = nil) async {
+    func prepareRecordingPermissionRecovery(modeId: UUID? = nil) {
         let recoveryModeId = modeId ?? pendingPermissionModeId
-        if await ensureRecordingPermissions(modeId: recoveryModeId) {
+        pendingPermissionModeId = recoveryModeId
+
+        if let issue = RecordingPermissionPreflight.firstMissingPermission(
+            requiresScreenRecording: modeRequiresScreenRecording(recoveryModeId)
+        ) {
+            recordingState = .idle
+            recordingPermissionGuidance = .required(issue)
+        } else {
+            pendingPermissionModeId = nil
             recordingPermissionGuidance = .ready
         }
     }
 
-    func refreshRecordingPermissionGuidance() async {
-        guard case .required(let currentIssue) = recordingPermissionGuidance else { return }
+    func beginRecordingPermissionRecovery(modeId: UUID? = nil) async {
+        let recoveryModeId = modeId ?? pendingPermissionModeId
+        pendingPermissionModeId = recoveryModeId
 
+        guard
+            let issue = RecordingPermissionPreflight.firstMissingPermission(
+                requiresScreenRecording: modeRequiresScreenRecording(recoveryModeId)
+            )
+        else {
+            pendingPermissionModeId = nil
+            recordingPermissionGuidance = .ready
+            return
+        }
+
+        guard !isPermissionAuthorizationInProgress else { return }
+        isPermissionAuthorizationInProgress = true
+        recordingState = .idle
+        recordingPermissionGuidance = .requesting(issue)
+
+        // The permission dialog belongs to VoiceInk. Bring the app forward and
+        // yield a render pass so the recorder guidance becomes visible before
+        // macOS presents any system UI.
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        try? await Task.sleep(nanoseconds: 150_000_000)
+
+        _ = await RecordingPermissionPreflight.requestAuthorization(for: issue)
+        isPermissionAuthorizationInProgress = false
+        refreshRecordingPermissionGuidance()
+    }
+
+    func refreshRecordingPermissionGuidance() {
+        guard recordingPermissionGuidance != nil else { return }
+        guard !isPermissionAuthorizationInProgress else { return }
         let nextIssue = RecordingPermissionPreflight.firstMissingPermission(
             requiresScreenRecording: modeRequiresScreenRecording(pendingPermissionModeId)
         )
-        guard nextIssue != currentIssue else { return }
-
         if let nextIssue {
             recordingPermissionGuidance = .required(nextIssue)
-            if await ensureRecordingPermissions(modeId: pendingPermissionModeId) {
-                recordingPermissionGuidance = .ready
-            }
         } else {
             pendingPermissionModeId = nil
             recordingPermissionGuidance = .ready
@@ -525,27 +559,14 @@ class VoiceInkEngine: NSObject, ObservableObject {
         pendingPermissionModeId = nil
     }
 
-    private func ensureRecordingPermissions(modeId: UUID?) async -> Bool {
+    private func ensureRecordingPermissions(modeId: UUID?) -> Bool {
         pendingPermissionModeId = modeId
-        let requiresScreenRecording = modeRequiresScreenRecording(modeId)
-        var lastRequestedIssue: RecordingPermissionIssue?
-
-        while let issue = RecordingPermissionPreflight.firstMissingPermission(
-            requiresScreenRecording: requiresScreenRecording
+        if let issue = RecordingPermissionPreflight.firstMissingPermission(
+            requiresScreenRecording: modeRequiresScreenRecording(modeId)
         ) {
             recordingState = .idle
             recordingPermissionGuidance = .required(issue)
-
-            guard issue != lastRequestedIssue else {
-                showRecordingPermissionNotification(for: issue)
-                return false
-            }
-            lastRequestedIssue = issue
-
-            guard await RecordingPermissionPreflight.requestAuthorization(for: issue) else {
-                showRecordingPermissionNotification(for: issue)
-                return false
-            }
+            return false
         }
 
         clearRecordingPermissionGuidance()
@@ -556,18 +577,6 @@ class VoiceInkEngine: NSObject, ObservableObject {
         let mode = modeId.flatMap(ModeManager.shared.getConfiguration(with:))
             ?? ModeManager.shared.currentEffectiveConfiguration
         return mode?.useScreenCapture ?? false
-    }
-
-    private func showRecordingPermissionNotification(for issue: RecordingPermissionIssue) {
-        NotificationManager.shared.showNotification(
-            title: issue.notificationTitle,
-            type: .warning,
-            duration: 7.0,
-            actionButton: (
-                String(localized: "Open Settings"),
-                { RecordingPermissionPreflight.openSettings(for: issue) }
-            )
-        )
     }
 
     @MainActor

@@ -19,7 +19,7 @@ final class AccessibilityShortcutFallbackMonitor {
     func start(shortcuts: [Shortcut]) -> Int {
         stop()
 
-        let keyShortcuts = shortcuts.filter { !$0.isModifierOnly }
+        let keyShortcuts = Self.eligibleShortcuts(from: shortcuts)
         guard !keyShortcuts.isEmpty else { return 0 }
 
         var eventType = EventTypeSpec(
@@ -88,6 +88,10 @@ final class AccessibilityShortcutFallbackMonitor {
         if flags.contains(.command) { modifiers |= UInt32(cmdKey) }
         if flags.contains(.function) { modifiers |= UInt32(kEventKeyModifierFnMask) }
         return modifiers
+    }
+
+    static func eligibleShortcuts(from shortcuts: [Shortcut]) -> [Shortcut] {
+        shortcuts.filter { !$0.isModifierOnly }
     }
 
     private static func fourCharacterCode(_ value: String) -> OSType {
