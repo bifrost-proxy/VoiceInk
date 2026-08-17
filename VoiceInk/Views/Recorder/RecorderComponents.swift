@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 
 // MARK: - Icon Toggle Button
@@ -273,6 +274,142 @@ enum RecorderTranscriptPresentation {
     }
 }
 
+// MARK: - Recorder Window Presentation
+
+struct RecorderWindowPresentation: Equatable {
+    let recordingState: RecordingState
+    let hasVisibleTranscript: Bool
+    let assistantIsVisible: Bool
+    let assistantIsBusy: Bool
+
+    static func resolve(
+        showLiveTranscript: Bool,
+        recordingState: RecordingState,
+        partialTranscript: String,
+        assistantIsVisible: Bool,
+        assistantIsBusy: Bool
+    ) -> RecorderWindowPresentation {
+        RecorderWindowPresentation(
+            recordingState: recordingState,
+            hasVisibleTranscript: RecorderTranscriptPresentation.shouldShow(
+                showLiveTranscript: showLiveTranscript,
+                recordingState: recordingState,
+                text: partialTranscript
+            ),
+            assistantIsVisible: assistantIsVisible,
+            assistantIsBusy: assistantIsBusy
+        )
+    }
+}
+
+enum RecorderWindowTransitionPolicy {
+    /// Keep text layout and ScrollView setup out of the most expensive opening frames.
+    static let transcriptRevealDelayMilliseconds: UInt64 = 140
+    static let transcriptFadeDuration = 0.12
+    /// Coalesce token-by-token scrolling while keeping the latest text visible.
+    static let minimumScrollIntervalMilliseconds: UInt64 = 50
+}
+
+/// Observes high-frequency engine/session objects but only publishes when the
+/// window's structural presentation changes. Transcript content has its own
+/// small observer below, so token updates do not invalidate the window shell.
+@MainActor
+final class RecorderWindowPresentationModel<S: RecorderStateProvider & ObservableObject>: ObservableObject {
+    @Published private(set) var value: RecorderWindowPresentation
+
+    private let stateProvider: S
+    private let assistantSession: AssistantSession
+    private var showLiveTranscript: Bool
+    private var refreshScheduled = false
+    private var cancellables = Set<AnyCancellable>()
+
+    init(stateProvider: S, assistantSession: AssistantSession, showLiveTranscript: Bool) {
+        self.stateProvider = stateProvider
+        self.assistantSession = assistantSession
+        self.showLiveTranscript = showLiveTranscript
+        value = Self.resolve(
+            stateProvider: stateProvider,
+            assistantSession: assistantSession,
+            showLiveTranscript: showLiveTranscript
+        )
+
+        stateProvider.objectWillChange
+            .sink { [weak self] _ in self?.scheduleRefresh() }
+            .store(in: &cancellables)
+        assistantSession.objectWillChange
+            .sink { [weak self] _ in self?.scheduleRefresh() }
+            .store(in: &cancellables)
+    }
+
+    func updateShowLiveTranscript(_ isEnabled: Bool) {
+        guard showLiveTranscript != isEnabled else { return }
+        showLiveTranscript = isEnabled
+        refresh()
+    }
+
+    private func scheduleRefresh() {
+        guard !refreshScheduled else { return }
+        refreshScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.refreshScheduled = false
+            self.refresh()
+        }
+    }
+
+    private func refresh() {
+        let nextValue = Self.resolve(
+            stateProvider: stateProvider,
+            assistantSession: assistantSession,
+            showLiveTranscript: showLiveTranscript
+        )
+        guard nextValue != value else { return }
+        value = nextValue
+    }
+
+    private static func resolve(
+        stateProvider: S,
+        assistantSession: AssistantSession,
+        showLiveTranscript: Bool
+    ) -> RecorderWindowPresentation {
+        RecorderWindowPresentation.resolve(
+            showLiveTranscript: showLiveTranscript,
+            recordingState: stateProvider.recordingState,
+            partialTranscript: stateProvider.partialTranscript,
+            assistantIsVisible: assistantSession.isVisible,
+            assistantIsBusy: assistantSession.isBusy
+        )
+    }
+}
+
+struct RecorderLiveTranscript<S: RecorderStateProvider & ObservableObject>: View {
+    @ObservedObject var stateProvider: S
+
+    var body: some View {
+        LiveTranscriptView(text: stateProvider.partialTranscript)
+    }
+}
+
+struct RecorderAssistantPanel<S: RecorderStateProvider & ObservableObject>: View {
+    @ObservedObject var stateProvider: S
+    @ObservedObject var session: AssistantSession
+    let showLiveTranscript: Bool
+    let onSend: (String) -> Void
+
+    private var liveFollowUpText: String {
+        guard showLiveTranscript, stateProvider.recordingState == .recording else { return "" }
+        return stateProvider.partialTranscript
+    }
+
+    var body: some View {
+        AssistantPanelView(
+            session: session,
+            liveFollowUpText: liveFollowUpText,
+            onSend: onSend
+        )
+    }
+}
+
 // MARK: - Mode Button
 
 struct RecorderModeButton: View {
@@ -334,6 +471,7 @@ struct RecorderModeButton: View {
 
 struct LiveTranscriptView: View {
     let text: String
+    @State private var pendingScrollTask: Task<Void, Never>?
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -349,10 +487,30 @@ struct LiveTranscriptView: View {
             }
             .frame(height: 96)
             .onChange(of: text) {
+                scheduleScrollToBottom(using: proxy)
+            }
+            .onAppear {
                 proxy.scrollTo("bottom", anchor: .bottom)
+            }
+            .onDisappear {
+                pendingScrollTask?.cancel()
+                pendingScrollTask = nil
             }
         }
         .transaction { $0.disablesAnimations = true }
+    }
+
+    private func scheduleScrollToBottom(using proxy: ScrollViewProxy) {
+        guard pendingScrollTask == nil else { return }
+
+        pendingScrollTask = Task { @MainActor in
+            try? await Task.sleep(
+                nanoseconds: RecorderWindowTransitionPolicy.minimumScrollIntervalMilliseconds * 1_000_000
+            )
+            guard !Task.isCancelled else { return }
+            proxy.scrollTo("bottom", anchor: .bottom)
+            pendingScrollTask = nil
+        }
     }
 }
 

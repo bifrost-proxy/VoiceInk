@@ -1,13 +1,43 @@
 import SwiftUI
 
 struct MiniRecorderView<S: RecorderStateProvider & ObservableObject>: View {
-    @ObservedObject var stateProvider: S
+    let stateProvider: S
     let recorder: Recorder
-    @ObservedObject var assistantSession: AssistantSession
+    let assistantSession: AssistantSession
     let onRecordButtonTapped: () -> Void
     let onCloseTapped: () -> Void
     let onAssistantFollowUp: (String) -> Void
     @AppStorage(RecorderDisplaySettingsKeys.showLiveTranscript) private var showLiveTranscript = true
+    @StateObject private var presentationModel: RecorderWindowPresentationModel<S>
+    @State private var isTranscriptContentVisible = false
+
+    init(
+        stateProvider: S,
+        recorder: Recorder,
+        assistantSession: AssistantSession,
+        onRecordButtonTapped: @escaping () -> Void,
+        onCloseTapped: @escaping () -> Void,
+        onAssistantFollowUp: @escaping (String) -> Void
+    ) {
+        self.stateProvider = stateProvider
+        self.recorder = recorder
+        self.assistantSession = assistantSession
+        self.onRecordButtonTapped = onRecordButtonTapped
+        self.onCloseTapped = onCloseTapped
+        self.onAssistantFollowUp = onAssistantFollowUp
+
+        let defaults = UserDefaults.standard
+        let initialShowLiveTranscript = defaults.object(
+            forKey: RecorderDisplaySettingsKeys.showLiveTranscript
+        ) == nil ? true : defaults.bool(forKey: RecorderDisplaySettingsKeys.showLiveTranscript)
+        _presentationModel = StateObject(
+            wrappedValue: RecorderWindowPresentationModel(
+                stateProvider: stateProvider,
+                assistantSession: assistantSession,
+                showLiveTranscript: initialShowLiveTranscript
+            )
+        )
+    }
 
     // MARK: - Layout Constants
 
@@ -18,26 +48,21 @@ struct MiniRecorderView<S: RecorderStateProvider & ObservableObject>: View {
     private let compactCornerRadius: CGFloat = 20
     private let expandedCornerRadius: CGFloat = 14
 
+    private var presentation: RecorderWindowPresentation {
+        presentationModel.value
+    }
+
     // Keep the visible transcript while post-processing so status changes do not hide the user's text.
     private var hasVisibleTranscript: Bool {
-        RecorderTranscriptPresentation.shouldShow(
-            showLiveTranscript: showLiveTranscript,
-            recordingState: stateProvider.recordingState,
-            text: stateProvider.partialTranscript
-        )
+        presentation.hasVisibleTranscript
     }
 
     private var hasAssistantResponse: Bool {
-        assistantSession.isVisible
+        presentation.assistantIsVisible
     }
 
     private var shouldShowCloseButton: Bool {
-        hasAssistantResponse && stateProvider.recordingState == .idle && !assistantSession.isBusy
-    }
-
-    private var liveAssistantFollowUpText: String {
-        guard showLiveTranscript, stateProvider.recordingState == .recording else { return "" }
-        return stateProvider.partialTranscript
+        hasAssistantResponse && presentation.recordingState == .idle && !presentation.assistantIsBusy
     }
 
     private var controlBar: some View {
@@ -47,7 +72,7 @@ struct MiniRecorderView<S: RecorderStateProvider & ObservableObject>: View {
                     RecorderCloseButton(action: onCloseTapped)
                 } else {
                     RecorderRecordButton(
-                        recordingState: stateProvider.recordingState,
+                        recordingState: presentation.recordingState,
                         action: onRecordButtonTapped
                     )
                 }
@@ -57,7 +82,7 @@ struct MiniRecorderView<S: RecorderStateProvider & ObservableObject>: View {
             Spacer(minLength: 0)
 
             RecorderStatusDisplay(
-                currentState: stateProvider.recordingState,
+                currentState: presentation.recordingState,
                 recorder: recorder
             )
 
@@ -74,19 +99,22 @@ struct MiniRecorderView<S: RecorderStateProvider & ObservableObject>: View {
 
     private var transcriptSection: some View {
         VStack(spacing: 0) {
-            if hasVisibleTranscript {
-                LiveTranscriptView(text: stateProvider.partialTranscript)
+            if isTranscriptContentVisible && hasVisibleTranscript {
+                RecorderLiveTranscript(stateProvider: stateProvider)
                 Divider().background(Color.white.opacity(0.15))
             }
         }
+        .frame(height: hasVisibleTranscript ? 97 : 0)
+        .clipped()
     }
 
     var body: some View {
         VStack(spacing: 0) {
             if hasAssistantResponse {
-                AssistantPanelView(
+                RecorderAssistantPanel(
+                    stateProvider: stateProvider,
                     session: assistantSession,
-                    liveFollowUpText: liveAssistantFollowUpText,
+                    showLiveTranscript: showLiveTranscript,
                     onSend: onAssistantFollowUp
                 )
                 Divider().background(Color.white.opacity(0.15))
@@ -102,8 +130,23 @@ struct MiniRecorderView<S: RecorderStateProvider & ObservableObject>: View {
                 cornerRadius: hasVisibleTranscript || hasAssistantResponse ? expandedCornerRadius : compactCornerRadius,
                 style: .continuous)
         )
-        .animation(.easeInOut(duration: 0.3), value: hasVisibleTranscript)
-        .animation(.easeInOut(duration: 0.3), value: hasAssistantResponse)
+        .animation(.spring(response: 0.34, dampingFraction: 0.88), value: presentation)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+        .onChange(of: showLiveTranscript) { _, isEnabled in
+            presentationModel.updateShowLiveTranscript(isEnabled)
+        }
+        .task(id: hasVisibleTranscript) {
+            guard hasVisibleTranscript else {
+                isTranscriptContentVisible = false
+                return
+            }
+            try? await Task.sleep(
+                nanoseconds: RecorderWindowTransitionPolicy.transcriptRevealDelayMilliseconds * 1_000_000
+            )
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeOut(duration: RecorderWindowTransitionPolicy.transcriptFadeDuration)) {
+                isTranscriptContentVisible = true
+            }
+        }
     }
 }

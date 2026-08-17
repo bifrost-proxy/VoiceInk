@@ -1,3 +1,4 @@
+import Combine
 import Testing
 @testable import VoiceInk
 
@@ -61,4 +62,66 @@ struct RecorderTranscriptPresentationTests {
             ) == "实时预览"
         )
     }
+
+    @Test func windowPresentationChangesOnlyForStructuralState() {
+        let empty = RecorderWindowPresentation.resolve(
+            showLiveTranscript: true,
+            recordingState: .recording,
+            partialTranscript: "",
+            assistantIsVisible: false,
+            assistantIsBusy: false
+        )
+        let firstText = RecorderWindowPresentation.resolve(
+            showLiveTranscript: true,
+            recordingState: .recording,
+            partialTranscript: "first",
+            assistantIsVisible: false,
+            assistantIsBusy: false
+        )
+        let moreText = RecorderWindowPresentation.resolve(
+            showLiveTranscript: true,
+            recordingState: .recording,
+            partialTranscript: "first and more",
+            assistantIsVisible: false,
+            assistantIsBusy: false
+        )
+
+        #expect(empty != firstText)
+        #expect(firstText == moreText)
+        #expect(firstText.hasVisibleTranscript)
+    }
+
+    @MainActor
+    @Test func presentationModelDoesNotRepublishForEachTranscriptToken() async throws {
+        let provider = RecorderPresentationTestProvider()
+        let model = RecorderWindowPresentationModel(
+            stateProvider: provider,
+            assistantSession: AssistantSession(),
+            showLiveTranscript: true
+        )
+        var publicationCount = 0
+        let cancellable = model.$value.dropFirst().sink { _ in publicationCount += 1 }
+
+        provider.partialTranscript = "first"
+        try await Task.sleep(nanoseconds: 20_000_000)
+        #expect(publicationCount == 1)
+
+        provider.partialTranscript = "first and more"
+        try await Task.sleep(nanoseconds: 20_000_000)
+        #expect(publicationCount == 1)
+        withExtendedLifetime(cancellable) {}
+    }
+
+    @Test func transitionPolicyDefersHeavyContentAndCapsScrollWork() {
+        #expect(RecorderWindowTransitionPolicy.transcriptRevealDelayMilliseconds >= 100)
+        #expect(RecorderWindowTransitionPolicy.transcriptRevealDelayMilliseconds < 300)
+        #expect(RecorderWindowTransitionPolicy.transcriptFadeDuration <= 0.15)
+        #expect(RecorderWindowTransitionPolicy.minimumScrollIntervalMilliseconds >= 50)
+    }
+}
+
+@MainActor
+private final class RecorderPresentationTestProvider: ObservableObject, RecorderStateProvider {
+    @Published var recordingState: RecordingState = .recording
+    @Published var partialTranscript = ""
 }
