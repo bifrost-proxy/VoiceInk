@@ -48,6 +48,15 @@ struct MiniRecorderView<S: RecorderStateProvider & ObservableObject>: View {
     private let compactCornerRadius: CGFloat = 20
     private let expandedCornerRadius: CGFloat = 14
 
+    private var cornerRadius: CGFloat {
+        hasVisibleTranscript || hasAssistantResponse || permissionGuidance != nil
+            ? expandedCornerRadius : compactCornerRadius
+    }
+
+    private var separatorColor: Color {
+        Color.primary.opacity(0.13)
+    }
+
     private var presentation: RecorderWindowPresentation {
         presentationModel.value
     }
@@ -106,7 +115,7 @@ struct MiniRecorderView<S: RecorderStateProvider & ObservableObject>: View {
         VStack(spacing: 0) {
             if isTranscriptContentVisible && hasVisibleTranscript {
                 RecorderLiveTranscript(stateProvider: stateProvider)
-                Divider().background(Color.white.opacity(0.15))
+                Divider().background(separatorColor)
             }
         }
         .frame(height: hasVisibleTranscript ? 97 : 0)
@@ -120,7 +129,7 @@ struct MiniRecorderView<S: RecorderStateProvider & ObservableObject>: View {
                     guidance: permissionGuidance,
                     onAction: onRecordButtonTapped
                 )
-                Divider().background(Color.white.opacity(0.15))
+                Divider().background(separatorColor)
             } else if hasAssistantResponse {
                 RecorderAssistantPanel(
                     stateProvider: stateProvider,
@@ -128,7 +137,7 @@ struct MiniRecorderView<S: RecorderStateProvider & ObservableObject>: View {
                     showLiveTranscript: showLiveTranscript,
                     onSend: onAssistantFollowUp
                 )
-                Divider().background(Color.white.opacity(0.15))
+                Divider().background(separatorColor)
             } else {
                 transcriptSection
             }
@@ -139,13 +148,10 @@ struct MiniRecorderView<S: RecorderStateProvider & ObservableObject>: View {
                 ? expandedWidth
                 : (hasAssistantResponse ? assistantWidth : (hasVisibleTranscript ? expandedWidth : compactWidth))
         )
-        .background(Color.black)
-        .clipShape(
-            RoundedRectangle(
-                cornerRadius: hasVisibleTranscript || hasAssistantResponse || permissionGuidance != nil
-                    ? expandedCornerRadius : compactCornerRadius,
-                style: .continuous)
-        )
+        .background {
+            RecorderGlassBackground(cornerRadius: cornerRadius)
+                .shadow(color: Color.black.opacity(0.20), radius: 18, y: 7)
+        }
         .animation(.spring(response: 0.34, dampingFraction: 0.88), value: presentation)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
         .onChange(of: showLiveTranscript) { _, isEnabled in

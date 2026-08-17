@@ -1,5 +1,17 @@
 import SwiftUI
 
+@MainActor
+final class NotchRecorderGeometry: ObservableObject {
+    @Published private(set) var notchWidth: CGFloat = 180
+    @Published private(set) var notchHeight: CGFloat = 37
+
+    func update(notchWidth: CGFloat, notchHeight: CGFloat) {
+        guard self.notchWidth != notchWidth || self.notchHeight != notchHeight else { return }
+        self.notchWidth = notchWidth
+        self.notchHeight = notchHeight
+    }
+}
+
 struct NotchRecorderView<S: RecorderStateProvider & ObservableObject>: View {
     let stateProvider: S
     let recorder: Recorder
@@ -7,6 +19,7 @@ struct NotchRecorderView<S: RecorderStateProvider & ObservableObject>: View {
     let onRecordButtonTapped: () -> Void
     let onCloseTapped: () -> Void
     let onAssistantFollowUp: (String) -> Void
+    @ObservedObject private var geometry: NotchRecorderGeometry
     @AppStorage(RecorderDisplaySettingsKeys.showLiveTranscript) private var showLiveTranscript = true
     @StateObject private var presentationModel: RecorderWindowPresentationModel<S>
     @State private var isTranscriptContentVisible = false
@@ -15,6 +28,7 @@ struct NotchRecorderView<S: RecorderStateProvider & ObservableObject>: View {
         stateProvider: S,
         recorder: Recorder,
         assistantSession: AssistantSession,
+        geometry: NotchRecorderGeometry,
         onRecordButtonTapped: @escaping () -> Void,
         onCloseTapped: @escaping () -> Void,
         onAssistantFollowUp: @escaping (String) -> Void
@@ -22,6 +36,7 @@ struct NotchRecorderView<S: RecorderStateProvider & ObservableObject>: View {
         self.stateProvider = stateProvider
         self.recorder = recorder
         self.assistantSession = assistantSession
+        self.geometry = geometry
         self.onRecordButtonTapped = onRecordButtonTapped
         self.onCloseTapped = onCloseTapped
         self.onAssistantFollowUp = onAssistantFollowUp
@@ -73,19 +88,11 @@ struct NotchRecorderView<S: RecorderStateProvider & ObservableObject>: View {
     // MARK: - Screen Geometry
 
     private var notchWidth: CGFloat {
-        guard let screen = NSScreen.main else { return 180 }
-        if let left = screen.auxiliaryTopLeftArea?.width,
-            let right = screen.auxiliaryTopRightArea?.width
-        {
-            return screen.frame.width - left - right
-        }
-        return 180
+        geometry.notchWidth
     }
 
     private var notchHeight: CGFloat {
-        guard let screen = NSScreen.main else { return 37 }
-        if screen.safeAreaInsets.top > 0 { return screen.safeAreaInsets.top }
-        return NSApplication.shared.mainMenu?.menuBarHeight ?? NSStatusBar.system.thickness
+        geometry.notchHeight
     }
 
     // MARK: - Layout Constants
