@@ -169,7 +169,16 @@ class RecorderUIManager: ObservableObject, RecorderPanelPresenting {
             case .starting, .transcribing, .enhancing:
                 await cancelRecording()
             case .idle:
-                if engine.assistantSession.canSendFollowUp {
+                if let permissionGuidance = engine.recordingPermissionGuidance {
+                    switch permissionGuidance {
+                    case .required:
+                        await engine.beginRecordingPermissionRecovery(modeId: modeId)
+                    case .ready:
+                        engine.clearRecordingPermissionGuidance()
+                        SoundManager.shared.playStartSound()
+                        await engine.toggleRecord(modeId: modeId)
+                    }
+                } else if engine.assistantSession.canSendFollowUp {
                     SoundManager.shared.playStartSound()
                     await engine.toggleRecord(
                         modeId: modeId,
@@ -193,7 +202,19 @@ class RecorderUIManager: ObservableObject, RecorderPanelPresenting {
 
         hideRecorderPanel()
         isRecorderPanelVisible = false
+        engine.clearRecordingPermissionGuidance()
         engine.assistantSession.reset()
+    }
+
+    func presentRecordingPermissionGuidance(modeId: UUID? = nil) async {
+        guard let engine else { return }
+
+        isRecorderPanelVisible = true
+        await engine.beginRecordingPermissionRecovery(modeId: modeId)
+    }
+
+    func refreshRecordingPermissionGuidance() async {
+        await engine?.refreshRecordingPermissionGuidance()
     }
 
     func resetOnLaunch() async {
@@ -202,6 +223,7 @@ class RecorderUIManager: ObservableObject, RecorderPanelPresenting {
         await engine.resetRecordingSession()
         hideRecorderPanel()
         isRecorderPanelVisible = false
+        engine.clearRecordingPermissionGuidance()
         engine.assistantSession.reset()
     }
 

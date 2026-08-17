@@ -135,6 +135,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
     @Published var recordingState: RecordingState = .idle
     @Published var shouldCancelRecording = false
     @Published var partialTranscript: String = ""
+    @Published private(set) var recordingPermissionGuidance: RecorderPermissionGuidance?
     var currentSession: TranscriptionSession?
     private var currentSessionTranscriptionConfiguration: TranscriptionRuntimeConfiguration?
     private var activeRecordingStartID: UUID?
@@ -144,6 +145,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
     private var activePipelineUseCase: RecordingUseCase = .newSession
     private var activeRecordingContextStore: RecordingContextSnapshotStore?
     private var activeRecordingContextTasks: [Task<Void, Never>] = []
+    private var pendingPermissionModeId: UUID?
     private let recordingDurationLimiter = RecordingDurationLimiter()
 
     let recorder = Recorder()
@@ -275,6 +277,8 @@ class VoiceInkEngine: NSObject, ObservableObject {
             if !recordingUseCase.isAssistantFollowUp {
                 assistantSession.reset()
             }
+
+            guard await ensureRecordingPermissions(modeId: modeId) else { return }
 
             requestRecordPermission { [self] granted in
                 if granted {
@@ -454,15 +458,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
                 } else {
                     logger.error("Recording permission denied")
                     Task { @MainActor [weak self] in
-                        guard let self else { return }
-                        RecordingPermissionPreflight.handleDeniedMicrophonePermission()
-                        await self.failRecordingPreflight(
-                            title: RecordingPermissionIssue.microphone.notificationTitle,
-                            actionLabel: String(localized: "Open Settings"),
-                            action: {
-                                RecordingPermissionPreflight.openSettings(for: .microphone)
-                            }
-                        )
+                        await self?.beginRecordingPermissionRecovery(modeId: modeId)
                     }
                 }
             }
@@ -497,6 +493,82 @@ class VoiceInkEngine: NSObject, ObservableObject {
     }
 
     // MARK: - Recording Preflight
+
+    func beginRecordingPermissionRecovery(modeId: UUID? = nil) async {
+        let recoveryModeId = modeId ?? pendingPermissionModeId
+        if await ensureRecordingPermissions(modeId: recoveryModeId) {
+            recordingPermissionGuidance = .ready
+        }
+    }
+
+    func refreshRecordingPermissionGuidance() async {
+        guard case .required(let currentIssue) = recordingPermissionGuidance else { return }
+
+        let nextIssue = RecordingPermissionPreflight.firstMissingPermission(
+            requiresScreenRecording: modeRequiresScreenRecording(pendingPermissionModeId)
+        )
+        guard nextIssue != currentIssue else { return }
+
+        if let nextIssue {
+            recordingPermissionGuidance = .required(nextIssue)
+            if await ensureRecordingPermissions(modeId: pendingPermissionModeId) {
+                recordingPermissionGuidance = .ready
+            }
+        } else {
+            pendingPermissionModeId = nil
+            recordingPermissionGuidance = .ready
+        }
+    }
+
+    func clearRecordingPermissionGuidance() {
+        recordingPermissionGuidance = nil
+        pendingPermissionModeId = nil
+    }
+
+    private func ensureRecordingPermissions(modeId: UUID?) async -> Bool {
+        pendingPermissionModeId = modeId
+        let requiresScreenRecording = modeRequiresScreenRecording(modeId)
+        var lastRequestedIssue: RecordingPermissionIssue?
+
+        while let issue = RecordingPermissionPreflight.firstMissingPermission(
+            requiresScreenRecording: requiresScreenRecording
+        ) {
+            recordingState = .idle
+            recordingPermissionGuidance = .required(issue)
+
+            guard issue != lastRequestedIssue else {
+                showRecordingPermissionNotification(for: issue)
+                return false
+            }
+            lastRequestedIssue = issue
+
+            guard await RecordingPermissionPreflight.requestAuthorization(for: issue) else {
+                showRecordingPermissionNotification(for: issue)
+                return false
+            }
+        }
+
+        clearRecordingPermissionGuidance()
+        return true
+    }
+
+    private func modeRequiresScreenRecording(_ modeId: UUID?) -> Bool {
+        let mode = modeId.flatMap(ModeManager.shared.getConfiguration(with:))
+            ?? ModeManager.shared.currentEffectiveConfiguration
+        return mode?.useScreenCapture ?? false
+    }
+
+    private func showRecordingPermissionNotification(for issue: RecordingPermissionIssue) {
+        NotificationManager.shared.showNotification(
+            title: issue.notificationTitle,
+            type: .warning,
+            duration: 7.0,
+            actionButton: (
+                String(localized: "Open Settings"),
+                { RecordingPermissionPreflight.openSettings(for: issue) }
+            )
+        )
+    }
 
     @MainActor
     private func recordingModelFailure(
@@ -619,19 +691,6 @@ class VoiceInkEngine: NSObject, ObservableObject {
 
         let mode = modeId.flatMap(ModeManager.shared.getConfiguration(with:))
             ?? ModeManager.shared.currentEffectiveConfiguration
-        if let permissionIssue = await RecordingPermissionPreflight.checkContextPermissions(
-            requiresScreenRecording: mode?.useScreenCapture ?? false
-        ) {
-            await failRecordingPreflight(
-                title: permissionIssue.notificationTitle,
-                actionLabel: String(localized: "Open Settings"),
-                action: {
-                    RecordingPermissionPreflight.openSettings(for: permissionIssue)
-                }
-            )
-            return false
-        }
-
         let resolution = ModeRuntimeResolver.transcriptionModelResolution(
             mode: mode,
             transcriptionModelManager: transcriptionModelManager
