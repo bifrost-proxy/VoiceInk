@@ -86,6 +86,7 @@ VoiceInk 接入的是豆包流式语音识别模型 2.0，通过官方推荐的�
 1. 登录[豆包语音控制台](https://console.volcengine.com/speech/new?projectName=default)，选择要使用的项目；不同项目的服务和密钥相互隔离。
 2. 在“开通管理”中开通“流式语音识别大模型”2.0。个人按实际录音时长使用时建议开通小时版；已购买并发配额时可以使用并发版。实际可用额度和计费方式以控制台为准。
 3. 打开[API Key 管理](https://console.volcengine.com/speech/new/setting/apikeys?projectName=default)，新建或复制一个 API Key。请不要把真实密钥粘贴到 Issue、日志或截图中。
+4. [豆包语音模型2.0的购买链接](https://console.volcengine.com/speech/new/purchase?projectName=default)
 
 VoiceInk 提供以下两个资源选项：
 
