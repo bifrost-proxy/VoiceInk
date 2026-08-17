@@ -291,7 +291,7 @@ struct DictionaryQuickAddView: View {
                     .frame(width: 56, alignment: .trailing)
                 TextField(
                     "", text: $replacementInput,
-                    prompt: Text("e.g. support@tryvoiceink.com").foregroundColor(.secondary)
+                    prompt: Text("e.g. name@example.com").foregroundColor(.secondary)
                 )
                 .textFieldStyle(.roundedBorder)
                 .font(.system(size: 14))

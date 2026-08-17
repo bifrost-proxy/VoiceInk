@@ -46,6 +46,9 @@ class RecordingShortcutManager: ObservableObject {
     private var recorderPanelShortcutManager: RecorderPanelShortcutManager
     private let modeShortcutManager: ModeShortcutManager
     private let shortcutMonitor = ShortcutMonitor()
+    private lazy var accessibilityFallbackMonitor = AccessibilityShortcutFallbackMonitor {
+        AccessibilityShortcutPermissionPrompt.showForShortcutAttempt()
+    }
     private var shortcutChangeObserver: NSObjectProtocol?
     private var appDidBecomeActiveObserver: NSObjectProtocol?
     private let shortcutModeHandler: RecordingShortcutModeHandler
@@ -181,7 +184,12 @@ class RecordingShortcutManager: ObservableObject {
         removeAllMonitoring()
 
         guard AXIsProcessTrusted() else {
+            let shortcuts = configuredRecordingShortcuts()
+            let fallbackCount = accessibilityFallbackMonitor.start(shortcuts: shortcuts)
             AccessibilityShortcutPermissionPrompt.showIfNeeded()
+            if fallbackCount == 0, !shortcuts.isEmpty {
+                AccessibilityShortcutPermissionPrompt.showForShortcutAttempt()
+            }
             return
         }
 
@@ -287,6 +295,26 @@ class RecordingShortcutManager: ObservableObject {
         }
     }
 
+    private func configuredRecordingShortcuts() -> [Shortcut] {
+        var shortcuts: [Shortcut] = []
+        if primaryRecordingShortcut == .custom,
+            let shortcut = ShortcutStore.shortcut(for: .primaryRecording)
+        {
+            shortcuts.append(shortcut)
+        }
+        if secondaryRecordingShortcut == .custom,
+            let shortcut = ShortcutStore.shortcut(for: .secondaryRecording)
+        {
+            shortcuts.append(shortcut)
+        }
+        for config in ModeManager.shared.enabledConfigurations {
+            if let shortcut = ShortcutStore.shortcut(for: .mode(config.id)) {
+                shortcuts.append(shortcut)
+            }
+        }
+        return shortcuts
+    }
+
     private func recordingMode(for action: ShortcutAction) -> Mode? {
         switch action {
         case .primaryRecording:
@@ -325,6 +353,7 @@ class RecordingShortcutManager: ObservableObject {
 
     private func removeAllMonitoring() {
         shortcutMonitor.stop()
+        accessibilityFallbackMonitor.stop()
 
         for monitor in middleClickMonitors {
             if let monitor = monitor {

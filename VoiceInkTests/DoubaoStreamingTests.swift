@@ -248,6 +248,107 @@ struct DoubaoStreamingTests {
         }
     #endif
 
+    @Test func APIKeyManagerLoadsMultipleValuesFromOneKeychainBundle() throws {
+        let bundleKey = "keychainBundle-\(UUID().uuidString)"
+        let firstModelID = UUID()
+        let secondModelID = UUID()
+        let firstLegacyKey = "customModel_\(firstModelID.uuidString)_APIKey"
+        let secondLegacyKey = "customModel_\(secondModelID.uuidString)_APIKey"
+        defer {
+            _ = KeychainService.shared.delete(
+                forKey: bundleKey,
+                syncable: false,
+                storagePolicy: .keychainOnly
+            )
+            _ = KeychainService.shared.delete(
+                forKey: firstLegacyKey,
+                syncable: false,
+                storagePolicy: .keychainOnly
+            )
+            _ = KeychainService.shared.delete(
+                forKey: secondLegacyKey,
+                syncable: false,
+                storagePolicy: .keychainOnly
+            )
+        }
+
+        let writer = APIKeyManager(
+            bundleKeyIdentifier: bundleKey,
+            protectsUserCredentialsDuringTests: false
+        )
+        #expect(
+            writer.saveCustomModelAPIKey(
+                "first-batch-value",
+                forModelId: firstModelID
+            )
+        )
+        #expect(
+            writer.saveCustomModelAPIKey(
+                "second-batch-value",
+                forModelId: secondModelID
+            )
+        )
+
+        // Prove the reload uses only the consolidated item, not the legacy
+        // per-model entries retained for compatibility with older releases.
+        #expect(
+            KeychainService.shared.delete(
+                forKey: firstLegacyKey,
+                syncable: false,
+                storagePolicy: .keychainOnly
+            )
+        )
+        #expect(
+            KeychainService.shared.delete(
+                forKey: secondLegacyKey,
+                syncable: false,
+                storagePolicy: .keychainOnly
+            )
+        )
+
+        let reader = APIKeyManager(
+            bundleKeyIdentifier: bundleKey,
+            protectsUserCredentialsDuringTests: false
+        )
+        #expect(reader.preloadAllAPIKeys())
+        #expect(reader.getCustomModelAPIKey(forModelId: firstModelID) == "first-batch-value")
+        #expect(reader.getCustomModelAPIKey(forModelId: secondModelID) == "second-batch-value")
+    }
+
+    @Test func APIKeyManagerDoesNotOverwriteAnUnreadableBundle() throws {
+        let bundleKey = "invalidKeychainBundle-\(UUID().uuidString)"
+        let invalidData = Data("not-json".utf8)
+        defer {
+            _ = KeychainService.shared.delete(
+                forKey: bundleKey,
+                syncable: false,
+                storagePolicy: .keychainOnly
+            )
+        }
+
+        #expect(
+            KeychainService.shared.save(
+                data: invalidData,
+                forKey: bundleKey,
+                syncable: false,
+                storagePolicy: .keychainOnly
+            )
+        )
+
+        let manager = APIKeyManager(
+            bundleKeyIdentifier: bundleKey,
+            protectsUserCredentialsDuringTests: false
+        )
+        #expect(!manager.saveCustomModelAPIKey("must-not-be-written", forModelId: UUID()))
+        #expect(
+            KeychainService.shared.getData(
+                forKey: bundleKey,
+                syncable: false,
+                storagePolicy: .keychainOnly
+            ) == invalidData
+        )
+    }
+
     @Test func catalogExposesBothDoubaoTwoPointZeroBillingResources() throws {
         let provider = try #require(CloudProviderRegistry.provider(for: .doubaoSpeech))
         let models = provider.models
