@@ -4,6 +4,28 @@ import Testing
 @testable import VoiceInk
 
 struct DoubaoStreamingTests {
+    @Test func poiCityInputExplainsSingleCityLimitInChinese() throws {
+        let projectRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let catalogURL = projectRoot
+            .appendingPathComponent("VoiceInk", isDirectory: true)
+            .appendingPathComponent("Localizable.xcstrings")
+        let catalogData = try Data(contentsOf: catalogURL)
+        let catalog = try #require(
+            JSONSerialization.jsonObject(with: catalogData) as? [String: Any]
+        )
+        let strings = try #require(catalog["strings"] as? [String: Any])
+        let key = "Optional. Enter one prefecture-level city only, such as Shenzhen."
+        let entry = try #require(strings[key] as? [String: Any])
+        let localizations = try #require(entry["localizations"] as? [String: Any])
+        let localization = try #require(localizations["zh-Hans"] as? [String: Any])
+        let stringUnit = try #require(localization["stringUnit"] as? [String: Any])
+
+        #expect(stringUnit["state"] as? String == "translated")
+        #expect(stringUnit["value"] as? String == "可选填；每次仅支持一个地级市，例如深圳市。")
+    }
+
     @Test func cloudProviderCatalogPinsVolcengineAndDoubaoFirst() {
         let view = CloudProviderManagementView(selectedProviderID: nil) { _ in }
 
