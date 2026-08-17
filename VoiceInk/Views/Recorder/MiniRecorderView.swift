@@ -61,8 +61,13 @@ struct MiniRecorderView<S: RecorderStateProvider & ObservableObject>: View {
         presentation.assistantIsVisible
     }
 
+    private var permissionGuidance: RecorderPermissionGuidance? {
+        presentation.permissionGuidance
+    }
+
     private var shouldShowCloseButton: Bool {
-        hasAssistantResponse && presentation.recordingState == .idle && !presentation.assistantIsBusy
+        permissionGuidance != nil
+            || (hasAssistantResponse && presentation.recordingState == .idle && !presentation.assistantIsBusy)
     }
 
     private var controlBar: some View {
@@ -110,7 +115,13 @@ struct MiniRecorderView<S: RecorderStateProvider & ObservableObject>: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if hasAssistantResponse {
+            if let permissionGuidance {
+                RecorderPermissionGuidanceView(
+                    guidance: permissionGuidance,
+                    onAction: onRecordButtonTapped
+                )
+                Divider().background(Color.white.opacity(0.15))
+            } else if hasAssistantResponse {
                 RecorderAssistantPanel(
                     stateProvider: stateProvider,
                     session: assistantSession,
@@ -123,11 +134,16 @@ struct MiniRecorderView<S: RecorderStateProvider & ObservableObject>: View {
             }
             controlBar
         }
-        .frame(width: hasAssistantResponse ? assistantWidth : (hasVisibleTranscript ? expandedWidth : compactWidth))
+        .frame(
+            width: permissionGuidance != nil
+                ? expandedWidth
+                : (hasAssistantResponse ? assistantWidth : (hasVisibleTranscript ? expandedWidth : compactWidth))
+        )
         .background(Color.black)
         .clipShape(
             RoundedRectangle(
-                cornerRadius: hasVisibleTranscript || hasAssistantResponse ? expandedCornerRadius : compactCornerRadius,
+                cornerRadius: hasVisibleTranscript || hasAssistantResponse || permissionGuidance != nil
+                    ? expandedCornerRadius : compactCornerRadius,
                 style: .continuous)
         )
         .animation(.spring(response: 0.34, dampingFraction: 0.88), value: presentation)

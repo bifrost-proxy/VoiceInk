@@ -69,26 +69,51 @@ struct RecorderTranscriptPresentationTests {
             recordingState: .recording,
             partialTranscript: "",
             assistantIsVisible: false,
-            assistantIsBusy: false
+            assistantIsBusy: false,
+            permissionGuidance: nil
         )
         let firstText = RecorderWindowPresentation.resolve(
             showLiveTranscript: true,
             recordingState: .recording,
             partialTranscript: "first",
             assistantIsVisible: false,
-            assistantIsBusy: false
+            assistantIsBusy: false,
+            permissionGuidance: nil
         )
         let moreText = RecorderWindowPresentation.resolve(
             showLiveTranscript: true,
             recordingState: .recording,
             partialTranscript: "first and more",
             assistantIsVisible: false,
-            assistantIsBusy: false
+            assistantIsBusy: false,
+            permissionGuidance: nil
         )
 
         #expect(empty != firstText)
         #expect(firstText == moreText)
         #expect(firstText.hasVisibleTranscript)
+    }
+
+    @Test func permissionGuidanceIsAWindowStructuralChange() {
+        let regular = RecorderWindowPresentation.resolve(
+            showLiveTranscript: true,
+            recordingState: .idle,
+            partialTranscript: "",
+            assistantIsVisible: false,
+            assistantIsBusy: false,
+            permissionGuidance: nil
+        )
+        let permissionRequired = RecorderWindowPresentation.resolve(
+            showLiveTranscript: true,
+            recordingState: .idle,
+            partialTranscript: "",
+            assistantIsVisible: false,
+            assistantIsBusy: false,
+            permissionGuidance: .required(.accessibility)
+        )
+
+        #expect(regular != permissionRequired)
+        #expect(permissionRequired.permissionGuidance == .required(.accessibility))
     }
 
     @MainActor
@@ -109,6 +134,11 @@ struct RecorderTranscriptPresentationTests {
         provider.partialTranscript = "first and more"
         try await Task.sleep(nanoseconds: 20_000_000)
         #expect(publicationCount == 1)
+
+        provider.recordingPermissionGuidance = .required(.accessibility)
+        try await Task.sleep(nanoseconds: 20_000_000)
+        #expect(publicationCount == 2)
+        #expect(model.value.permissionGuidance == .required(.accessibility))
         withExtendedLifetime(cancellable) {}
     }
 
@@ -124,4 +154,5 @@ struct RecorderTranscriptPresentationTests {
 private final class RecorderPresentationTestProvider: ObservableObject, RecorderStateProvider {
     @Published var recordingState: RecordingState = .recording
     @Published var partialTranscript = ""
+    @Published var recordingPermissionGuidance: RecorderPermissionGuidance?
 }

@@ -53,4 +53,18 @@ struct RecordingPermissionPreflightTests {
 
         #expect(AccessibilityShortcutFallbackMonitor.carbonModifiers(for: flags) == expected)
     }
+
+    @Test func recorderGuidanceAlwaysProvidesAnActionableNextStep() {
+        let accessibility = RecorderPermissionGuidance.required(.accessibility)
+        let ready = RecorderPermissionGuidance.ready
+
+        #expect(!accessibility.title.isEmpty)
+        #expect(!accessibility.message.isEmpty)
+        #expect(!accessibility.actionTitle.isEmpty)
+        #expect(accessibility.systemImage == "exclamationmark.shield.fill")
+        #expect(!ready.title.isEmpty)
+        #expect(!ready.message.isEmpty)
+        #expect(!ready.actionTitle.isEmpty)
+        #expect(ready.systemImage == "checkmark.shield.fill")
+    }
 }

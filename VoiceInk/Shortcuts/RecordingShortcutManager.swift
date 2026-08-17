@@ -46,8 +46,10 @@ class RecordingShortcutManager: ObservableObject {
     private var recorderPanelShortcutManager: RecorderPanelShortcutManager
     private let modeShortcutManager: ModeShortcutManager
     private let shortcutMonitor = ShortcutMonitor()
-    private lazy var accessibilityFallbackMonitor = AccessibilityShortcutFallbackMonitor {
-        AccessibilityShortcutPermissionPrompt.showForShortcutAttempt()
+    private lazy var accessibilityFallbackMonitor = AccessibilityShortcutFallbackMonitor { [weak self] in
+        Task { @MainActor [weak self] in
+            await self?.recorderUIManager.presentRecordingPermissionGuidance()
+        }
     }
     private var shortcutChangeObserver: NSObjectProtocol?
     private var appDidBecomeActiveObserver: NSObjectProtocol?
@@ -166,6 +168,7 @@ class RecordingShortcutManager: ObservableObject {
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor in
+                await self?.recorderUIManager.refreshRecordingPermissionGuidance()
                 guard AXIsProcessTrusted() else {
                     AccessibilityShortcutPermissionPrompt.showIfNeeded()
                     return
@@ -188,7 +191,9 @@ class RecordingShortcutManager: ObservableObject {
             let fallbackCount = accessibilityFallbackMonitor.start(shortcuts: shortcuts)
             AccessibilityShortcutPermissionPrompt.showIfNeeded()
             if fallbackCount == 0, !shortcuts.isEmpty {
-                AccessibilityShortcutPermissionPrompt.showForShortcutAttempt()
+                Task { @MainActor [weak self] in
+                    await self?.recorderUIManager.presentRecordingPermissionGuidance()
+                }
             }
             return
         }

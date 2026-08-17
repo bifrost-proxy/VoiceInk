@@ -281,13 +281,15 @@ struct RecorderWindowPresentation: Equatable {
     let hasVisibleTranscript: Bool
     let assistantIsVisible: Bool
     let assistantIsBusy: Bool
+    let permissionGuidance: RecorderPermissionGuidance?
 
     static func resolve(
         showLiveTranscript: Bool,
         recordingState: RecordingState,
         partialTranscript: String,
         assistantIsVisible: Bool,
-        assistantIsBusy: Bool
+        assistantIsBusy: Bool,
+        permissionGuidance: RecorderPermissionGuidance?
     ) -> RecorderWindowPresentation {
         RecorderWindowPresentation(
             recordingState: recordingState,
@@ -297,7 +299,8 @@ struct RecorderWindowPresentation: Equatable {
                 text: partialTranscript
             ),
             assistantIsVisible: assistantIsVisible,
-            assistantIsBusy: assistantIsBusy
+            assistantIsBusy: assistantIsBusy,
+            permissionGuidance: permissionGuidance
         )
     }
 }
@@ -377,8 +380,59 @@ final class RecorderWindowPresentationModel<S: RecorderStateProvider & Observabl
             recordingState: stateProvider.recordingState,
             partialTranscript: stateProvider.partialTranscript,
             assistantIsVisible: assistantSession.isVisible,
-            assistantIsBusy: assistantSession.isBusy
+            assistantIsBusy: assistantSession.isBusy,
+            permissionGuidance: stateProvider.recordingPermissionGuidance
         )
+    }
+}
+
+struct RecorderPermissionGuidanceView: View {
+    let guidance: RecorderPermissionGuidance
+    let onAction: () -> Void
+
+    private var accentColor: Color {
+        switch guidance {
+        case .required:
+            return .orange
+        case .ready:
+            return .green
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: guidance.systemImage)
+                    .font(.system(size: 22, weight: .semibold))
+                    .foregroundStyle(accentColor)
+                    .frame(width: 26)
+
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(guidance.title)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.white)
+
+                    Text(guidance.message)
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(.white.opacity(0.68))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            Button(action: onAction) {
+                Text(guidance.actionTitle)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.black)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 8)
+                    .background(Color.white.opacity(0.92))
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 14)
+        .frame(height: 154)
     }
 }
 

@@ -46,6 +46,7 @@ struct NotchRecorderView<S: RecorderStateProvider & ObservableObject>: View {
         case active
         case liveText
         case assistant
+        case permission
     }
 
     private var presentation: RecorderWindowPresentation {
@@ -53,6 +54,10 @@ struct NotchRecorderView<S: RecorderStateProvider & ObservableObject>: View {
     }
 
     private var displayState: DisplayState {
+        if presentation.permissionGuidance != nil {
+            return .permission
+        }
+
         if presentation.assistantIsVisible {
             return .assistant
         }
@@ -88,9 +93,11 @@ struct NotchRecorderView<S: RecorderStateProvider & ObservableObject>: View {
     private let recordingSideExpansion: CGFloat = 90
     private let transcriptSideExpansion: CGFloat = 110
     private let assistantSideExpansion: CGFloat = 230
+    private let permissionSideExpansion: CGFloat = 150
     private let activeHeightBonus: CGFloat = 6
     private let transcriptPanelHeight: CGFloat = 97
     private let assistantPanelHeight: CGFloat = 320
+    private let permissionPanelHeight: CGFloat = 154
 
     private var mainRowHeight: CGFloat { notchHeight + activeHeightBonus }
 
@@ -102,6 +109,7 @@ struct NotchRecorderView<S: RecorderStateProvider & ObservableObject>: View {
         case .active: return notchWidth + recordingSideExpansion * 2
         case .liveText: return notchWidth + transcriptSideExpansion * 2
         case .assistant: return notchWidth + assistantSideExpansion * 2
+        case .permission: return notchWidth + permissionSideExpansion * 2
         }
     }
 
@@ -111,6 +119,7 @@ struct NotchRecorderView<S: RecorderStateProvider & ObservableObject>: View {
         case .active: return mainRowHeight
         case .liveText: return mainRowHeight + transcriptPanelHeight
         case .assistant: return mainRowHeight + assistantPanelHeight
+        case .permission: return mainRowHeight + permissionPanelHeight
         }
     }
 
@@ -120,17 +129,21 @@ struct NotchRecorderView<S: RecorderStateProvider & ObservableObject>: View {
             return transcriptSideExpansion
         case .assistant:
             return assistantSideExpansion
+        case .permission:
+            return permissionSideExpansion
         case .active, .collapsed:
             return recordingSideExpansion
         }
     }
 
     private var sideEdgePadding: CGFloat {
-        displayState == .liveText || displayState == .assistant ? 20 : 16
+        displayState == .liveText || displayState == .assistant || displayState == .permission ? 20 : 16
     }
 
     private var shouldShowCloseButton: Bool {
-        displayState == .assistant && presentation.recordingState == .idle && !presentation.assistantIsBusy
+        displayState == .permission
+            || (displayState == .assistant && presentation.recordingState == .idle
+                && !presentation.assistantIsBusy)
     }
 
     // MARK: - Animation
@@ -174,13 +187,15 @@ struct NotchRecorderView<S: RecorderStateProvider & ObservableObject>: View {
             mainRow
             liveTextPanel
             assistantPanel
+            permissionPanel
         }
         .frame(width: pillWidth, height: pillHeight)
         .background(Color.black)
         .clipShape(
             NotchShape(
                 topCornerRadius: displayState == .liveText ? 12 : 8,
-                bottomCornerRadius: displayState == .liveText || displayState == .assistant ? 22 : 16
+                bottomCornerRadius: displayState == .liveText || displayState == .assistant
+                    || displayState == .permission ? 22 : 16
             )
         )
     }
@@ -259,6 +274,20 @@ struct NotchRecorderView<S: RecorderStateProvider & ObservableObject>: View {
             }
         }
         .frame(height: displayState == .assistant ? assistantPanelHeight : 0)
+        .clipped()
+    }
+
+    private var permissionPanel: some View {
+        VStack(spacing: 0) {
+            if displayState == .permission, let guidance = presentation.permissionGuidance {
+                Divider().background(Color.white.opacity(0.15))
+                RecorderPermissionGuidanceView(
+                    guidance: guidance,
+                    onAction: onRecordButtonTapped
+                )
+            }
+        }
+        .frame(height: displayState == .permission ? permissionPanelHeight : 0)
         .clipped()
     }
 }
