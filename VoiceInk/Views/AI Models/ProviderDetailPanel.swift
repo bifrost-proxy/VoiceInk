@@ -273,8 +273,8 @@ struct ProviderDetailPanel: View {
                 Divider()
                 optionTextFieldRow(
                     title: "POI city",
-                    detail: "Optional prefecture-level city hint, such as Beijing or Shanghai.",
-                    placeholder: "Optional city",
+                    detail: "Optional. Enter one prefecture-level city only, such as Shenzhen.",
+                    placeholder: "One city, e.g. Shenzhen",
                     text: $doubaoPOICityName
                 )
                 .accessibilityIdentifier("doubao.settings.poiCityName")

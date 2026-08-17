@@ -18212,16 +18212,14 @@
         "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "音乐领域辅助识别" } }
       }
     },
-    "Optional city" : {
+    "One city, e.g. Shenzhen" : {
       "localizations" : {
-        "de" : { "stringUnit" : { "state" : "translated", "value" : "Optionale Stadt" } },
-        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "可选城市" } }
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "一个城市，例如深圳市" } }
       }
     },
-    "Optional prefecture-level city hint, such as Beijing or Shanghai." : {
+    "Optional. Enter one prefecture-level city only, such as Shenzhen." : {
       "localizations" : {
-        "de" : { "stringUnit" : { "state" : "translated", "value" : "Optionaler Hinweis auf eine bezirksfreie Stadt, z. B. Peking oder Shanghai." } },
-        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "可选填地级市提示，例如北京市或上海市。" } }
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "可选填；每次仅支持一个地级市，例如深圳市。" } }
       }
     },
     "POI city" : {
