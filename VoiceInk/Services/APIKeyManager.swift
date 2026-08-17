@@ -22,6 +22,7 @@ final class APIKeyManager {
         "xai": "xaiAPIKey",
         "cartesia": "cartesiaAPIKey",
         "doubao speech": "doubaoSpeechAPIKey",
+        "alibaba cloud qwen": "aliyunQwenAPIKey",
         "openai": "openAIAPIKey",
         "anthropic": "anthropicAPIKey",
         "openrouter": "openRouterAPIKey",

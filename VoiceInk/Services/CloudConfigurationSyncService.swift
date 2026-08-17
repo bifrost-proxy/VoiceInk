@@ -110,6 +110,10 @@ final class CloudConfigurationSyncService: ObservableObject {
         "selectedAudioDeviceModelUID",
         "audioInputMode",
         "prioritizedAudioDevices",
+        // A dedicated Alibaba Cloud endpoint contains a workspace identifier,
+        // and recognition context may contain private domain information.
+        AliyunQwenSpeechSettings.Keys.apiHost,
+        AliyunQwenSpeechSettings.Keys.contextPrompt,
         // Local maintenance, migration, framework and macOS UI state.
         CleanupSettingsKeys.lastAutomaticAudioCleanupDate,
         CloudSyncSettingsKeys.configurationSyncEnabled,

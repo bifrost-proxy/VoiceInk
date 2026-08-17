@@ -83,6 +83,26 @@ enum AppDefaults {
                 DoubaoSpeechSettings.defaults.firstTextAccelerationLevel,
             DoubaoSpeechSettings.Keys.silenceFinalizationMilliseconds:
                 DoubaoSpeechSettings.defaults.silenceFinalizationMilliseconds,
+            AliyunQwenSpeechSettings.Keys.region: AliyunQwenSpeechSettings.defaults.region.rawValue,
+            AliyunQwenSpeechSettings.Keys.apiHost: AliyunQwenSpeechSettings.defaults.apiHost,
+            AliyunQwenSpeechSettings.Keys.semanticPunctuationEnabled:
+                AliyunQwenSpeechSettings.defaults.semanticPunctuationEnabled,
+            AliyunQwenSpeechSettings.Keys.maxSentenceSilenceMilliseconds:
+                AliyunQwenSpeechSettings.defaults.maxSentenceSilenceMilliseconds,
+            AliyunQwenSpeechSettings.Keys.multiThresholdModeEnabled:
+                AliyunQwenSpeechSettings.defaults.multiThresholdModeEnabled,
+            AliyunQwenSpeechSettings.Keys.heartbeatEnabled:
+                AliyunQwenSpeechSettings.defaults.heartbeatEnabled,
+            AliyunQwenSpeechSettings.Keys.speechNoiseThresholdEnabled:
+                AliyunQwenSpeechSettings.defaults.speechNoiseThresholdEnabled,
+            AliyunQwenSpeechSettings.Keys.speechNoiseThreshold:
+                AliyunQwenSpeechSettings.defaults.speechNoiseThreshold,
+            AliyunQwenSpeechSettings.Keys.useVoiceInkVocabulary:
+                AliyunQwenSpeechSettings.defaults.useVoiceInkVocabulary,
+            AliyunQwenSpeechSettings.Keys.vocabularyWeight:
+                AliyunQwenSpeechSettings.defaults.vocabularyWeight,
+            AliyunQwenSpeechSettings.Keys.contextPrompt:
+                AliyunQwenSpeechSettings.defaults.contextPrompt,
 
             // Cleanup
             CleanupSettingsKeys.isTranscriptionCleanupEnabled: false,

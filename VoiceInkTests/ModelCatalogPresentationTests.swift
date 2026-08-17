@@ -13,6 +13,7 @@ struct ModelCatalogPresentationTests {
         #expect(enhancementProviders.allSatisfy { $0.hasEnhancement })
 
         #expect(transcriptionProviders.contains { $0.displayName == "Doubao Speech" })
+        #expect(transcriptionProviders.contains { $0.displayName == "Alibaba Cloud Qwen" })
         #expect(!transcriptionProviders.contains { $0.displayName == "Volcengine Ark" })
         #expect(enhancementProviders.contains { $0.displayName == "Volcengine Ark" })
         #expect(!enhancementProviders.contains { $0.displayName == "Doubao Speech" })
@@ -33,7 +34,7 @@ struct ModelCatalogPresentationTests {
             .filter(CloudProviderCapabilityFilter.enhancement.includes)
             .map(\.displayName)
 
-        #expect(Array(transcriptionNames.prefix(2)) == ["Doubao Speech", "Groq"])
+        #expect(Array(transcriptionNames.prefix(3)) == ["Doubao Speech", "Alibaba Cloud Qwen", "Groq"])
         #expect(Array(enhancementNames.prefix(2)) == ["Volcengine Ark", "Groq"])
     }
 
