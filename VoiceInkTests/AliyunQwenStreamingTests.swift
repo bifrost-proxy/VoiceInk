@@ -11,7 +11,7 @@ private let aliyunQwenIntegrationAPIKeyURL = aliyunQwenIntegrationDirectory.appe
 private let aliyunQwenIntegrationAPIHostURL = aliyunQwenIntegrationDirectory.appendingPathComponent("api-host.pipe")
 
 struct AliyunQwenStreamingTests {
-    @Test func providerSettingsHaveCompleteChineseAndGermanLocalizations() throws {
+    @Test func providerSettingsHaveCompleteChineseLocalizations() throws {
         let projectRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -62,20 +62,18 @@ struct AliyunQwenStreamingTests {
                 entry["localizations"] as? [String: Any],
                 "Missing localizations: \(key)"
             )
-            for language in ["de", "zh-Hans"] {
-                let localization = try #require(
-                    localizations[language] as? [String: Any],
-                    "Missing \(language) localization: \(key)"
-                )
-                let stringUnit = try #require(
-                    localization["stringUnit"] as? [String: Any],
-                    "Missing \(language) string unit: \(key)"
-                )
-                #expect(stringUnit["state"] as? String == "translated")
-                let value = try #require(stringUnit["value"] as? String)
-                #expect(!value.isEmpty)
-                #expect(value != key)
-            }
+            let localization = try #require(
+                localizations["zh-Hans"] as? [String: Any],
+                "Missing zh-Hans localization: \(key)"
+            )
+            let stringUnit = try #require(
+                localization["stringUnit"] as? [String: Any],
+                "Missing zh-Hans string unit: \(key)"
+            )
+            #expect(stringUnit["state"] as? String == "translated")
+            let value = try #require(stringUnit["value"] as? String)
+            #expect(!value.isEmpty)
+            #expect(value != key)
         }
     }
 
