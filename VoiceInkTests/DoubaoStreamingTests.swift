@@ -40,6 +40,8 @@ struct DoubaoStreamingTests {
         #expect(request["enable_punc"] as? Bool == true)
         #expect(request["enable_ddc"] as? Bool == false)
         #expect(request["enable_accelerate_text"] as? Bool == false)
+        #expect(request["enable_poi_fc"] == nil)
+        #expect(request["enable_music_fc"] == nil)
         #expect(request["accelerate_score"] == nil)
         #expect(request["show_utterances"] as? Bool == true)
         #expect(request["end_window_size"] as? Int == 800)
@@ -63,7 +65,10 @@ struct DoubaoStreamingTests {
             enableSemanticSmoothing: true,
             enableFirstTextAcceleration: true,
             firstTextAccelerationLevel: 12,
-            silenceFinalizationMilliseconds: 1_200
+            silenceFinalizationMilliseconds: 1_200,
+            enablePOIFunctionCall: true,
+            poiCityName: " 北京市 ",
+            enableMusicFunctionCall: true
         )
         let frame = try DoubaoStreamingProtocol.makeFullClientRequest(settings: settings)
         let bytes = [UInt8](frame)
@@ -77,6 +82,11 @@ struct DoubaoStreamingTests {
         #expect(request["enable_ddc"] as? Bool == true)
         #expect(request["enable_accelerate_text"] as? Bool == true)
         #expect(request["accelerate_score"] as? Int == 12)
+        // Domain function calls require two-pass recognition, so invalid
+        // combinations stay persisted but are not sent to the service.
+        #expect(request["enable_poi_fc"] == nil)
+        #expect(request["enable_music_fc"] == nil)
+        #expect(request["corpus"] == nil)
         #expect(request["end_window_size"] as? Int == 1_200)
         #expect(request["show_utterances"] as? Bool == true)
         #expect(request["result_type"] as? String == "full")
@@ -93,9 +103,11 @@ struct DoubaoStreamingTests {
 
         defaults.set(99, forKey: DoubaoSpeechSettings.Keys.firstTextAccelerationLevel)
         defaults.set(100, forKey: DoubaoSpeechSettings.Keys.silenceFinalizationMilliseconds)
+        defaults.set("  上海市  ", forKey: DoubaoSpeechSettings.Keys.poiCityName)
         let clamped = DoubaoSpeechSettings.current(in: defaults)
         #expect(clamped.firstTextAccelerationLevel == 20)
         #expect(clamped.silenceFinalizationMilliseconds == 300)
+        #expect(clamped.poiCityName == "上海市")
 
         let keys = [
             DoubaoSpeechSettings.Keys.enableTwoPassRecognition,
@@ -105,8 +117,45 @@ struct DoubaoStreamingTests {
             DoubaoSpeechSettings.Keys.enableFirstTextAcceleration,
             DoubaoSpeechSettings.Keys.firstTextAccelerationLevel,
             DoubaoSpeechSettings.Keys.silenceFinalizationMilliseconds,
+            DoubaoSpeechSettings.Keys.enablePOIFunctionCall,
+            DoubaoSpeechSettings.Keys.enableMusicFunctionCall,
         ]
         #expect(keys.allSatisfy(CloudConfigurationSyncService.isEligiblePreferenceKey))
+        #expect(!CloudConfigurationSyncService.isEligiblePreferenceKey(DoubaoSpeechSettings.Keys.poiCityName))
+    }
+
+    @Test func domainFunctionCallsMergePOICityWithVocabularyContext() throws {
+        let settings = DoubaoSpeechSettings(
+            enableTwoPassRecognition: true,
+            enableTextNormalization: true,
+            enablePunctuation: true,
+            enableSemanticSmoothing: false,
+            enableFirstTextAcceleration: false,
+            firstTextAccelerationLevel: 0,
+            silenceFinalizationMilliseconds: 800,
+            enablePOIFunctionCall: true,
+            poiCityName: "北京市",
+            enableMusicFunctionCall: true
+        )
+        let frame = try DoubaoStreamingProtocol.makeFullClientRequest(
+            customVocabulary: ["VoiceInk", "五道口"],
+            settings: settings
+        )
+        let payload = Data([UInt8](frame)[8...])
+        let root = try #require(JSONSerialization.jsonObject(with: payload) as? [String: Any])
+        let request = try #require(root["request"] as? [String: Any])
+
+        #expect(request["enable_poi_fc"] as? Bool == true)
+        #expect(request["enable_music_fc"] as? Bool == true)
+        let corpus = try #require(request["corpus"] as? [String: Any])
+        let contextString = try #require(corpus["context"] as? String)
+        let context = try #require(
+            JSONSerialization.jsonObject(with: Data(contextString.utf8)) as? [String: Any]
+        )
+        let hotwords = try #require(context["hotwords"] as? [[String: String]])
+        #expect(hotwords.compactMap { $0["word"] } == ["VoiceInk", "五道口"])
+        let location = try #require(context["loc_info"] as? [String: String])
+        #expect(location["city_name"] == "北京市")
     }
 
     @Test func vocabularyBecomesDoubaoHotwordsButReplacementsDoNot() throws {

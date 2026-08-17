@@ -18014,6 +18014,36 @@
         "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "数值越低，分句越快确定，但可能提前切分语音。" } }
       }
     },
+    "Music recognition assistance" : {
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Unterstützung der Musikerkennung" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "音乐领域辅助识别" } }
+      }
+    },
+    "Optional city" : {
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Optionale Stadt" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "可选城市" } }
+      }
+    },
+    "Optional prefecture-level city hint, such as Beijing or Shanghai." : {
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Optionaler Hinweis auf eine bezirksfreie Stadt, z. B. Peking oder Shanghai." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "可选填地级市提示，例如北京市或上海市。" } }
+      }
+    },
+    "POI city" : {
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "POI-Stadt" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "POI 城市" } }
+      }
+    },
+    "POI recognition assistance" : {
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "POI-Erkennungsunterstützung" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "POI 地图领域辅助识别" } }
+      }
+    },
     "Recognition Options" : {
       "localizations" : {
         "de" : { "stringUnit" : { "state" : "translated", "value" : "Erkennungsoptionen" } },
@@ -18030,6 +18060,12 @@
       "localizations" : {
         "de" : { "stringUnit" : { "state" : "translated", "value" : "Liefert den ersten Text früher, möglicherweise mit geringerer Anfangsgenauigkeit." } },
         "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "更快返回首字，但早期结果准确率可能降低。" } }
+      }
+    },
+    "Recognition options sync through iCloud; the optional POI city stays on this Mac." : {
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Erkennungsoptionen werden über iCloud synchronisiert; die optionale POI-Stadt bleibt auf diesem Mac." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "识别选项会通过 iCloud 同步；可选的 POI 城市仅保存在当前 Mac。" } }
       }
     },
     "Semantic smoothing" : {
@@ -18066,6 +18102,18 @@
       "localizations" : {
         "de" : { "stringUnit" : { "state" : "translated", "value" : "Verwendet einen zweiten Erkennungsdurchlauf für genaueren finalen Text." } },
         "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "使用第二遍识别提高最终文本准确率。" } }
+      }
+    },
+    "Uses Doubao's map-domain recommendations for difficult place names." : {
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Nutzt Doubaos Empfehlungen aus dem Kartenbereich für schwer erkennbare Ortsnamen." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "使用豆包地图领域推荐词服务辅助识别困难地名。" } }
+      }
+    },
+    "Uses Doubao's music-domain recommendations for difficult artist, song, and album names." : {
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Nutzt Doubaos Empfehlungen aus dem Musikbereich für schwer erkennbare Namen von Künstlern, Titeln und Alben." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "使用豆包音乐领域推荐词服务辅助识别困难的歌手、歌曲和专辑名称。" } }
       }
     },
     "Vocabulary" : {

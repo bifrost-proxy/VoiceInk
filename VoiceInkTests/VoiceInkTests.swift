@@ -552,6 +552,9 @@ struct VoiceInkTests {
 
         #expect(!CloudConfigurationSyncService.isEligiblePreferenceKey("LocalKeychain_openAIAPIKey"))
         #expect(!CloudConfigurationSyncService.isEligiblePreferenceKey("selectedAudioDeviceUID"))
+        #expect(
+            !CloudConfigurationSyncService.isEligiblePreferenceKey(DoubaoSpeechSettings.Keys.poiCityName)
+        )
         #expect(!CloudConfigurationSyncService.isEligiblePreferenceKey("hasCompletedOnboardingV2"))
         #expect(!CloudConfigurationSyncService.isEligiblePreferenceKey("buffered-local-realtime-migrated-v1"))
         #expect(!CloudConfigurationSyncService.isEligiblePreferenceKey("onboardingStage"))
