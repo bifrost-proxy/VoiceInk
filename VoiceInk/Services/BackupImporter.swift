@@ -237,12 +237,7 @@ enum BackupImporter {
 
                 let lowercasedWord = word.lowercased()
                 if !existingWordsSet.contains(lowercasedWord) {
-                    modelContext.insert(
-                        VocabularyWord(
-                            word: word,
-                            kind: item.kindRawValue.flatMap(VocabularyEntryKind.init(rawValue:)) ?? .vocabulary
-                        )
-                    )
+                    modelContext.insert(VocabularyWord(word: word))
                     existingWordsSet.insert(lowercasedWord)
                     insertedWords += 1
                 }

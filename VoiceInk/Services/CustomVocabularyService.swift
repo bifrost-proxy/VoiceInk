@@ -12,6 +12,6 @@ class CustomVocabularyService {
         guard !entries.isEmpty else { return "" }
 
         let terms = entries.map(\.term).joined(separator: ", ")
-        return "Important Vocabulary and Proper Nouns: \(terms)"
+        return "Important Vocabulary: \(terms)"
     }
 }

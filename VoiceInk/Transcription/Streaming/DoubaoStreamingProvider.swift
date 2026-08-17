@@ -269,8 +269,8 @@ final class DoubaoStreamingProvider: StreamingTranscriptionProvider {
         eventsContinuation?.finish()
     }
 
-    /// Builds the inline hotword context accepted by Doubao. Both ordinary
-    /// vocabulary and proper nouns are sent as `hotwords[].word`.
+    /// Builds the inline hotword context accepted by Doubao. Vocabulary
+    /// entries are sent as `hotwords[].word`.
     func customHotwordTerms() -> [String] {
         TranscriptionVocabularyContext.uniqueTerms(from: modelContext)
     }

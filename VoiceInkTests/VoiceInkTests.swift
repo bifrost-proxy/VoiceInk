@@ -565,18 +565,18 @@ struct VoiceInkTests {
     }
 
     @MainActor
-    @Test func legacyVocabularyDataDefaultsToOrdinaryVocabulary() throws {
+    @Test func legacyCategorizedVocabularyDataDecodesAsUnifiedVocabulary() throws {
         let legacyBackup = try JSONDecoder().decode(
             WordBackup.self,
-            from: Data(#"{"word":"LegacyTerm"}"#.utf8)
+            from: Data(#"{"word":"LegacyTerm","kindRawValue":"properNoun"}"#.utf8)
         )
         #expect(legacyBackup.word == "LegacyTerm")
-        #expect(legacyBackup.kindRawValue == nil)
 
         let legacyCloudData = try PropertyListSerialization.data(
             fromPropertyList: [
                 "word": "LegacyCloudTerm",
                 "dateAdded": Date(timeIntervalSince1970: 1_700_000_000),
+                "kindRawValue": "properNoun",
             ],
             format: .binary,
             options: 0
@@ -586,10 +586,42 @@ struct VoiceInkTests {
             from: legacyCloudData
         )
         #expect(legacyCloudItem.word == "LegacyCloudTerm")
-        #expect(legacyCloudItem.kindRawValue == nil)
 
         let legacyModel = VocabularyWord(word: "ExistingTerm")
-        #expect(legacyModel.kind == .vocabulary)
+        #expect(legacyModel.word == "ExistingTerm")
+
+        let exportedBackup = try JSONEncoder().encode(WordBackup(word: "UnifiedTerm"))
+        let exportedBackupObject = try #require(
+            JSONSerialization.jsonObject(with: exportedBackup) as? [String: Any]
+        )
+        #expect(exportedBackupObject["kindRawValue"] == nil)
+
+        let exportedCloudItem = try PropertyListEncoder().encode(
+            CloudConfigurationSyncService.VocabularyItem(
+                word: "UnifiedCloudTerm",
+                dateAdded: Date(timeIntervalSince1970: 1_700_000_000)
+            )
+        )
+        let exportedCloudObject = try #require(
+            PropertyListSerialization.propertyList(from: exportedCloudItem, format: nil) as? [String: Any]
+        )
+        #expect(exportedCloudObject["kindRawValue"] == nil)
+    }
+
+    @MainActor
+    @Test func dictionaryExposesOneVocabularyEntryMode() throws {
+        #expect(DictionaryQuickAddView.Mode.allCases == [.vocabulary, .replacement])
+
+        let container = try ModelContainer(
+            for: VocabularyWord.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true)
+        )
+        let context = ModelContext(container)
+        context.insert(VocabularyWord(word: "VoiceInk"))
+        try context.save()
+
+        let promptContext = CustomVocabularyService.shared.getCustomVocabulary(from: context)
+        #expect(promptContext == "Important Vocabulary: VoiceInk")
     }
 
     @MainActor

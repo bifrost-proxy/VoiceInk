@@ -331,7 +331,7 @@ struct ProviderDetailPanel: View {
                 Divider()
                 optionToggleRow(
                     title: "Use VoiceInk vocabulary",
-                    detail: "Sends vocabulary and proper nouns as per-session inline hotwords.",
+                    detail: "Sends vocabulary as per-session inline hotwords.",
                     isOn: $aliyunUseVoiceInkVocabulary
                 )
                 .accessibilityIdentifier("aliyun.settings.vocabulary")
