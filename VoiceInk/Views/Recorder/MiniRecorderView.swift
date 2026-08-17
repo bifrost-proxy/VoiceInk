@@ -18,11 +18,13 @@ struct MiniRecorderView<S: RecorderStateProvider & ObservableObject>: View {
     private let compactCornerRadius: CGFloat = 20
     private let expandedCornerRadius: CGFloat = 14
 
-    // true when live transcript is streaming in during recording
-    private var hasLiveTranscript: Bool {
-        showLiveTranscript
-            && stateProvider.recordingState == .recording
-            && !stateProvider.partialTranscript.isEmpty
+    // Keep the visible transcript while post-processing so status changes do not hide the user's text.
+    private var hasVisibleTranscript: Bool {
+        RecorderTranscriptPresentation.shouldShow(
+            showLiveTranscript: showLiveTranscript,
+            recordingState: stateProvider.recordingState,
+            text: stateProvider.partialTranscript
+        )
     }
 
     private var hasAssistantResponse: Bool {
@@ -72,7 +74,7 @@ struct MiniRecorderView<S: RecorderStateProvider & ObservableObject>: View {
 
     private var transcriptSection: some View {
         VStack(spacing: 0) {
-            if hasLiveTranscript {
+            if hasVisibleTranscript {
                 LiveTranscriptView(text: stateProvider.partialTranscript)
                 Divider().background(Color.white.opacity(0.15))
             }
@@ -93,14 +95,14 @@ struct MiniRecorderView<S: RecorderStateProvider & ObservableObject>: View {
             }
             controlBar
         }
-        .frame(width: hasAssistantResponse ? assistantWidth : (hasLiveTranscript ? expandedWidth : compactWidth))
+        .frame(width: hasAssistantResponse ? assistantWidth : (hasVisibleTranscript ? expandedWidth : compactWidth))
         .background(Color.black)
         .clipShape(
             RoundedRectangle(
-                cornerRadius: hasLiveTranscript || hasAssistantResponse ? expandedCornerRadius : compactCornerRadius,
+                cornerRadius: hasVisibleTranscript || hasAssistantResponse ? expandedCornerRadius : compactCornerRadius,
                 style: .continuous)
         )
-        .animation(.easeInOut(duration: 0.3), value: hasLiveTranscript)
+        .animation(.easeInOut(duration: 0.3), value: hasVisibleTranscript)
         .animation(.easeInOut(duration: 0.3), value: hasAssistantResponse)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
     }

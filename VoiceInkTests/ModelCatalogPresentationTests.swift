@@ -3,6 +3,40 @@ import Testing
 @testable import VoiceInk
 
 struct ModelCatalogPresentationTests {
+    @Test func cloudProviderCapabilityFiltersUseProviderModelTypes() {
+        let descriptors = CloudProviderManagementView.providerDescriptors
+        let transcriptionProviders = descriptors.filter(CloudProviderCapabilityFilter.transcription.includes)
+        let enhancementProviders = descriptors.filter(CloudProviderCapabilityFilter.enhancement.includes)
+
+        #expect(descriptors.allSatisfy(CloudProviderCapabilityFilter.all.includes))
+        #expect(transcriptionProviders.allSatisfy { $0.hasTranscription })
+        #expect(enhancementProviders.allSatisfy { $0.hasEnhancement })
+
+        #expect(transcriptionProviders.contains { $0.displayName == "Doubao Speech" })
+        #expect(!transcriptionProviders.contains { $0.displayName == "Volcengine Ark" })
+        #expect(enhancementProviders.contains { $0.displayName == "Volcengine Ark" })
+        #expect(!enhancementProviders.contains { $0.displayName == "Doubao Speech" })
+
+        let groq = descriptors.first { $0.displayName == "Groq" }
+        #expect(groq?.hasTranscription == true)
+        #expect(groq?.hasEnhancement == true)
+        #expect(transcriptionProviders.contains { $0.displayName == "Groq" })
+        #expect(enhancementProviders.contains { $0.displayName == "Groq" })
+    }
+
+    @Test func cloudProviderCapabilityFiltersPreservePreferredOrdering() {
+        let descriptors = CloudProviderManagementView.providerDescriptors
+        let transcriptionNames = descriptors
+            .filter(CloudProviderCapabilityFilter.transcription.includes)
+            .map(\.displayName)
+        let enhancementNames = descriptors
+            .filter(CloudProviderCapabilityFilter.enhancement.includes)
+            .map(\.displayName)
+
+        #expect(Array(transcriptionNames.prefix(2)) == ["Doubao Speech", "Groq"])
+        #expect(Array(enhancementNames.prefix(2)) == ["Volcengine Ark", "Groq"])
+    }
+
     @Test func localModelsSortBySpeedThenAccuracy() throws {
         let models = TranscriptionModelRegistry.models
         let unified = try #require(models.first { $0.name == "parakeet-unified-0.6b" })

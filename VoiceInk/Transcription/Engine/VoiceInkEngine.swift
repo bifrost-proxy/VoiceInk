@@ -230,7 +230,6 @@ class VoiceInkEngine: NSObject, ObservableObject {
             activePipelineUseCase = activeRecordingUseCase
             activeRecordingUseCase = .newSession
             activeRecordingStartID = nil
-            partialTranscript = ""
             recordingState = .transcribing
             await recorder.stopRecording()
 
@@ -703,6 +702,11 @@ class VoiceInkEngine: NSObject, ObservableObject {
             },
             onStateChange: { [weak self] state in
                 guard let self, self.activePipelineTranscriptionID == transcriptionID else { return }
+                self.partialTranscript = RecorderTranscriptPresentation.text(
+                    for: state,
+                    currentText: self.partialTranscript,
+                    finalizedTranscript: transcription.text
+                )
                 self.recordingState = state
             },
             shouldCancel: { [weak self] in

@@ -89,9 +89,16 @@ struct ProcessingStatusDisplay: View {
         }
     }
 
+    private var systemImage: String {
+        switch mode {
+        case .transcribing: return "waveform"
+        case .enhancing: return "sparkles"
+        }
+    }
+
     var body: some View {
         VStack(spacing: 4) {
-            Text(label)
+            Label(label, systemImage: systemImage)
                 .foregroundColor(color)
                 .font(.system(size: 11, weight: .medium))
                 .lineLimit(1)

@@ -11,10 +11,6 @@ class CursorPaster {
     enum PasteResult: Equatable {
         case commandPosted
         case commandNotPosted
-
-        var didPostPasteCommand: Bool {
-            self == .commandPosted
-        }
     }
 
     private static let prePasteDelay: TimeInterval = 0.10

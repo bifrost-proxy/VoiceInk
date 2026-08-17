@@ -243,6 +243,36 @@ struct ProgressAnimation: View {
     }
 }
 
+// MARK: - Transcript Presentation
+
+enum RecorderTranscriptPresentation {
+    static func shouldShow(
+        showLiveTranscript: Bool,
+        recordingState: RecordingState,
+        text: String
+    ) -> Bool {
+        guard showLiveTranscript, !text.isEmpty else { return false }
+
+        switch recordingState {
+        case .recording, .transcribing, .enhancing:
+            return true
+        case .idle, .starting, .busy:
+            return false
+        }
+    }
+
+    static func text(
+        for recordingState: RecordingState,
+        currentText: String,
+        finalizedTranscript: String
+    ) -> String {
+        guard recordingState == .enhancing else { return currentText }
+
+        let finalizedTranscript = finalizedTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+        return finalizedTranscript.isEmpty ? currentText : finalizedTranscript
+    }
+}
+
 // MARK: - Mode Button
 
 struct RecorderModeButton: View {

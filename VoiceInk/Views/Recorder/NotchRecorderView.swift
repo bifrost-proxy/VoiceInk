@@ -24,11 +24,13 @@ struct NotchRecorderView<S: RecorderStateProvider & ObservableObject>: View {
         }
 
         switch stateProvider.recordingState {
-        case .recording:
-            let shouldShowLive = showLiveTranscript && !stateProvider.partialTranscript.isEmpty
+        case .recording, .transcribing, .enhancing:
+            let shouldShowLive = RecorderTranscriptPresentation.shouldShow(
+                showLiveTranscript: showLiveTranscript,
+                recordingState: stateProvider.recordingState,
+                text: stateProvider.partialTranscript
+            )
             return shouldShowLive ? .liveText : .active
-        case .transcribing, .enhancing:
-            return .active
         default:
             return .collapsed
         }

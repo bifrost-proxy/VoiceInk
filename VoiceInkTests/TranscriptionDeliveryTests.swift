@@ -1,5 +1,4 @@
 import Foundation
-import SwiftData
 import Testing
 @testable import VoiceInk
 
@@ -38,31 +37,21 @@ struct TranscriptionDeliveryTests {
     @Test(arguments: [CursorPaster.PasteResult.commandPosted, .commandNotPosted])
     func deliveryDoesNotReturnBeforePasteCommandResolves(_ pasteResult: CursorPaster.PasteResult) async throws {
         let defaults = UserDefaults.standard
-        let previousTracking = defaults.object(forKey: PostPasteEditTracker.userDefaultsKey)
         let previousAppendSpace = defaults.object(forKey: "AppendTrailingSpace")
         defer {
-            restore(previousTracking, forKey: PostPasteEditTracker.userDefaultsKey, in: defaults)
             restore(previousAppendSpace, forKey: "AppendTrailingSpace", in: defaults)
         }
-        defaults.set(false, forKey: PostPasteEditTracker.userDefaultsKey)
         defaults.set(false, forKey: "AppendTrailingSpace")
 
-        let schema = Schema([Transcription.self])
-        let container = try ModelContainer(
-            for: schema,
-            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
-        )
         let transcription = Transcription(
             text: "original",
             duration: 1,
             transcriptionStatus: .completed
         )
-        container.mainContext.insert(transcription)
 
         let gate = PasteCommandGate()
         var events: [String] = []
         let delivery = TranscriptionDelivery(
-            modelContext: container.mainContext,
             pasteAtCursor: { text in
                 events.append("paste-started:\(text)")
                 return await gate.performPaste()
@@ -102,7 +91,6 @@ struct TranscriptionDeliveryTests {
         await deliveryTask.value
 
         #expect(events == ["dismissed", "paste-started:enhanced", "delivery-returned"])
-        #expect(transcription.pasteTrackingStatusValue == .disabled)
     }
 
     private func restore(_ value: Any?, forKey key: String, in defaults: UserDefaults) {

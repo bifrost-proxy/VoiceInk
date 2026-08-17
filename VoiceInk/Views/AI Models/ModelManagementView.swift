@@ -48,6 +48,63 @@ private enum LocalModelLanguageFilter: String, CaseIterable, Identifiable {
     }
 }
 
+struct ModelCatalogFilterBar<Content: View>: View {
+    let title: LocalizedStringKey
+    let systemImage: String
+    private let content: Content
+
+    init(
+        title: LocalizedStringKey,
+        systemImage: String,
+        @ViewBuilder content: () -> Content
+    ) {
+        self.title = title
+        self.systemImage = systemImage
+        self.content = content()
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Label(title, systemImage: systemImage)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.secondary)
+
+            content
+
+            Spacer()
+        }
+        .padding(.horizontal, 2)
+    }
+}
+
+struct ModelCatalogFilterChip: View {
+    let title: LocalizedStringKey
+    let isSelected: Bool
+    let accessibilityIdentifier: String
+    let action: () -> Void
+
+    var body: some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.16), action)
+        } label: {
+            Text(title)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(isSelected ? Color.white : Color.primary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(
+                    Capsule().fill(
+                        isSelected
+                            ? AppTheme.Accent.primary
+                            : Color(.quaternarySystemFill)
+                    )
+                )
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier(accessibilityIdentifier)
+    }
+}
+
 struct ModelManagementView: View {
     @EnvironmentObject private var aiService: AIService
     @EnvironmentObject private var whisperModelManager: WhisperModelManager
@@ -322,36 +379,17 @@ struct ModelManagementView: View {
     }
 
     private var localLanguageFilterPicker: some View {
-        HStack(spacing: 8) {
-            Label("Language", systemImage: "globe")
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(.secondary)
-
+        ModelCatalogFilterBar(title: "Language", systemImage: "globe") {
             ForEach(LocalModelLanguageFilter.allCases) { filter in
-                Button {
-                    withAnimation(.easeInOut(duration: 0.16)) {
-                        selectedLocalLanguageFilter = filter
-                    }
-                } label: {
-                    Text(filter.title)
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(selectedLocalLanguageFilter == filter ? Color.white : Color.primary)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 5)
-                        .background(
-                            Capsule().fill(
-                                selectedLocalLanguageFilter == filter
-                                    ? AppTheme.Accent.primary
-                                    : Color(.quaternarySystemFill)
-                            )
-                        )
+                ModelCatalogFilterChip(
+                    title: filter.title,
+                    isSelected: selectedLocalLanguageFilter == filter,
+                    accessibilityIdentifier: "local-language-filter-\(filter.rawValue)"
+                ) {
+                    selectedLocalLanguageFilter = filter
                 }
-                .buttonStyle(.plain)
             }
-
-            Spacer()
         }
-        .padding(.horizontal, 2)
     }
 
     private var importLocalModelButton: some View {

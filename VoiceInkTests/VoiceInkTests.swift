@@ -116,15 +116,6 @@ struct VoiceInkTests {
             promptName: "Polish",
             transcriptionDuration: 1.7,
             enhancementDuration: 0.5,
-            deliveredText: "润色结果",
-            finalEditedText: "最终修改",
-            pasteTargetApplicationName: "Notes",
-            pasteTargetBundleIdentifier: "com.apple.Notes",
-            pasteTargetElementRole: "AXTextArea",
-            pasteTrackingStatus: "completed",
-            pasteStartedAt: nil,
-            pasteTrackingFinishedAt: nil,
-            postPasteEditHistoryData: nil,
             modeName: "中文",
             modeEmoji: "📝",
             transcriptionStatus: "completed",
@@ -151,6 +142,28 @@ struct VoiceInkTests {
 
         #expect(decoded == snapshot)
         #expect(decodedPerformance == performance)
+
+        var snapshotWithRemovedEditTrackingFields = try #require(
+            PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
+        )
+        var legacyTranscription = try #require(
+            snapshotWithRemovedEditTrackingFields["transcription"] as? [String: Any]
+        )
+        legacyTranscription["deliveredText"] = "legacy delivered text"
+        legacyTranscription["finalEditedText"] = "legacy edited text"
+        legacyTranscription["pasteTrackingStatus"] = "edited"
+        legacyTranscription["postPasteEditHistoryData"] = Data([0x01])
+        snapshotWithRemovedEditTrackingFields["transcription"] = legacyTranscription
+        let legacyEditTrackingData = try PropertyListSerialization.data(
+            fromPropertyList: snapshotWithRemovedEditTrackingFields,
+            format: .binary,
+            options: 0
+        )
+        let decodedLegacyEditTrackingSnapshot = try PropertyListDecoder().decode(
+            CloudUsageDataSyncService.Snapshot.self,
+            from: legacyEditTrackingData
+        )
+        #expect(decodedLegacyEditTrackingSnapshot == snapshot)
 
         var legacyPropertyList = try #require(
             PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
@@ -882,43 +895,6 @@ struct VoiceInkTests {
             #expect(qwen3MLX.supportedLanguages.count == 31) // 30 languages plus auto-detect.
             #expect(ModelLanguageSupportCatalog.languageCount(for: qwen3MLX) == 52)
         }
-    }
-
-    @Test func postPasteTextChangeCapturesInsertedAndRemovedText() throws {
-        let insertion = try #require(
-            PostPasteTextChange.between("Hello world", "Hello VoiceInk world")
-        )
-        #expect(insertion.oldRange == NSRange(location: 6, length: 0))
-        #expect(insertion.removedText.isEmpty)
-        #expect(insertion.insertedText == "VoiceInk ")
-
-        let replacement = try #require(
-            PostPasteTextChange.between("Send the old draft", "Send the final draft")
-        )
-        #expect(replacement.removedText == "old")
-        #expect(replacement.insertedText == "final")
-    }
-
-    @Test func postPasteTextChangeKeepsTrackedRangeAligned() throws {
-        let insertionBefore = try #require(
-            PostPasteTextChange.between("PrefixVoiceInk", "Long PrefixVoiceInk")
-        )
-        let shifted = insertionBefore.applying(
-            to: NSRange(location: 6, length: 8),
-            newTextUTF16Count: "Long PrefixVoiceInk".utf16.count
-        )
-        #expect(!shifted.affected)
-        #expect(shifted.range == NSRange(location: 11, length: 8))
-
-        let editInside = try #require(
-            PostPasteTextChange.between("VoiceInk", "Voice Ink")
-        )
-        let expanded = editInside.applying(
-            to: NSRange(location: 0, length: 8),
-            newTextUTF16Count: "Voice Ink".utf16.count
-        )
-        #expect(expanded.affected)
-        #expect(expanded.range == NSRange(location: 0, length: 9))
     }
 
     @MainActor

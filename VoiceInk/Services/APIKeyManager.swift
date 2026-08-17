@@ -51,6 +51,7 @@ final class APIKeyManager {
 
     /// Retrieves an API key for a provider.
     func getAPIKey(forProvider provider: String, allowAuthenticationUI: Bool = true) -> String? {
+        guard !isRunningTests else { return nil }
         let keyIdentifier = keychainIdentifier(forProvider: provider)
         return keychain.getString(
             forKey: keyIdentifier,
@@ -77,6 +78,7 @@ final class APIKeyManager {
 
     /// Checks if an API key exists for a provider.
     func hasAPIKey(forProvider provider: String) -> Bool {
+        guard !isRunningTests else { return false }
         let keyIdentifier = keychainIdentifier(forProvider: provider)
         return keychain.exists(
             forKey: keyIdentifier,
@@ -100,6 +102,7 @@ final class APIKeyManager {
 
     /// Retrieves an API key for a custom model.
     func getCustomModelAPIKey(forModelId modelId: UUID, allowAuthenticationUI: Bool = true) -> String? {
+        guard !isRunningTests else { return nil }
         let keyIdentifier = customModelKeyIdentifier(for: modelId)
         return keychain.getString(
             forKey: keyIdentifier,
@@ -136,6 +139,7 @@ final class APIKeyManager {
         forProviderId providerId: UUID,
         allowAuthenticationUI: Bool = true
     ) -> String? {
+        guard !isRunningTests else { return nil }
         let keyIdentifier = customAIProviderKeyIdentifier(for: providerId)
         return keychain.getString(
             forKey: keyIdentifier,
@@ -177,5 +181,12 @@ final class APIKeyManager {
 
     private func customAIProviderKeyIdentifier(for providerId: UUID) -> String {
         "customAIProvider_\(providerId.uuidString)_APIKey"
+    }
+
+    /// Unit tests launch the complete application as an unsigned host. Keep
+    /// that host away from the user's real credentials; dedicated Keychain
+    /// tests call `KeychainService` directly with isolated temporary keys.
+    private var isRunningTests: Bool {
+        ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
     }
 }
