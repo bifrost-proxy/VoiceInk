@@ -20410,6 +20410,131 @@
         "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "API Host 仅保留在此 Mac 上，不会通过 iCloud 同步。" } }
       }
     },
+    "Add domain terms or prior context to improve recognition (up to 400 characters)." : {
+      "localizations" : {
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "添加领域术语或前文，提升识别效果（最多 400 个字符）。" } }
+      }
+    },
+    "API host" : {
+      "localizations" : {
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "API Host 地址" } }
+      }
+    },
+    "China (Beijing)" : {
+      "localizations" : {
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "中国（北京）" } }
+      }
+    },
+    "Custom noise threshold" : {
+      "localizations" : {
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "自定义噪声阈值" } }
+      }
+    },
+    "Enter a valid Alibaba Cloud Model Studio API host using HTTPS or WSS." : {
+      "localizations" : {
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "请输入使用 HTTPS 或 WSS 的有效阿里云百炼 API Host。" } }
+      }
+    },
+    "Fine-tunes VAD sensitivity for unusually noisy or quiet environments." : {
+      "localizations" : {
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "针对异常嘈杂或安静的环境微调 VAD 灵敏度。" } }
+      }
+    },
+    "Higher values make the model more likely to recognize configured terms (1–5)." : {
+      "localizations" : {
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "数值越高，模型越倾向于识别已配置的词汇（1–5）。" } }
+      }
+    },
+    "Hotword weight" : {
+      "localizations" : {
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "热词权重" } }
+      }
+    },
+    "International (Singapore)" : {
+      "localizations" : {
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "国际（新加坡）" } }
+      }
+    },
+    "Keep silent sessions alive" : {
+      "localizations" : {
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "静音时保持会话连接" } }
+      }
+    },
+    "Keeps the server connection active while VoiceInk sends silent audio." : {
+      "localizations" : {
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "VoiceInk 发送静音音频时保持服务器连接。" } }
+      }
+    },
+    "Lower values retain more sound; higher values filter more aggressively (-1.0–1.0)." : {
+      "localizations" : {
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "数值越低会保留更多声音；数值越高会更强地过滤声音（-1.0–1.0）。" } }
+      }
+    },
+    "Multi-threshold VAD" : {
+      "localizations" : {
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "多阈值 VAD" } }
+      }
+    },
+    "Optional context" : {
+      "localizations" : {
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "可选上下文" } }
+      }
+    },
+    "Prevents VAD from producing excessively long sentences." : {
+      "localizations" : {
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "避免 VAD 产生过长的句子。" } }
+      }
+    },
+    "Recognition context" : {
+      "localizations" : {
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "识别上下文" } }
+      }
+    },
+    "Semantic sentence segmentation" : {
+      "localizations" : {
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "语义断句" } }
+      }
+    },
+    "Sends vocabulary as per-session inline hotwords." : {
+      "localizations" : {
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "将词汇作为当前会话的内联热词发送。" } }
+      }
+    },
+    "Service region" : {
+      "localizations" : {
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "服务区域" } }
+      }
+    },
+    "Speech/noise threshold" : {
+      "localizations" : {
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "语音/噪声阈值" } }
+      }
+    },
+    "The API host does not match the selected Alibaba Cloud region." : {
+      "localizations" : {
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "API Host 与所选阿里云区域不匹配。" } }
+      }
+    },
+    "The API key and endpoint must belong to the same region." : {
+      "localizations" : {
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "API 密钥和端点必须属于同一区域。" } }
+      }
+    },
+    "Use VoiceInk vocabulary" : {
+      "localizations" : {
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "使用 VoiceInk 词汇" } }
+      }
+    },
+    "Uses semantic boundaries for higher accuracy, with greater final-result latency." : {
+      "localizations" : {
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "使用语义边界提高准确率，但最终结果延迟会增加。" } }
+      }
+    },
+    "VAD silence threshold" : {
+      "localizations" : {
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "VAD 静音阈值" } }
+      }
+    },
     "This dedicated API key requires the API Host shown on the Alibaba Cloud key page." : {
       "localizations" : {
         "de" : { "stringUnit" : { "state" : "translated", "value" : "Dieser dedizierte API-Schlüssel benötigt den API-Host, der auf der Alibaba-Cloud-Schlüsselseite angezeigt wird." } },
