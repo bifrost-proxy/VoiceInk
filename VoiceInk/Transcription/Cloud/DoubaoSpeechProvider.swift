@@ -1,5 +1,4 @@
 import Foundation
-import SwiftData
 
 struct DoubaoSpeechProvider: CloudProvider {
     static let defaultResourceID = "volc.seedasr.sauc.duration"
@@ -43,8 +42,8 @@ struct DoubaoSpeechProvider: CloudProvider {
         ]
     }
 
-    func makeStreamingProvider(modelContext: ModelContext) -> (any StreamingTranscriptionProvider)? {
-        DoubaoStreamingProvider(modelContext: modelContext)
+    func makeStreamingProvider(customVocabulary: [String]) -> (any StreamingTranscriptionProvider)? {
+        DoubaoStreamingProvider(customVocabulary: customVocabulary)
     }
 
     func verifyAPIKey(_ key: String) async -> (isValid: Bool, errorMessage: String?) {

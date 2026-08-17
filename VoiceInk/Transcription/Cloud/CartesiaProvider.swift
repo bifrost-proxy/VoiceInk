@@ -1,6 +1,5 @@
 import Foundation
 import LLMkit
-import SwiftData
 
 struct CartesiaProvider: CloudProvider {
     let modelProvider: ModelProvider = .cartesia
@@ -25,8 +24,8 @@ struct CartesiaProvider: CloudProvider {
         ]
     }
 
-    func makeStreamingProvider(modelContext: ModelContext) -> (any StreamingTranscriptionProvider)? {
-        CartesiaStreamingProvider(modelContext: modelContext)
+    func makeStreamingProvider(customVocabulary _: [String]) -> (any StreamingTranscriptionProvider)? {
+        CartesiaStreamingProvider()
     }
 
     func verifyAPIKey(_ key: String) async -> (isValid: Bool, errorMessage: String?) {

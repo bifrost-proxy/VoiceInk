@@ -1,6 +1,5 @@
 import Foundation
 import LLMkit
-import SwiftData
 
 struct GroqProvider: CloudProvider {
     let modelProvider: ModelProvider = .groq
@@ -36,7 +35,7 @@ struct GroqProvider: CloudProvider {
         )
     }
 
-    func makeStreamingProvider(modelContext: ModelContext) -> (any StreamingTranscriptionProvider)? { nil }
+    func makeStreamingProvider(customVocabulary: [String]) -> (any StreamingTranscriptionProvider)? { nil }
 
     func verifyAPIKey(_ key: String) async -> (isValid: Bool, errorMessage: String?) {
         return await OpenAITranscriptionClient.verifyAPIKey(

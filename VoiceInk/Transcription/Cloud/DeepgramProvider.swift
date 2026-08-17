@@ -1,6 +1,5 @@
 import Foundation
 import LLMkit
-import SwiftData
 
 struct DeepgramProvider: CloudProvider {
     let modelProvider: ModelProvider = .deepgram
@@ -53,8 +52,8 @@ struct DeepgramProvider: CloudProvider {
         )
     }
 
-    func makeStreamingProvider(modelContext: ModelContext) -> (any StreamingTranscriptionProvider)? {
-        DeepgramStreamingProvider(modelContext: modelContext)
+    func makeStreamingProvider(customVocabulary: [String]) -> (any StreamingTranscriptionProvider)? {
+        DeepgramStreamingProvider(customVocabulary: customVocabulary)
     }
 
     func verifyAPIKey(_ key: String) async -> (isValid: Bool, errorMessage: String?) {

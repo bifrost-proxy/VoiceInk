@@ -334,7 +334,9 @@ struct AliyunQwenStreamingTests {
         context.insert(WordReplacement(originalText: "voice ink", replacementText: "VoiceInk App"))
         try context.save()
 
-        let provider = AliyunQwenStreamingProvider(modelContext: context)
+        let provider = AliyunQwenStreamingProvider(
+            customVocabulary: TranscriptionVocabularyContext.uniqueTerms(from: context)
+        )
         #expect(Set(provider.customHotwordTerms()) == ["VoiceInk", "通义千问"])
         #expect(APIKeyManager.storagePolicy(forProvider: "Alibaba Cloud Qwen") == .keychainOnly)
     }

@@ -1,5 +1,4 @@
 import Foundation
-import SwiftData
 
 protocol CloudProvider: Sendable {
     var modelProvider: ModelProvider { get }
@@ -13,7 +12,7 @@ protocol CloudProvider: Sendable {
     func transcribe(
         audioData: Data, fileName: String, apiKey: String, model: String, language: String?, customVocabulary: [String]
     ) async throws -> String
-    func makeStreamingProvider(modelContext: ModelContext) -> (any StreamingTranscriptionProvider)?
+    func makeStreamingProvider(customVocabulary: [String]) -> (any StreamingTranscriptionProvider)?
     func verifyAPIKey(_ key: String) async -> (isValid: Bool, errorMessage: String?)
 }
 

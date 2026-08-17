@@ -2,6 +2,11 @@ import AppKit
 import Foundation
 import os
 
+struct ModeConfigurationApplication {
+    let completion: Task<Void, Never>
+    let waitsForBrowserURL: Bool
+}
+
 class ActiveWindowService: ObservableObject {
     static let shared = ActiveWindowService()
     @Published var currentApplication: NSRunningApplication?
@@ -19,22 +24,26 @@ class ActiveWindowService: ObservableObject {
     func beginApplyingConfiguration(
         modeId: UUID? = nil,
         shouldApply: @escaping @MainActor () -> Bool = { true }
-    ) -> Task<Void, Never> {
+    ) -> ModeConfigurationApplication {
         if let modeId = modeId,
             let config = ModeManager.shared.getConfiguration(with: modeId)
         {
-            guard shouldApply() else { return Task {} }
+            guard shouldApply() else {
+                return ModeConfigurationApplication(completion: Task {}, waitsForBrowserURL: false)
+            }
             ModeManager.shared.setActiveConfiguration(config)
-            return Task {}
+            return ModeConfigurationApplication(completion: Task {}, waitsForBrowserURL: false)
         }
 
         guard let frontmostApp = NSWorkspace.shared.frontmostApplication,
             let bundleIdentifier = frontmostApp.bundleIdentifier
         else {
-            return Task {}
+            return ModeConfigurationApplication(completion: Task {}, waitsForBrowserURL: false)
         }
 
-        guard shouldApply() else { return Task {} }
+        guard shouldApply() else {
+            return ModeConfigurationApplication(completion: Task {}, waitsForBrowserURL: false)
+        }
         currentApplication = frontmostApp
 
         let quickConfig =
@@ -46,10 +55,17 @@ class ActiveWindowService: ObservableObject {
         }
 
         guard let browserType = BrowserType.allCases.first(where: { $0.bundleIdentifier == bundleIdentifier }) else {
-            return Task {}
+            return ModeConfigurationApplication(completion: Task {}, waitsForBrowserURL: false)
         }
 
-        return Task { [weak self] in
+        let hasURLSpecificConfiguration = ModeManager.shared.configurations.contains { configuration in
+            configuration.isEnabled && !configuration.allURLConfigs.isEmpty
+        }
+        guard hasURLSpecificConfiguration else {
+            return ModeConfigurationApplication(completion: Task {}, waitsForBrowserURL: false)
+        }
+
+        let completion = Task { [weak self] in
             guard let self else { return }
 
             do {
@@ -69,12 +85,13 @@ class ActiveWindowService: ObservableObject {
                     "❌ Failed to get URL from \(browserType.displayName, privacy: .public): \(error, privacy: .public)")
             }
         }
+        return ModeConfigurationApplication(completion: completion, waitsForBrowserURL: true)
     }
 
     func applyConfiguration(modeId: UUID? = nil) async {
-        let task = await MainActor.run {
+        let application = await MainActor.run {
             beginApplyingConfiguration(modeId: modeId)
         }
-        await task.value
+        await application.completion.value
     }
 }

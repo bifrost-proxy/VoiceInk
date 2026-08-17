@@ -1,6 +1,5 @@
 import Foundation
 import LLMkit
-import SwiftData
 
 /// Cartesia Ink 2 streaming provider wrapping `LLMkit.CartesiaStreamingClient`.
 final class CartesiaStreamingProvider: StreamingTranscriptionProvider {
@@ -10,12 +9,10 @@ final class CartesiaStreamingProvider: StreamingTranscriptionProvider {
     private var forwardingTask: Task<Void, Never>?
     private let finalizationLock = NSLock()
     private var didRequestFinalization = false
-    private let modelContext: ModelContext
 
     private(set) var transcriptionEvents: AsyncStream<StreamingTranscriptionEvent>
 
-    init(modelContext: ModelContext) {
-        self.modelContext = modelContext
+    init() {
         var continuation: AsyncStream<StreamingTranscriptionEvent>.Continuation!
         transcriptionEvents = AsyncStream { continuation = $0 }
         eventsContinuation = continuation

@@ -1,6 +1,5 @@
 import Foundation
 import LLMkit
-import SwiftData
 
 struct AssemblyAIProvider: CloudProvider {
     let modelProvider: ModelProvider = .assemblyAI
@@ -48,8 +47,8 @@ struct AssemblyAIProvider: CloudProvider {
         )
     }
 
-    func makeStreamingProvider(modelContext: ModelContext) -> (any StreamingTranscriptionProvider)? {
-        AssemblyAIStreamingProvider(modelContext: modelContext)
+    func makeStreamingProvider(customVocabulary: [String]) -> (any StreamingTranscriptionProvider)? {
+        AssemblyAIStreamingProvider(customVocabulary: customVocabulary)
     }
 
     func verifyAPIKey(_ key: String) async -> (isValid: Bool, errorMessage: String?) {

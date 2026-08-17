@@ -1,6 +1,5 @@
 import Foundation
 import LLMkit
-import SwiftData
 
 struct XAIProvider: CloudProvider {
     let modelProvider: ModelProvider = .xai
@@ -40,7 +39,7 @@ struct XAIProvider: CloudProvider {
         )
     }
 
-    func makeStreamingProvider(modelContext: ModelContext) -> (any StreamingTranscriptionProvider)? {
+    func makeStreamingProvider(customVocabulary _: [String]) -> (any StreamingTranscriptionProvider)? {
         XAIStreamingProvider()
     }
 

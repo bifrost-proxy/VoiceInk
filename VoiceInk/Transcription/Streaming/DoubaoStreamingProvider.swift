@@ -1,5 +1,4 @@
 import Foundation
-import SwiftData
 
 enum DoubaoStreamingProtocolError: LocalizedError, Equatable {
     case invalidFrame(String)
@@ -240,13 +239,13 @@ enum DoubaoStreamingProtocol {
 }
 
 final class DoubaoStreamingProvider: StreamingTranscriptionProvider {
-    private let modelContext: ModelContext
+    private let customVocabulary: [String]
     private let session: DoubaoWebSocketSession
     private var eventsContinuation: AsyncStream<StreamingTranscriptionEvent>.Continuation?
     private(set) var transcriptionEvents: AsyncStream<StreamingTranscriptionEvent>
 
-    init(modelContext: ModelContext) {
-        self.modelContext = modelContext
+    init(customVocabulary: [String]) {
+        self.customVocabulary = customVocabulary
         var continuation: AsyncStream<StreamingTranscriptionEvent>.Continuation!
         transcriptionEvents = AsyncStream { continuation = $0 }
         eventsContinuation = continuation
@@ -288,7 +287,7 @@ final class DoubaoStreamingProvider: StreamingTranscriptionProvider {
     /// Builds the inline hotword context accepted by Doubao. Vocabulary
     /// entries are sent as `hotwords[].word`.
     func customHotwordTerms() -> [String] {
-        TranscriptionVocabularyContext.uniqueTerms(from: modelContext)
+        customVocabulary
     }
 }
 
