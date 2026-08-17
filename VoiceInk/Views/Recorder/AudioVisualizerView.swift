@@ -5,62 +5,70 @@ struct AudioVisualizer: View {
     let color: Color
     let isActive: Bool
 
-    private let barCount = 15
-    private let barWidth: CGFloat = 3
-    private let barSpacing: CGFloat = 2
-    private let minHeight: CGFloat = 4
-    private let maxHeight: CGFloat = 28
-
-    private let phases: [Double]
-
     init(audioMeter: AudioMeter, color: Color, isActive: Bool) {
         self.audioMeter = audioMeter
         self.color = color
         self.isActive = isActive
-        self.phases = (0..<barCount).map { Double($0) * 0.4 }
     }
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 0.016)) { context in
-            HStack(spacing: barSpacing) {
-                ForEach(0..<barCount, id: \.self) { index in
-                    RoundedRectangle(cornerRadius: barWidth / 2)
-                        .fill(color.opacity(0.85))
-                        .frame(width: barWidth, height: barHeight(for: index, at: context.date))
-                }
+        Canvas(opaque: false, rendersAsynchronously: true) { context, size in
+            let heights = AudioVisualizerLayout.barHeights(for: audioMeter, isActive: isActive)
+            for (index, height) in heights.enumerated() {
+                let rect = CGRect(
+                    x: CGFloat(index) * (AudioVisualizerLayout.barWidth + AudioVisualizerLayout.barSpacing),
+                    y: (size.height - height) / 2,
+                    width: AudioVisualizerLayout.barWidth,
+                    height: height
+                )
+                let path = Path(
+                    roundedRect: rect,
+                    cornerRadius: AudioVisualizerLayout.barWidth / 2
+                )
+                context.fill(path, with: .color(color.opacity(isActive ? 0.85 : 0.5)))
             }
         }
+        .frame(width: AudioVisualizerLayout.width, height: AudioVisualizerLayout.maxHeight)
+        .accessibilityHidden(true)
     }
+}
 
-    private func barHeight(for index: Int, at date: Date) -> CGFloat {
-        guard isActive else { return minHeight }
+enum AudioVisualizerLayout {
+    static let barCount = 15
+    static let barWidth: CGFloat = 3
+    static let barSpacing: CGFloat = 2
+    static let minHeight: CGFloat = 4
+    static let maxHeight: CGFloat = 28
+    static let width = CGFloat(barCount) * barWidth + CGFloat(barCount - 1) * barSpacing
 
-        let time = date.timeIntervalSince1970
-        let amplitude = max(0, min(1, pow(audioMeter.averagePower, 0.7)))  // boosted for visibility
-        let wave = sin(time * 8 + phases[index]) * 0.5 + 0.5
-        let centerDistance = abs(Double(index) - Double(barCount) / 2) / Double(barCount / 2)
-        let centerBoost = 1.0 - (centerDistance * 0.4)
+    static func barHeights(for audioMeter: AudioMeter, isActive: Bool) -> [CGFloat] {
+        guard isActive else { return Array(repeating: minHeight, count: barCount) }
 
-        return max(minHeight, minHeight + CGFloat(amplitude * wave * centerBoost) * (maxHeight - minHeight))
+        let average = max(0, min(1, audioMeter.averagePower))
+        let peak = max(0, min(1, audioMeter.peakPower))
+        let amplitude = pow(average * 0.78 + peak * 0.22, 0.72)
+        let phase = peak * 5.0
+
+        return (0..<barCount).map { index in
+            let centerDistance = abs(Double(index) - Double(barCount - 1) / 2) / Double(barCount / 2)
+            let centerBoost = 1.0 - centerDistance * 0.32
+            let wave = 0.38 + (sin(Double(index) * 1.17 + phase) * 0.5 + 0.5) * 0.62
+            let normalizedHeight = amplitude * wave * centerBoost
+            return minHeight + CGFloat(normalizedHeight) * (maxHeight - minHeight)
+        }
     }
 }
 
 // Flat bars shown when the recorder is idle (no audio input)
 struct StaticVisualizer: View {
-    private let barCount = 15
-    private let barWidth: CGFloat = 3
-    private let barHeight: CGFloat = 4
-    private let barSpacing: CGFloat = 2
     let color: Color
 
     var body: some View {
-        HStack(spacing: barSpacing) {
-            ForEach(0..<barCount, id: \.self) { _ in
-                RoundedRectangle(cornerRadius: barWidth / 2)
-                    .fill(color.opacity(0.5))
-                    .frame(width: barWidth, height: barHeight)
-            }
-        }
+        AudioVisualizer(
+            audioMeter: AudioMeter(averagePower: 0, peakPower: 0),
+            color: color,
+            isActive: false
+        )
     }
 }
 

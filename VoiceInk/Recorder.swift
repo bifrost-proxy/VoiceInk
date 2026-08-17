@@ -15,7 +15,7 @@ class Recorder: NSObject, ObservableObject {
     private let playbackController = PlaybackController.shared
     @Published var audioMeter = AudioMeter(averagePower: 0, peakPower: 0)
     private var audioMeterUpdateTimer: DispatchSourceTimer?
-    private let audioMeterQueue = DispatchQueue(label: "com.prakashjoshipax.voiceink.audiometer", qos: .userInteractive)
+    private let audioMeterQueue = DispatchQueue(label: "com.prakashjoshipax.voiceink.audiometer", qos: .userInitiated)
     /// Dedicated serial queue for hardware setup.
     private let audioSetupQueue = DispatchQueue(label: "com.prakashjoshipax.voiceink.audioSetup", qos: .userInitiated)
     private let recordingAudioActionDelayNanoseconds: UInt64 = 220_000_000
@@ -25,6 +25,7 @@ class Recorder: NSObject, ObservableObject {
     private let smoothedValuesLock = NSLock()
     private var smoothedAverage: Float = 0
     private var smoothedPeak: Float = 0
+    private let audioMeterDeliveryBuffer = AudioMeterDeliveryBuffer()
 
     /// Audio chunk callback for streaming. Can be updated while recording;
     /// changes are forwarded to the live CoreAudioRecorder.
@@ -172,6 +173,7 @@ class Recorder: NSObject, ObservableObject {
         mediaPauseTask = nil
         audioMeterUpdateTimer?.cancel()
         audioMeterUpdateTimer = nil
+        audioMeterDeliveryBuffer.deactivate()
 
         // Capture current recorder to stop it on the serial hardware queue.
         let currentRecorder = self.recorder
@@ -233,8 +235,13 @@ class Recorder: NSObject, ObservableObject {
     }
 
     private func startAudioMeterTimer() {
+        audioMeterDeliveryBuffer.activate()
         let timer = DispatchSource.makeTimerSource(queue: audioMeterQueue)
-        timer.schedule(deadline: .now(), repeating: .milliseconds(17))
+        timer.schedule(
+            deadline: .now(),
+            repeating: .milliseconds(AudioMeterRenderingPolicy.updateIntervalMilliseconds),
+            leeway: .milliseconds(AudioMeterRenderingPolicy.timerLeewayMilliseconds)
+        )
         timer.setEventHandler { [weak self] in
             self?.updateAudioMeter()
         }
@@ -299,15 +306,29 @@ class Recorder: NSObject, ObservableObject {
 
         // Apply EMA smoothing with thread-safe access
         smoothedValuesLock.lock()
-        smoothedAverage = smoothedAverage * 0.6 + normalizedAverage * 0.4
-        smoothedPeak = smoothedPeak * 0.6 + normalizedPeak * 0.4
+        smoothedAverage =
+            smoothedAverage * AudioMeterRenderingPolicy.smoothingRetention
+            + normalizedAverage * (1 - AudioMeterRenderingPolicy.smoothingRetention)
+        smoothedPeak =
+            smoothedPeak * AudioMeterRenderingPolicy.smoothingRetention
+            + normalizedPeak * (1 - AudioMeterRenderingPolicy.smoothingRetention)
         let newAudioMeter = AudioMeter(averagePower: Double(smoothedAverage), peakPower: Double(smoothedPeak))
         smoothedValuesLock.unlock()
 
-        // Dispatch to main queue for UI updates (more efficient than Task)
+        // Keep at most one main-thread delivery pending. When inference or
+        // another workload is busy, stale meter frames are replaced by the
+        // newest sample instead of building a queue that makes the UI lag.
+        guard audioMeterDeliveryBuffer.submit(newAudioMeter) else { return }
         DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
-            self.audioMeter = newAudioMeter
+            guard let self,
+                let latestMeter = self.audioMeterDeliveryBuffer.takeLatestValue()
+            else {
+                return
+            }
+            guard AudioMeterRenderingPolicy.shouldPublish(previous: self.audioMeter, next: latestMeter) else {
+                return
+            }
+            self.audioMeter = latestMeter
         }
     }
 
@@ -331,4 +352,65 @@ class Recorder: NSObject, ObservableObject {
 struct AudioMeter: Equatable {
     let averagePower: Double
     let peakPower: Double
+}
+
+enum AudioMeterRenderingPolicy {
+    /// 30 fps remains responsive for a small audio meter while halving the
+    /// observable-object invalidations produced by the previous 60 fps loop.
+    static let updateIntervalMilliseconds = 33
+    static let timerLeewayMilliseconds = 6
+    static let minimumVisibleDelta = 0.006
+    /// Preserves roughly the same response time as the former 60 fps sampler.
+    static let smoothingRetention: Float = 0.36
+
+    static func shouldPublish(previous: AudioMeter, next: AudioMeter) -> Bool {
+        abs(previous.averagePower - next.averagePower) >= minimumVisibleDelta
+            || abs(previous.peakPower - next.peakPower) >= minimumVisibleDelta
+    }
+}
+
+/// Thread-safe single-slot buffer used to coalesce audio-meter deliveries to
+/// the main actor. It intentionally stores only the most recent visual frame.
+final class AudioMeterDeliveryBuffer: @unchecked Sendable {
+    private let lock = NSLock()
+    private var latestValue: AudioMeter?
+    private var isDeliveryScheduled = false
+    private var isActive = false
+
+    func activate() {
+        lock.lock()
+        isActive = true
+        lock.unlock()
+    }
+
+    /// Returns true only when the caller needs to schedule a main-thread drain.
+    func submit(_ value: AudioMeter) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard isActive else { return false }
+        latestValue = value
+        guard !isDeliveryScheduled else { return false }
+        isDeliveryScheduled = true
+        return true
+    }
+
+    func takeLatestValue() -> AudioMeter? {
+        lock.lock()
+        defer { lock.unlock() }
+
+        let value = latestValue
+        latestValue = nil
+        isDeliveryScheduled = false
+        return value
+    }
+
+    /// Stops accepting samples and clears any value captured by an event that
+    /// was already running when its dispatch timer was cancelled.
+    func deactivate() {
+        lock.lock()
+        isActive = false
+        latestValue = nil
+        lock.unlock()
+    }
 }
