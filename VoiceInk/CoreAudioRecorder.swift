@@ -40,6 +40,55 @@ enum AudioCaptureBufferingPolicy {
     static let inputRingSlotCount = 256
 }
 
+enum AudioFileWriteBatchingPolicy {
+    static let sampleRate = 16_000
+    static let bytesPerFrame = MemoryLayout<Int16>.size
+    static let batchDurationMilliseconds = 250
+    static let targetBatchByteCount =
+        sampleRate * bytesPerFrame * batchDurationMilliseconds / 1_000
+}
+
+struct AudioFileWriteBatcher {
+    let targetBatchByteCount: Int
+    private(set) var bufferedData = Data()
+
+    init(targetBatchByteCount: Int = AudioFileWriteBatchingPolicy.targetBatchByteCount) {
+        precondition(targetBatchByteCount > 0)
+        self.targetBatchByteCount = targetBatchByteCount
+        bufferedData.reserveCapacity(targetBatchByteCount)
+    }
+
+    var bufferedByteCount: Int { bufferedData.count }
+
+    mutating func append(_ data: Data) -> Data? {
+        bufferedData.append(data)
+        guard bufferedData.count >= targetBatchByteCount else { return nil }
+        return takeBufferedData()
+    }
+
+    mutating func append(_ bytes: UnsafeRawBufferPointer) -> Data? {
+        bufferedData.append(contentsOf: bytes)
+        guard bufferedData.count >= targetBatchByteCount else { return nil }
+        return takeBufferedData()
+    }
+
+    mutating func flush() -> Data? {
+        guard !bufferedData.isEmpty else { return nil }
+        return takeBufferedData()
+    }
+
+    mutating func reset() {
+        bufferedData.removeAll(keepingCapacity: true)
+    }
+
+    private mutating func takeBufferedData() -> Data {
+        let batch = bufferedData
+        bufferedData = Data()
+        bufferedData.reserveCapacity(targetBatchByteCount)
+        return batch
+    }
+}
+
 // MARK: - Core Audio Recorder (AUHAL-based, does not change system default device)
 final class CoreAudioRecorder: @unchecked Sendable {
     private final class InputBufferSlot: @unchecked Sendable {
@@ -101,6 +150,8 @@ final class CoreAudioRecorder: @unchecked Sendable {
     private let audioProcessingQueue = DispatchQueue(
         label: "com.prakashjoshipax.voiceink.audioProcessing", qos: .userInteractive)
     private let audioProcessingQueueKey = DispatchSpecificKey<Void>()
+    private let audioFileWriteQueue = DispatchQueue(
+        label: "com.prakashjoshipax.voiceink.audioFileWrite", qos: .utility)
     private let maxFramesPerRender: UInt32 = 4096
     private let inputRingSlotCount = AudioCaptureBufferingPolicy.inputRingSlotCount
     private var inputBufferSlots: [InputBufferSlot] = []
@@ -112,6 +163,9 @@ final class CoreAudioRecorder: @unchecked Sendable {
     private let renderCallbacksInFlight = ManagedAtomic<UInt32>(0)
     private let droppedInputBuffersBackpressure = ManagedAtomic<UInt64>(0)
     private let droppedInputBuffersCapacity = ManagedAtomic<UInt64>(0)
+    // Accessed only from audioProcessingQueue. Completed batches are handed to
+    // audioFileWriteQueue so disk latency never gates realtime transcription.
+    private var audioFileWriteBatcher = AudioFileWriteBatcher()
 
     /// Called from the recorder processing queue with raw PCM data (16-bit, 16kHz, mono) for streaming.
     private let audioChunkLock = NSLock()
@@ -187,12 +241,13 @@ final class CoreAudioRecorder: @unchecked Sendable {
             // The output file is per recording; the AUHAL setup above is reused.
             try createOutputFile(at: url)
             resetAudioProcessingState()
+            resetAudioFileWriteBuffer()
 
             try startAudioUnit()
         } catch {
             isRecording = false
             recordingActive.store(false, ordering: .releasing)
-            closeOutputFile()
+            closeOutputFileAfterPendingWrites()
             recordingURL = nil
             teardownPreparedAudioUnit()
             throw error
@@ -223,10 +278,10 @@ final class CoreAudioRecorder: @unchecked Sendable {
             }
         }
 
-        drainAudioProcessingQueue()
+        drainAudioProcessingQueue(flushAudioFileBuffer: true)
         logDroppedInputBufferCounters(context: "stop")
 
-        closeOutputFile()
+        closeOutputFileAfterPendingWrites()
         recordingURL = nil
 
         resetMeters()
@@ -716,6 +771,12 @@ final class CoreAudioRecorder: @unchecked Sendable {
         }
     }
 
+    private func closeOutputFileAfterPendingWrites() {
+        audioFileWriteQueue.sync {
+            closeOutputFile()
+        }
+    }
+
     private func teardownPreparedAudioUnit() {
         recordingActive.store(false, ordering: .releasing)
         if let unit = audioUnit {
@@ -942,7 +1003,7 @@ final class CoreAudioRecorder: @unchecked Sendable {
             }
 
             let slot = inputBufferSlots[Int(readIndex % UInt64(inputBufferSlots.count))]
-            convertAndWriteToFile(
+            convertAndDispatchAudio(
                 inputSamples: slot.samples,
                 frameCount: slot.frameCount,
                 inputChannels: slot.channelCount,
@@ -959,13 +1020,18 @@ final class CoreAudioRecorder: @unchecked Sendable {
         }
     }
 
-    private func drainAudioProcessingQueue() {
-        if DispatchQueue.getSpecific(key: audioProcessingQueueKey) != nil {
-            processQueuedInputBuffers()
-        } else {
-            audioProcessingQueue.sync {
-                processQueuedInputBuffers()
+    private func drainAudioProcessingQueue(flushAudioFileBuffer: Bool = false) {
+        let drain = {
+            self.processQueuedInputBuffers()
+            if flushAudioFileBuffer {
+                self.flushAudioFileWriteBuffer()
             }
+        }
+
+        if DispatchQueue.getSpecific(key: audioProcessingQueueKey) != nil {
+            drain()
+        } else {
+            audioProcessingQueue.sync(execute: drain)
         }
     }
 
@@ -992,14 +1058,18 @@ final class CoreAudioRecorder: @unchecked Sendable {
         audioProcessingScheduled.store(false, ordering: .relaxed)
     }
 
-    private func convertAndWriteToFile(
+    private func resetAudioFileWriteBuffer() {
+        audioProcessingQueue.sync {
+            audioFileWriteBatcher.reset()
+        }
+    }
+
+    private func convertAndDispatchAudio(
         inputSamples: UnsafeMutablePointer<Float32>,
         frameCount: UInt32,
         inputChannels: UInt32,
         inputSampleRate: Double
     ) {
-        guard let file = audioFile else { return }
-
         let outputSampleRate = outputFormat.mSampleRate
 
         // Calculate output frame count after sample rate conversion
@@ -1053,26 +1123,54 @@ final class CoreAudioRecorder: @unchecked Sendable {
             }
         }
 
-        // Write to file
-        var outputBufferList = AudioBufferList(
-            mNumberBuffers: 1,
-            mBuffers: AudioBuffer(
-                mNumberChannels: 1,
-                mDataByteSize: outputFrameCount * 2,
-                mData: outputBuffer
-            )
-        )
+        let byteCount = Int(outputFrameCount) * MemoryLayout<Int16>.size
 
-        let writeStatus = ExtAudioFileWrite(file, outputFrameCount, &outputBufferList)
-        if writeStatus != noErr {
-            logger.error("🎙️ ExtAudioFileWrite failed with status: \(writeStatus, privacy: .public)")
-        }
-
-        // Send the same PCM data to the streaming callback if set.
+        // Realtime consumers receive PCM before any disk work is scheduled.
         if let audioChunk = onAudioChunk {
-            let byteCount = Int(outputFrameCount) * MemoryLayout<Int16>.size
             let data = Data(bytes: outputBuffer, count: byteCount)
             audioChunk(data)
+        }
+
+        let bytes = UnsafeRawBufferPointer(start: outputBuffer, count: byteCount)
+        if let batch = audioFileWriteBatcher.append(bytes) {
+            enqueueAudioFileWrite(batch)
+        }
+    }
+
+    private func flushAudioFileWriteBuffer() {
+        if let batch = audioFileWriteBatcher.flush() {
+            enqueueAudioFileWrite(batch)
+        }
+    }
+
+    private func enqueueAudioFileWrite(_ data: Data) {
+        audioFileWriteQueue.async { [self] in
+            writeAudioFileBatch(data)
+        }
+    }
+
+    private func writeAudioFileBatch(_ data: Data) {
+        guard let file = audioFile, !data.isEmpty else { return }
+        let bytesPerFrame = MemoryLayout<Int16>.size
+        guard data.count.isMultiple(of: bytesPerFrame) else {
+            logger.error("🎙️ Refusing misaligned PCM batch bytes=\(data.count, privacy: .public)")
+            return
+        }
+
+        let frameCount = UInt32(data.count / bytesPerFrame)
+        let writeStatus = data.withUnsafeBytes { bytes -> OSStatus in
+            var outputBufferList = AudioBufferList(
+                mNumberBuffers: 1,
+                mBuffers: AudioBuffer(
+                    mNumberChannels: 1,
+                    mDataByteSize: UInt32(data.count),
+                    mData: UnsafeMutableRawPointer(mutating: bytes.baseAddress)
+                )
+            )
+            return ExtAudioFileWrite(file, frameCount, &outputBufferList)
+        }
+        if writeStatus != noErr {
+            logger.error("🎙️ ExtAudioFileWrite failed with status: \(writeStatus, privacy: .public)")
         }
     }
 

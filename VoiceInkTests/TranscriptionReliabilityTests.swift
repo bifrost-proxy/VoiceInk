@@ -61,4 +61,28 @@ struct TranscriptionReliabilityTests {
         #expect(completed)
         #expect(!completedTask.isCancelled)
     }
+
+    @Test func audioFileWritesAreBatchedAtTheConfiguredDuration() {
+        #expect(AudioFileWriteBatchingPolicy.targetBatchByteCount == 8_000)
+
+        var batcher = AudioFileWriteBatcher(targetBatchByteCount: 8)
+        let firstChunk = Data([0, 1, 2, 3])
+        let firstBatch = firstChunk.withUnsafeBytes { batcher.append($0) }
+        #expect(firstBatch == nil)
+        #expect(batcher.bufferedByteCount == 4)
+
+        let secondChunk = Data([4, 5, 6, 7])
+        let batch = secondChunk.withUnsafeBytes { batcher.append($0) }
+        #expect(batch == Data([0, 1, 2, 3, 4, 5, 6, 7]))
+        #expect(batcher.bufferedByteCount == 0)
+    }
+
+    @Test func audioFileWriteBatcherFlushesTheRemainingTail() {
+        var batcher = AudioFileWriteBatcher(targetBatchByteCount: 8)
+        #expect(batcher.append(Data([0, 1, 2, 3])) == nil)
+
+        #expect(batcher.flush() == Data([0, 1, 2, 3]))
+        #expect(batcher.bufferedByteCount == 0)
+        #expect(batcher.flush() == nil)
+    }
 }
