@@ -217,6 +217,51 @@ struct DoubaoStreamingTests {
         #expect(readUInt32(final, offset: 4) == 0)
     }
 
+    @Test func audioPacketizerEmitsDocumentedTwoHundredMillisecondPackets() {
+        var packetizer = DoubaoAudioPacketizer()
+        let callbackBytes = 340
+
+        var packets: [Data] = []
+        for value in 0..<38 {
+            packets.append(contentsOf: packetizer.append(Data(repeating: UInt8(value), count: callbackBytes)))
+        }
+
+        #expect(DoubaoAudioPacketizer.packetByteCount == 6_400)
+        #expect(packets.map(\.count) == [6_400, 6_400])
+        #expect(packetizer.flush()?.count == 120)
+        #expect(packetizer.flush() == nil)
+    }
+
+    @Test func audioPacketizerPreservesOrderingAcrossArbitraryCallbackSizes() throws {
+        var packetizer = DoubaoAudioPacketizer()
+        let source = Data((0..<15_123).map { UInt8($0 % 251) })
+        let callbackSizes = [1, 339, 1_024, 4_097, 2_111, 7_551]
+        var offset = 0
+        var output = Data()
+
+        for size in callbackSizes {
+            let end = min(offset + size, source.count)
+            guard offset < end else { break }
+            for packet in packetizer.append(source.subdata(in: offset..<end)) {
+                #expect(packet.count == DoubaoAudioPacketizer.packetByteCount)
+                output.append(packet)
+            }
+            offset = end
+        }
+        if offset < source.count {
+            for packet in packetizer.append(source.subdata(in: offset..<source.count)) {
+                #expect(packet.count == DoubaoAudioPacketizer.packetByteCount)
+                output.append(packet)
+            }
+        }
+        if let remainder = packetizer.flush() {
+            #expect(remainder.count < DoubaoAudioPacketizer.packetByteCount)
+            output.append(remainder)
+        }
+
+        #expect(output == source)
+    }
+
     @Test func finalServerFrameReturnsFullAndStableText() throws {
         let payload = try JSONSerialization.data(withJSONObject: [
             "result": [

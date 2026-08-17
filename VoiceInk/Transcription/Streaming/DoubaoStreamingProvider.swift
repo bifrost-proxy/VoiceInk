@@ -30,6 +30,35 @@ struct DoubaoServerResponse: Equatable {
     let isFinal: Bool
 }
 
+/// Aggregates recorder callbacks into the 200 ms PCM packets recommended by
+/// Doubao for bidirectional streaming (16 kHz, mono, signed 16-bit PCM).
+struct DoubaoAudioPacketizer {
+    static let packetByteCount = 16_000 * MemoryLayout<Int16>.size / 5
+
+    private var pendingAudio = Data()
+
+    mutating func append(_ data: Data) -> [Data] {
+        pendingAudio.append(data)
+        var packets: [Data] = []
+        while pendingAudio.count >= Self.packetByteCount {
+            packets.append(Data(pendingAudio.prefix(Self.packetByteCount)))
+            pendingAudio.removeFirst(Self.packetByteCount)
+        }
+        return packets
+    }
+
+    mutating func flush() -> Data? {
+        guard !pendingAudio.isEmpty else { return nil }
+        let remainder = pendingAudio
+        pendingAudio.removeAll(keepingCapacity: true)
+        return remainder
+    }
+
+    mutating func reset() {
+        pendingAudio.removeAll(keepingCapacity: true)
+    }
+}
+
 enum DoubaoStreamingProtocol {
     private static let versionAndHeaderSize: UInt8 = 0x11
     private static let fullClientRequest: UInt8 = 0x10
@@ -311,6 +340,7 @@ actor DoubaoWebSocketSession {
     private var webSocketTask: URLSessionWebSocketTask?
     private var receiveTask: Task<Void, Never>?
     private var verificationTimedOut = false
+    private var audioPacketizer = DoubaoAudioPacketizer()
 
     init(eventsContinuation: AsyncStream<StreamingTranscriptionEvent>.Continuation?) {
         self.eventsContinuation = eventsContinuation
@@ -349,6 +379,7 @@ actor DoubaoWebSocketSession {
         startReceiving: Bool
     ) async throws {
         guard webSocketTask == nil else { return }
+        audioPacketizer.reset()
 
         let delegate = DoubaoWebSocketOpenDelegate()
         let configuration = URLSessionConfiguration.ephemeral
@@ -389,11 +420,16 @@ actor DoubaoWebSocketSession {
 
     func sendAudioChunk(_ data: Data) async throws {
         guard let webSocketTask else { throw StreamingTranscriptionError.notConnected }
-        try await webSocketTask.send(.data(DoubaoStreamingProtocol.makeAudioRequest(data, isFinal: false)))
+        for packet in audioPacketizer.append(data) {
+            try await webSocketTask.send(.data(DoubaoStreamingProtocol.makeAudioRequest(packet, isFinal: false)))
+        }
     }
 
     func commit() async throws {
         guard let webSocketTask else { throw StreamingTranscriptionError.notConnected }
+        if let remainder = audioPacketizer.flush() {
+            try await webSocketTask.send(.data(DoubaoStreamingProtocol.makeAudioRequest(remainder, isFinal: false)))
+        }
         try await webSocketTask.send(.data(DoubaoStreamingProtocol.makeAudioRequest(Data(), isFinal: true)))
     }
 
@@ -449,6 +485,7 @@ actor DoubaoWebSocketSession {
     }
 
     private func closeSocket() {
+        audioPacketizer.reset()
         webSocketTask?.cancel(with: .goingAway, reason: nil)
         webSocketTask = nil
         urlSession?.invalidateAndCancel()
