@@ -24,7 +24,13 @@ final class AssemblyAIStreamingProvider: StreamingTranscriptionProvider {
     }
 
     func connect(model: any TranscriptionModel, language: String?) async throws {
-        guard let apiKey = APIKeyManager.shared.getAPIKey(forProvider: "AssemblyAI"), !apiKey.isEmpty else {
+        guard
+            let apiKey = APIKeyManager.shared.getAPIKey(
+                forProvider: "AssemblyAI",
+                allowAuthenticationUI: true
+            ),
+            !apiKey.isEmpty
+        else {
             throw StreamingTranscriptionError.missingAPIKey
         }
 

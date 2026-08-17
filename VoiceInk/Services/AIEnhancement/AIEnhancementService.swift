@@ -266,7 +266,10 @@ class AIEnhancementService: ObservableObject {
                 )
             case .custom:
                 guard
-                    let customConfiguration = CustomAIProviderManager.shared.requestConfiguration(forModel: modelName),
+                    let customConfiguration = CustomAIProviderManager.shared.requestConfiguration(
+                        forModel: modelName,
+                        allowAuthenticationUI: true
+                    ),
                     let baseURL = URL(string: customConfiguration.baseURL)
                 else {
                     throw EnhancementError.notConfigured
@@ -318,14 +321,23 @@ class AIEnhancementService: ObservableObject {
 
     private func apiKey(for provider: AIProvider, modelName: String) throws -> String {
         if provider == .custom {
-            guard let customConfiguration = CustomAIProviderManager.shared.requestConfiguration(forModel: modelName)
+            guard let customConfiguration = CustomAIProviderManager.shared.requestConfiguration(
+                forModel: modelName,
+                allowAuthenticationUI: true
+            )
             else {
                 throw EnhancementError.notConfigured
             }
             return customConfiguration.apiKey
         }
 
-        guard let key = APIKeyManager.shared.getAPIKey(forProvider: provider.rawValue), !key.isEmpty else {
+        guard
+            let key = APIKeyManager.shared.getAPIKey(
+                forProvider: provider.rawValue,
+                allowAuthenticationUI: true
+            ),
+            !key.isEmpty
+        else {
             throw EnhancementError.notConfigured
         }
         return key

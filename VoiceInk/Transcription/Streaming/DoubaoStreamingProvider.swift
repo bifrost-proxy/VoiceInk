@@ -293,7 +293,13 @@ final class DoubaoStreamingProvider: StreamingTranscriptionProvider {
     }
 
     func connect(model: any TranscriptionModel, language _: String?) async throws {
-        guard let apiKey = APIKeyManager.shared.getAPIKey(forProvider: "Doubao Speech"), !apiKey.isEmpty else {
+        guard
+            let apiKey = APIKeyManager.shared.getAPIKey(
+                forProvider: "Doubao Speech",
+                allowAuthenticationUI: true
+            ),
+            !apiKey.isEmpty
+        else {
             throw StreamingTranscriptionError.missingAPIKey
         }
 

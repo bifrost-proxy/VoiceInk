@@ -155,9 +155,15 @@ final class CustomAIProviderManager: ObservableObject {
         }
     }
 
-    func requestConfiguration(forModel modelName: String) -> (baseURL: String, apiKey: String, modelName: String)? {
+    func requestConfiguration(
+        forModel modelName: String,
+        allowAuthenticationUI: Bool = false
+    ) -> (baseURL: String, apiKey: String, modelName: String)? {
         guard let provider = provider(forModel: modelName),
-            let apiKey = APIKeyManager.shared.getCustomAIProviderAPIKey(forProviderId: provider.id),
+            let apiKey = APIKeyManager.shared.getCustomAIProviderAPIKey(
+                forProviderId: provider.id,
+                allowAuthenticationUI: allowAuthenticationUI
+            ),
             !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else {
             return nil

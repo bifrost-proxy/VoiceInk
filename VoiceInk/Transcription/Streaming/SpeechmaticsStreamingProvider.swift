@@ -24,7 +24,13 @@ final class SpeechmaticsStreamingProvider: StreamingTranscriptionProvider {
     }
 
     func connect(model: any TranscriptionModel, language: String?) async throws {
-        guard let apiKey = APIKeyManager.shared.getAPIKey(forProvider: "Speechmatics"), !apiKey.isEmpty else {
+        guard
+            let apiKey = APIKeyManager.shared.getAPIKey(
+                forProvider: "Speechmatics",
+                allowAuthenticationUI: true
+            ),
+            !apiKey.isEmpty
+        else {
             throw StreamingTranscriptionError.missingAPIKey
         }
 

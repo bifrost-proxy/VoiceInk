@@ -205,7 +205,10 @@ final class AliyunQwenStreamingProvider: StreamingTranscriptionProvider {
 
     func connect(model: any TranscriptionModel, language: String?) async throws {
         guard
-            let apiKey = APIKeyManager.shared.getAPIKey(forProvider: AliyunQwenSpeechProvider.key),
+            let apiKey = APIKeyManager.shared.getAPIKey(
+                forProvider: AliyunQwenSpeechProvider.key,
+                allowAuthenticationUI: true
+            ),
             !apiKey.isEmpty
         else {
             throw StreamingTranscriptionError.missingAPIKey
