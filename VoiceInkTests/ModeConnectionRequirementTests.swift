@@ -49,4 +49,34 @@ struct ModeConnectionRequirementTests {
 
         #expect(providerKeys.prefix(2) == [AIProvider.ark.rawValue, "Doubao Speech"])
     }
+
+    @Test func explicitArkSelectionIsPreservedWhenItsKeyIsTemporarilyUnavailable() {
+        #expect(
+            !AIEnhancementService.shouldInferProvider(
+                isEnhancementEnabled: true,
+                configuredProviderName: AIProvider.ark.rawValue
+            )
+        )
+    }
+
+    @Test func providerIsInferredOnlyForMissingOrInvalidConfiguration() {
+        #expect(
+            AIEnhancementService.shouldInferProvider(
+                isEnhancementEnabled: true,
+                configuredProviderName: nil
+            )
+        )
+        #expect(
+            AIEnhancementService.shouldInferProvider(
+                isEnhancementEnabled: true,
+                configuredProviderName: "Removed Provider"
+            )
+        )
+        #expect(
+            !AIEnhancementService.shouldInferProvider(
+                isEnhancementEnabled: false,
+                configuredProviderName: nil
+            )
+        )
+    }
 }

@@ -37,6 +37,49 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
+            if let release = updater.availableRelease {
+                Section {
+                    HStack(spacing: 14) {
+                        Image(systemName: "arrow.down.circle.fill")
+                            .font(.system(size: 28))
+                            .foregroundStyle(.tint)
+                            .accessibilityHidden(true)
+
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("VoiceInk \(release.version) is available.")
+                                .font(.headline)
+
+                            Text(
+                                "Download the update now. VoiceInk will verify it, install it, and restart automatically."
+                            )
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+
+                            if updater.isBusy {
+                                updateProgress
+                                    .padding(.top, 4)
+                            }
+                        }
+
+                        Spacer(minLength: 16)
+
+                        if !updater.isBusy {
+                            Button {
+                                updater.installAvailableUpdate()
+                            } label: {
+                                Text("Update to VoiceInk \(release.version)")
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.large)
+                            .accessibilityIdentifier("settings.update.install")
+                        }
+                    }
+                    .padding(.vertical, 6)
+                    .accessibilityElement(children: .contain)
+                    .accessibilityIdentifier("settings.update.banner")
+                }
+            }
+
             Section {
                 LabeledContent("Primary Shortcut") {
                     HStack(spacing: 8) {
@@ -407,25 +450,7 @@ struct SettingsView: View {
                 )
 
                 if updater.isBusy {
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            Text(updater.statusText)
-                            Spacer()
-                            if let percentage = updater.progressPercentage {
-                                Text("\(percentage)%")
-                                    .monospacedDigit()
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-
-                        if let progress = updater.progressFraction {
-                            ProgressView(value: progress)
-                                .progressViewStyle(.linear)
-                        } else {
-                            ProgressView()
-                                .controlSize(.small)
-                        }
-                    }
+                    updateProgress
                 } else if let release = updater.availableRelease {
                     LabeledContent {
                         Button {
@@ -468,6 +493,10 @@ struct SettingsView: View {
         .onAppear {
             cloudSync.syncNow()
         }
+        .task {
+            guard !updater.isBusy else { return }
+            _ = await updater.checkForUpdates()
+        }
         .alert("Reset Onboarding", isPresented: $showResetOnboardingAlert) {
             Button("Cancel", role: .cancel) {}
             Button("Reset", role: .destructive) {
@@ -496,6 +525,29 @@ struct SettingsView: View {
 
     private static var appBuild: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "Unknown"
+    }
+
+    private var updateProgress: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(updater.statusText)
+                Spacer()
+                if let percentage = updater.progressPercentage {
+                    Text("\(percentage)%")
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            if let progress = updater.progressFraction {
+                ProgressView(value: progress)
+                    .progressViewStyle(.linear)
+            } else {
+                ProgressView()
+                    .controlSize(.small)
+            }
+        }
+        .accessibilityIdentifier("settings.update.progress")
     }
 
     @ViewBuilder

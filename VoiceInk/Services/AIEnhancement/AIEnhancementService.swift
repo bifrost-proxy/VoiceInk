@@ -524,10 +524,10 @@ class AIEnhancementService: ObservableObject {
                 didUpdateMode = true
             }
 
-            let selectedProvider = updatedConfigurations[index].selectedAIProvider.flatMap(AIProvider.init(rawValue:))
-            let hasConnectedProvider = selectedProvider.map { aiService.connectedProviders.contains($0) } ?? false
-            if updatedConfigurations[index].isAIEnhancementEnabled,
-                !hasConnectedProvider,
+            if Self.shouldInferProvider(
+                isEnhancementEnabled: updatedConfigurations[index].isAIEnhancementEnabled,
+                configuredProviderName: updatedConfigurations[index].selectedAIProvider
+            ),
                 let provider = inferredProvider(for: updatedConfigurations[index])
             {
                 updatedConfigurations[index].selectedAIProvider = provider.rawValue
@@ -542,6 +542,17 @@ class AIEnhancementService: ObservableObject {
         if didUpdateModes {
             modeManager.replaceConfigurations(updatedConfigurations)
         }
+    }
+
+    /// A temporarily unavailable credential must never rewrite a user's explicit
+    /// provider selection. This is especially important for ad-hoc builds, where
+    /// Keychain ACL evaluation can briefly make an existing key unreadable.
+    nonisolated static func shouldInferProvider(
+        isEnhancementEnabled: Bool,
+        configuredProviderName: String?
+    ) -> Bool {
+        guard isEnhancementEnabled else { return false }
+        return configuredProviderName.flatMap(AIProvider.init(rawValue:)) == nil
     }
 
     private func savePrompts() {
