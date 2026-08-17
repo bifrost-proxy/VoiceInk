@@ -1,0 +1,48 @@
+{
+  "fill" : "automatic",
+  "groups" : [
+    {
+      "blend-mode" : "normal",
+      "layers" : [
+        {
+          "blend-mode" : "normal",
+          "fill-specializations" : [
+            {
+              "value" : "none"
+            },
+            {
+              "appearance" : "dark",
+              "value" : "none"
+            }
+          ],
+          "glass" : false,
+          "hidden" : false,
+          "image-name-specializations" : [
+            {
+              "value" : "VoiceInkLight.png"
+            },
+            {
+              "appearance" : "dark",
+              "value" : "VoiceInkDark.png"
+            }
+          ],
+          "name" : "VoiceInk microphone"
+        }
+      ],
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.18
+      },
+      "specular" : false,
+      "translucency" : {
+        "enabled" : false,
+        "value" : 0
+      }
+    }
+  ],
+  "supported-platforms" : {
+    "squares" : [
+      "macOS"
+    ]
+  }
+}
