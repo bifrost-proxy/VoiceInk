@@ -55,3 +55,22 @@ jobs:
             -parallel-testing-enabled NO \
             CODE_SIGNING_ALLOWED=NO \
             ENABLE_TESTABILITY=YES
+
+      # Temporary PR-only artifact for local acceptance testing. This step is
+      # removed before merge so the repository's normal CI remains unchanged.
+      - name: Build local acceptance app
+        shell: bash
+        run: |
+          set -euo pipefail
+          make local
+          ditto -c -k --sequesterRsrc --keepParent \
+            "$HOME/Downloads/VoiceInk.app" \
+            "$RUNNER_TEMP/VoiceInk-local.zip"
+
+      - name: Upload local acceptance app
+        uses: actions/upload-artifact@v4
+        with:
+          name: VoiceInk-qwen-local-${{ github.sha }}
+          path: ${{ runner.temp }}/VoiceInk-local.zip
+          if-no-files-found: error
+          retention-days: 1
