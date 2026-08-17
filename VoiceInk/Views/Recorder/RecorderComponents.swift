@@ -29,7 +29,10 @@ struct RecorderToggleButton: View {
                     Image(systemName: icon).font(.system(size: 13))
                 }
             }
-            .foregroundColor(disabled ? .white.opacity(0.3) : (isEnabled ? .white : .white.opacity(0.6)))
+            .foregroundColor(
+                disabled ? Color.primary.opacity(0.28)
+                    : (isEnabled ? .primary : Color.primary.opacity(0.58))
+            )
         }
         .buttonStyle(PlainButtonStyle())
         .disabled(disabled)
@@ -92,9 +95,9 @@ struct RecorderRecordButton: View {
         switch visualState {
         case .ready:
             return StateColors(
-                surface: Color(red: 0.30, green: 0.30, blue: 0.32),
-                border: Color(red: 0.42, green: 0.42, blue: 0.44),
-                mark: Color(red: 0.78, green: 0.78, blue: 0.80)
+                surface: Color.primary.opacity(0.12),
+                border: Color.primary.opacity(0.20),
+                mark: Color.primary.opacity(0.68)
             )
         case .recording:
             let red = AppTheme.Status.error
@@ -105,9 +108,9 @@ struct RecorderRecordButton: View {
             )
         case .processing:
             return StateColors(
-                surface: Color.white.opacity(0.13),
-                border: Color.white.opacity(0.18),
-                mark: Color.white.opacity(0.86)
+                surface: Color.primary.opacity(0.10),
+                border: Color.primary.opacity(0.17),
+                mark: Color.primary.opacity(0.84)
             )
         }
     }
@@ -163,15 +166,15 @@ struct RecorderCloseButton: View {
         Button(action: action) {
             ZStack {
                 Circle()
-                    .fill(Color.white.opacity(0.13))
+                    .fill(Color.primary.opacity(0.10))
                     .overlay(
                         Circle()
-                            .strokeBorder(Color.white.opacity(0.18), lineWidth: 0.6)
+                            .strokeBorder(Color.primary.opacity(0.17), lineWidth: 0.6)
                     )
 
                 Image(systemName: "xmark")
                     .font(.system(size: 9, weight: .semibold))
-                    .foregroundColor(.white.opacity(0.86))
+                    .foregroundColor(Color.primary.opacity(0.84))
             }
             .frame(width: 21, height: 21)
             .contentShape(Circle())
@@ -390,6 +393,8 @@ struct RecorderPermissionGuidanceView: View {
     let guidance: RecorderPermissionGuidance
     let onAction: () -> Void
 
+    @Environment(\.colorScheme) private var colorScheme
+
     private var accentColor: Color {
         switch guidance {
         case .required, .requesting:
@@ -410,11 +415,11 @@ struct RecorderPermissionGuidanceView: View {
                 VStack(alignment: .leading, spacing: 5) {
                     Text(guidance.title)
                         .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(.primary)
 
                     Text(guidance.message)
                         .font(.system(size: 11.5))
-                        .foregroundStyle(.white.opacity(0.68))
+                        .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -422,10 +427,10 @@ struct RecorderPermissionGuidanceView: View {
             Button(action: onAction) {
                 Text(guidance.actionTitle)
                     .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.black)
+                    .foregroundStyle(colorScheme == .dark ? Color.black : Color.white)
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 8)
-                    .background(Color.white.opacity(0.92))
+                    .background(colorScheme == .dark ? Color.white.opacity(0.92) : Color.black.opacity(0.86))
                     .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
             .buttonStyle(.plain)
@@ -534,7 +539,7 @@ struct LiveTranscriptView: View {
             ScrollView(.vertical, showsIndicators: true) {
                 Text(text)
                     .font(.system(size: 12))
-                    .foregroundColor(.white.opacity(0.8))
+                    .foregroundColor(Color.primary.opacity(0.80))
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 16)
                     .padding(.vertical, 6)
@@ -586,15 +591,15 @@ struct RecorderStatusDisplay: View {
     var body: some View {
         Group {
             if currentState == .enhancing {
-                ProcessingStatusDisplay(mode: .enhancing, color: .white).transition(.opacity)
+                ProcessingStatusDisplay(mode: .enhancing, color: .primary).transition(.opacity)
             } else if currentState == .transcribing {
-                ProcessingStatusDisplay(mode: .transcribing, color: .white).transition(.opacity)
+                ProcessingStatusDisplay(mode: .transcribing, color: .primary).transition(.opacity)
             } else if currentState == .recording {
-                AudioVisualizer(audioMeter: recorder.audioMeter, color: .white, isActive: true)
+                AudioVisualizer(audioMeter: recorder.audioMeter, color: .primary, isActive: true)
                     .scaleEffect(y: menuBarHeight != nil ? min(1.0, (menuBarHeight! - 8) / 25) : 1.0, anchor: .center)
                     .transition(.opacity)
             } else {
-                StaticVisualizer(color: .white)
+                StaticVisualizer(color: .primary)
                     .scaleEffect(y: menuBarHeight != nil ? min(1.0, (menuBarHeight! - 8) / 25) : 1.0, anchor: .center)
                     .transition(.opacity)
             }
@@ -613,8 +618,18 @@ struct AssistantPanelView: View {
     @State private var draftMessage = ""
     @FocusState private var isFollowUpFieldFocused: Bool
 
+    @Environment(\.colorScheme) private var colorScheme
+
     private let horizontalPadding: CGFloat = 20
-    private let followUpTextColor = Color.white.opacity(0.9)
+    private var followUpTextColor: Color { Color.primary.opacity(0.9) }
+
+    private var actionForegroundColor: Color {
+        colorScheme == .dark ? .black : .white
+    }
+
+    private var actionBackgroundColor: Color {
+        colorScheme == .dark ? Color.white.opacity(0.88) : Color.black.opacity(0.84)
+    }
 
     private var statusText: String? {
         switch session.phase {
@@ -660,7 +675,7 @@ struct AssistantPanelView: View {
                     if let statusText {
                         Text(statusText)
                             .font(.system(size: 11))
-                            .foregroundColor(.white.opacity(0.62))
+                            .foregroundColor(Color.secondary.opacity(0.82))
                             .padding(.horizontal, 10)
                             .padding(.vertical, 4)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -708,15 +723,15 @@ struct AssistantPanelView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 10)
             .padding(.vertical, 7)
-            .background(Color.white.opacity(0.10))
+            .background(Color.primary.opacity(0.08))
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
 
             Button(action: sendDraftMessage) {
                 Image(systemName: "paperplane.fill")
                     .font(.system(size: 10, weight: .semibold))
-                    .foregroundColor(canSendDraft ? .black : .white.opacity(0.35))
+                    .foregroundColor(canSendDraft ? actionForegroundColor : Color.primary.opacity(0.32))
                     .frame(width: 24, height: 24)
-                    .background(canSendDraft ? Color.white.opacity(0.88) : Color.white.opacity(0.10))
+                    .background(canSendDraft ? actionBackgroundColor : Color.primary.opacity(0.08))
                     .clipShape(Circle())
             }
             .buttonStyle(.plain)
@@ -777,12 +792,12 @@ private struct AssistantMessageBubble: View {
             MarkdownContentView(
                 message.content,
                 fontSize: 12,
-                foregroundColor: .white.opacity(isUser ? 0.92 : 0.86),
+                foregroundColor: Color.primary.opacity(isUser ? 0.92 : 0.86),
                 alignment: .leading
             )
             .padding(.horizontal, 10)
             .padding(.vertical, 7)
-            .background(isUser ? Color.white.opacity(0.16) : Color.white.opacity(0.08))
+            .background(isUser ? Color.primary.opacity(0.13) : Color.primary.opacity(0.07))
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             .overlay(alignment: .bottomTrailing) {
                 if !isUser {

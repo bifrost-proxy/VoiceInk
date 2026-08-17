@@ -5,8 +5,9 @@ import SwiftUI
 class NotchWindowManager {
     private var windowController: NSWindowController?
     private var panel: NotchRecorderPanel?
+    private let geometry = NotchRecorderGeometry()
 
-    private let makeView: () -> AnyView
+    private let makeView: (NotchRecorderGeometry) -> AnyView
 
     init(
         engine: VoiceInkEngine,
@@ -16,12 +17,13 @@ class NotchWindowManager {
         onCloseTapped: @escaping () -> Void,
         onAssistantFollowUp: @escaping (String) -> Void
     ) {
-        self.makeView = {
+        self.makeView = { geometry in
             AnyView(
                 NotchRecorderView(
                     stateProvider: engine,
                     recorder: recorder,
                     assistantSession: assistantSession,
+                    geometry: geometry,
                     onRecordButtonTapped: onRecordButtonTapped,
                     onCloseTapped: onCloseTapped,
                     onAssistantFollowUp: onAssistantFollowUp
@@ -46,8 +48,12 @@ class NotchWindowManager {
     private func initializeWindow() {
         deinitializeWindow()
         let metrics = NotchRecorderPanel.calculateWindowMetrics()
+        geometry.update(notchWidth: metrics.notchWidth, notchHeight: metrics.notchHeight)
         let newPanel = NotchRecorderPanel(contentRect: metrics.frame)
-        let view = makeView()
+        newPanel.onMetricsChange = { [weak geometry] metrics in
+            geometry?.update(notchWidth: metrics.notchWidth, notchHeight: metrics.notchHeight)
+        }
+        let view = makeView(geometry)
         let hostingController = NotchRecorderHostingController(rootView: view)
         newPanel.contentView = hostingController.view
         panel = newPanel
