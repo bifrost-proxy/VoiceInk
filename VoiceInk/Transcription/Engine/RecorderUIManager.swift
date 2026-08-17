@@ -173,6 +173,8 @@ class RecorderUIManager: ObservableObject, RecorderPanelPresenting {
                     switch permissionGuidance {
                     case .required:
                         await engine.beginRecordingPermissionRecovery(modeId: modeId)
+                    case .requesting:
+                        break
                     case .ready:
                         engine.clearRecordingPermissionGuidance()
                         SoundManager.shared.playStartSound()
@@ -209,12 +211,12 @@ class RecorderUIManager: ObservableObject, RecorderPanelPresenting {
     func presentRecordingPermissionGuidance(modeId: UUID? = nil) async {
         guard let engine else { return }
 
+        engine.prepareRecordingPermissionRecovery(modeId: modeId)
         isRecorderPanelVisible = true
-        await engine.beginRecordingPermissionRecovery(modeId: modeId)
     }
 
-    func refreshRecordingPermissionGuidance() async {
-        await engine?.refreshRecordingPermissionGuidance()
+    func refreshRecordingPermissionGuidance() {
+        engine?.refreshRecordingPermissionGuidance()
     }
 
     func resetOnLaunch() async {

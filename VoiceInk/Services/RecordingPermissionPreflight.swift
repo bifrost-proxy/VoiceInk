@@ -1,4 +1,3 @@
-import AppKit
 import ApplicationServices
 import AVFoundation
 import CoreGraphics
@@ -7,17 +6,6 @@ enum RecordingPermissionIssue: Equatable {
     case microphone
     case accessibility
     case screenRecording
-
-    var notificationTitle: String {
-        switch self {
-        case .microphone:
-            return String(localized: "Microphone permission is required to record")
-        case .accessibility:
-            return String(localized: "Accessibility permission is required for recording shortcuts")
-        case .screenRecording:
-            return String(localized: "Screen Recording permission is required for this mode")
-        }
-    }
 
     var guidanceTitle: String {
         switch self {
@@ -49,26 +37,16 @@ enum RecordingPermissionIssue: Equatable {
             )
         }
     }
-
-    var settingsPane: PrivacySettingsPane {
-        switch self {
-        case .microphone:
-            return .microphone
-        case .accessibility:
-            return .accessibility
-        case .screenRecording:
-            return .screenRecording
-        }
-    }
 }
 
 enum RecorderPermissionGuidance: Equatable {
     case required(RecordingPermissionIssue)
+    case requesting(RecordingPermissionIssue)
     case ready
 
     var title: String {
         switch self {
-        case .required(let issue):
+        case .required(let issue), .requesting(let issue):
             return issue.guidanceTitle
         case .ready:
             return String(localized: "Permissions Are Ready")
@@ -79,6 +57,11 @@ enum RecorderPermissionGuidance: Equatable {
         switch self {
         case .required(let issue):
             return issue.guidanceMessage
+        case .requesting:
+            return String(
+                localized:
+                    "Complete the macOS permission request. VoiceInk will stay responsive while it waits."
+            )
         case .ready:
             return String(localized: "Press your shortcut again or select Start Recording below.")
         }
@@ -88,6 +71,8 @@ enum RecorderPermissionGuidance: Equatable {
         switch self {
         case .required:
             return String(localized: "Open System Settings")
+        case .requesting:
+            return String(localized: "Waiting for Permission…")
         case .ready:
             return String(localized: "Start Recording")
         }
@@ -97,8 +82,26 @@ enum RecorderPermissionGuidance: Equatable {
         switch self {
         case .required:
             return "exclamationmark.shield.fill"
+        case .requesting:
+            return "clock.badge.checkmark"
         case .ready:
             return "checkmark.shield.fill"
+        }
+    }
+
+    var isActionEnabled: Bool {
+        if case .requesting = self {
+            return false
+        }
+        return true
+    }
+
+    var issue: RecordingPermissionIssue? {
+        switch self {
+        case .required(let issue), .requesting(let issue):
+            return issue
+        case .ready:
+            return nil
         }
     }
 }
@@ -137,46 +140,17 @@ enum RecordingPermissionPreflight {
     static func requestAuthorization(for issue: RecordingPermissionIssue) async -> Bool {
         switch issue {
         case .microphone:
-            switch AVCaptureDevice.authorizationStatus(for: .audio) {
-            case .authorized:
-                return true
-            case .notDetermined:
-                let isGranted = await AVCaptureDevice.requestAccess(for: .audio)
-                if !isGranted {
-                    openSettings(for: issue)
-                }
-                return isGranted
-            case .denied, .restricted:
-                openSettings(for: issue)
-                return false
-            @unknown default:
-                openSettings(for: issue)
-                return false
-            }
+            guard AVCaptureDevice.authorizationStatus(for: .audio) != .authorized else { return true }
+            _ = await PrivacyPermissionResetService.requestMicrophoneAuthorization()
+            return AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
         case .accessibility:
             guard !AXIsProcessTrusted() else { return true }
-            requestAccessibilityPermission()
+            _ = await PrivacyPermissionResetService.requestAccessibilityAuthorization()
             return AXIsProcessTrusted()
         case .screenRecording:
             guard !CGPreflightScreenCaptureAccess() else { return true }
-            let isGranted = await ScreenCaptureService.requestScreenCapturePermissionRegistration()
-            if !isGranted {
-                openSettings(for: issue)
-            }
-            return isGranted
+            _ = await PrivacyPermissionResetService.requestScreenRecordingAuthorization()
+            return CGPreflightScreenCaptureAccess()
         }
-    }
-
-    static func requestAccessibilityPermission() {
-        let options: NSDictionary = [
-            kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true
-        ]
-        _ = AXIsProcessTrustedWithOptions(options)
-        openSettings(for: .accessibility)
-    }
-
-    static func openSettings(for issue: RecordingPermissionIssue) {
-        guard let url = URL(string: issue.settingsPane.urlString) else { return }
-        NSWorkspace.shared.open(url)
     }
 }

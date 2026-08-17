@@ -87,7 +87,7 @@ VoiceInk 支持豆包语音 2.0 和阿里云 Qwen Audio 3.0 两种云端实时�
 
 #### 配置豆包语音 2.0
 
-1. 登录[豆包语音控制台](https://console.volcengine.com/speech/new?projectName=default)，开通流式语音识别大模型 2.0，并在 [API Key 管理](https://console.volcengine.com/speech/new/setting/apikeys?projectName=default)中创建密钥。
+1. 登录[豆包语音控制台](https://console.volcengine.com/speech/new?projectName=default)，[购买或开通流式语音识别大模型 2.0](https://console.volcengine.com/speech/new/purchase?projectName=default)，并在 [API Key 管理](https://console.volcengine.com/speech/new/setting/apikeys?projectName=default)中创建密钥。
 2. 打开 **AI 模型 → 云端 → Doubao Speech**，粘贴 API Key 并点击 **验证**。
 3. 打开 **模式**，在 **转写 → 模型** 中选择 **Doubao Streaming ASR 2.0**。如果账号开通了并发版，也可以选择带 **Concurrent** 的模型。
 4. 如需加强困难词识别，可在 **识别选项** 中开启二遍识别，然后开启 POI 地图或音乐领域辅助识别。POI 还可以填写一个可选的城市提示。
