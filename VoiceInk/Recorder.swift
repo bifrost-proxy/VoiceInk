@@ -120,6 +120,7 @@ class Recorder: NSObject, ObservableObject {
 
     func startRecording(toOutputFile url: URL) async throws {
         deviceManager.isRecordingActive = true
+        NotificationCenter.default.post(name: .recordingDidStart, object: nil)
 
         let currentDeviceID = deviceManager.getCurrentDevice()
         let lastDeviceID = UserDefaults.standard.string(forKey: "lastUsedMicrophoneDeviceID")

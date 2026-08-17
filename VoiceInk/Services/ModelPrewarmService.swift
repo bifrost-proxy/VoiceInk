@@ -3,6 +3,25 @@ import Foundation
 import SwiftData
 import os
 
+enum ModelPrewarmPolicy {
+    static func isLocalProvider(_ provider: ModelProvider) -> Bool {
+        switch provider {
+        case .whisper, .fluidAudio, .sherpaOnnx, .qwenMlx:
+            return true
+        default:
+            return false
+        }
+    }
+
+    static func shouldRun(
+        isEnabled: Bool,
+        isRecordingActive: Bool,
+        provider: ModelProvider
+    ) -> Bool {
+        isEnabled && !isRecordingActive && isLocalProvider(provider)
+    }
+}
+
 @MainActor
 final class ModelPrewarmService: ObservableObject {
     private let transcriptionModelManager: TranscriptionModelManager
@@ -10,6 +29,8 @@ final class ModelPrewarmService: ObservableObject {
     private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "ModelPrewarm")
     private let prewarmAudioURL = Bundle.main.url(forResource: "sound7", withExtension: "wav")
     private let prewarmEnabledKey = "PrewarmModelOnWake"
+    private var prewarmTask: Task<Void, Never>?
+    private var recordingObserver: NSObjectProtocol?
 
     init(
         transcriptionModelManager: TranscriptionModelManager,
@@ -34,6 +55,16 @@ final class ModelPrewarmService: ObservableObject {
             object: nil
         )
 
+        recordingObserver = NotificationCenter.default.addObserver(
+            forName: .recordingDidStart,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.cancelPrewarmForRecording()
+            }
+        }
+
         logger.notice("ModelPrewarmService initialized - listening for wake and app launch")
     }
 
@@ -42,25 +73,43 @@ final class ModelPrewarmService: ObservableObject {
     /// Trigger on app launch (cold start)
     private func schedulePrewarmOnAppLaunch() {
         logger.notice("App launched, scheduling prewarm")
-        Task {
-            try? await Task.sleep(for: .seconds(3))
-            await performPrewarm()
-        }
+        schedulePrewarmTask()
     }
 
     /// Trigger on wake from sleep or screen unlock
     @objc private func schedulePrewarm() {
         logger.notice("Mac activity detected (wake/unlock), scheduling prewarm")
-        Task {
-            try? await Task.sleep(for: .seconds(3))
-            await performPrewarm()
+        schedulePrewarmTask()
+    }
+
+    private func schedulePrewarmTask() {
+        prewarmTask?.cancel()
+        prewarmTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: .seconds(3))
+            } catch {
+                return
+            }
+            guard let self, !Task.isCancelled else { return }
+            await self.performPrewarm()
+            if !Task.isCancelled {
+                self.prewarmTask = nil
+            }
         }
+    }
+
+    private func cancelPrewarmForRecording() {
+        guard let prewarmTask else { return }
+        prewarmTask.cancel()
+        self.prewarmTask = nil
+        logger.notice("Cancelled model prewarm because recording started")
     }
 
     // MARK: - Core Prewarming Logic
 
     private func performPrewarm() async {
         guard shouldPrewarm() else { return }
+        guard !Task.isCancelled else { return }
 
         guard let audioURL = prewarmAudioURL else {
             logger.error("❌ Prewarm audio file (sound7.wav) not found")
@@ -86,10 +135,16 @@ final class ModelPrewarmService: ObservableObject {
                 model: currentModel,
                 context: transcriptionConfiguration.requestContext
             )
+            guard !Task.isCancelled else {
+                logger.notice("Model prewarm stopped for an active recording")
+                return
+            }
             let duration = Date().timeIntervalSince(startTime)
 
             logger.notice("Prewarm completed in \(String(format: "%.2f", duration), privacy: .public)s")
 
+        } catch where Task.isCancelled {
+            logger.notice("Model prewarm cancelled")
         } catch {
             logger.error("❌ Prewarm failed: \(error, privacy: .public)")
         }
@@ -98,7 +153,6 @@ final class ModelPrewarmService: ObservableObject {
     // MARK: - Validation
 
     private func shouldPrewarm() -> Bool {
-        // Check if user has enabled prewarming
         let isEnabled = UserDefaults.standard.bool(forKey: prewarmEnabledKey)
         guard isEnabled else {
             logger.notice("Prewarm disabled by user")
@@ -115,16 +169,29 @@ final class ModelPrewarmService: ObservableObject {
             return false
         }
 
-        switch model.provider {
-        case .whisper, .fluidAudio, .sherpaOnnx, .qwenMlx:
-            return true
-        default:
+        guard ModelPrewarmPolicy.isLocalProvider(model.provider) else {
             logger.notice("Skipping prewarm - cloud models don't need it")
             return false
         }
+
+        guard
+            ModelPrewarmPolicy.shouldRun(
+                isEnabled: isEnabled,
+                isRecordingActive: AudioDeviceManager.shared.isRecordingActive,
+                provider: model.provider
+            )
+        else {
+            logger.notice("Skipping prewarm because recording is active")
+            return false
+        }
+        return true
     }
 
     deinit {
+        prewarmTask?.cancel()
+        if let recordingObserver {
+            NotificationCenter.default.removeObserver(recordingObserver)
+        }
         NSWorkspace.shared.notificationCenter.removeObserver(self)
         logger.notice("ModelPrewarmService deinitialized")
     }
