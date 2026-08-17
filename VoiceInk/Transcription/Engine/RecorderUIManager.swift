@@ -56,6 +56,10 @@ class RecorderUIManager: ObservableObject, RecorderPanelPresenting {
         }
     }
 
+    var isRecordingPermissionGuidancePresented: Bool {
+        isRecorderPanelVisible && engine?.recordingPermissionGuidance != nil
+    }
+
     private var notchWindowManager: NotchWindowManager?
     private var miniWindowManager: MiniWindowManager?
 

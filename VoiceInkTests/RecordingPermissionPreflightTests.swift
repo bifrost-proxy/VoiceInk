@@ -85,6 +85,36 @@ struct RecordingPermissionPreflightTests {
         )
     }
 
+    @Test func missingAccessibilityUsesOnlyOnePermissionSurface() {
+        let modifierShortcut = Shortcut.rightCommand
+        let keyShortcut = Shortcut.key(keyCode: 1, modifierFlags: [.command])
+
+        #expect(
+            RecordingShortcutManager.missingAccessibilityPresentation(
+                isRecorderGuidancePresented: true,
+                recordingShortcuts: [modifierShortcut],
+                configuredShortcutCount: 1,
+                registeredFallbackCount: 0
+            ) == .suppressed
+        )
+        #expect(
+            RecordingShortcutManager.missingAccessibilityPresentation(
+                isRecorderGuidancePresented: false,
+                recordingShortcuts: [modifierShortcut],
+                configuredShortcutCount: 1,
+                registeredFallbackCount: 0
+            ) == .recorderGuidance
+        )
+        #expect(
+            RecordingShortcutManager.missingAccessibilityPresentation(
+                isRecorderGuidancePresented: false,
+                recordingShortcuts: [keyShortcut],
+                configuredShortcutCount: 1,
+                registeredFallbackCount: 1
+            ) == .standalonePrompt
+        )
+    }
+
     @Test func screenPermissionRequestDoesNotBlockMainActor() async throws {
         let startedAt = Date()
         let permissionTask = Task { @MainActor in
