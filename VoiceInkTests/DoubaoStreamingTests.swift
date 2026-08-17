@@ -217,7 +217,7 @@ struct DoubaoStreamingTests {
         #expect(readUInt32(final, offset: 4) == 0)
     }
 
-    @Test func audioPacketizerEmitsDocumentedTwoHundredMillisecondPackets() {
+    @Test func audioPacketizerEmitsFastFirstPacketThenDocumentedTwoHundredMillisecondPackets() {
         var packetizer = DoubaoAudioPacketizer()
         let callbackBytes = 340
 
@@ -226,9 +226,20 @@ struct DoubaoStreamingTests {
             packets.append(contentsOf: packetizer.append(Data(repeating: UInt8(value), count: callbackBytes)))
         }
 
+        #expect(DoubaoAudioPacketizer.firstPacketByteCount == 3_200)
         #expect(DoubaoAudioPacketizer.packetByteCount == 6_400)
-        #expect(packets.map(\.count) == [6_400, 6_400])
-        #expect(packetizer.flush()?.count == 120)
+        #expect(packets.map(\.count) == [3_200, 6_400])
+        #expect(packetizer.flush()?.count == 3_320)
+        #expect(packetizer.flush() == nil)
+    }
+
+    @Test func audioPacketizerResetRestoresFastFirstPacket() {
+        var packetizer = DoubaoAudioPacketizer()
+
+        #expect(packetizer.append(Data(count: 3_200)).map(\.count) == [3_200])
+        #expect(packetizer.append(Data(count: 3_200)).isEmpty)
+        packetizer.reset()
+        #expect(packetizer.append(Data(count: 3_200)).map(\.count) == [3_200])
         #expect(packetizer.flush() == nil)
     }
 
@@ -238,19 +249,20 @@ struct DoubaoStreamingTests {
         let callbackSizes = [1, 339, 1_024, 4_097, 2_111, 7_551]
         var offset = 0
         var output = Data()
+        var packetSizes: [Int] = []
 
         for size in callbackSizes {
             let end = min(offset + size, source.count)
             guard offset < end else { break }
             for packet in packetizer.append(source.subdata(in: offset..<end)) {
-                #expect(packet.count == DoubaoAudioPacketizer.packetByteCount)
+                packetSizes.append(packet.count)
                 output.append(packet)
             }
             offset = end
         }
         if offset < source.count {
             for packet in packetizer.append(source.subdata(in: offset..<source.count)) {
-                #expect(packet.count == DoubaoAudioPacketizer.packetByteCount)
+                packetSizes.append(packet.count)
                 output.append(packet)
             }
         }
@@ -259,6 +271,7 @@ struct DoubaoStreamingTests {
             output.append(remainder)
         }
 
+        #expect(packetSizes == [3_200, 6_400])
         #expect(output == source)
     }
 
