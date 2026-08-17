@@ -32,6 +32,32 @@ struct ProviderDetailPanel: View {
     @AppStorage(DoubaoSpeechSettings.Keys.silenceFinalizationMilliseconds)
     private var doubaoSilenceFinalizationMilliseconds =
         DoubaoSpeechSettings.defaults.silenceFinalizationMilliseconds
+    @AppStorage(AliyunQwenSpeechSettings.Keys.region)
+    private var aliyunRegion = AliyunQwenSpeechSettings.defaults.region.rawValue
+    @AppStorage(AliyunQwenSpeechSettings.Keys.apiHost)
+    private var aliyunAPIHost = AliyunQwenSpeechSettings.defaults.apiHost
+    @AppStorage(AliyunQwenSpeechSettings.Keys.semanticPunctuationEnabled)
+    private var aliyunSemanticPunctuationEnabled =
+        AliyunQwenSpeechSettings.defaults.semanticPunctuationEnabled
+    @AppStorage(AliyunQwenSpeechSettings.Keys.maxSentenceSilenceMilliseconds)
+    private var aliyunMaxSentenceSilenceMilliseconds =
+        AliyunQwenSpeechSettings.defaults.maxSentenceSilenceMilliseconds
+    @AppStorage(AliyunQwenSpeechSettings.Keys.multiThresholdModeEnabled)
+    private var aliyunMultiThresholdModeEnabled =
+        AliyunQwenSpeechSettings.defaults.multiThresholdModeEnabled
+    @AppStorage(AliyunQwenSpeechSettings.Keys.heartbeatEnabled)
+    private var aliyunHeartbeatEnabled = AliyunQwenSpeechSettings.defaults.heartbeatEnabled
+    @AppStorage(AliyunQwenSpeechSettings.Keys.speechNoiseThresholdEnabled)
+    private var aliyunSpeechNoiseThresholdEnabled =
+        AliyunQwenSpeechSettings.defaults.speechNoiseThresholdEnabled
+    @AppStorage(AliyunQwenSpeechSettings.Keys.speechNoiseThreshold)
+    private var aliyunSpeechNoiseThreshold = AliyunQwenSpeechSettings.defaults.speechNoiseThreshold
+    @AppStorage(AliyunQwenSpeechSettings.Keys.useVoiceInkVocabulary)
+    private var aliyunUseVoiceInkVocabulary = AliyunQwenSpeechSettings.defaults.useVoiceInkVocabulary
+    @AppStorage(AliyunQwenSpeechSettings.Keys.vocabularyWeight)
+    private var aliyunVocabularyWeight = AliyunQwenSpeechSettings.defaults.vocabularyWeight
+    @AppStorage(AliyunQwenSpeechSettings.Keys.contextPrompt)
+    private var aliyunContextPrompt = AliyunQwenSpeechSettings.defaults.contextPrompt
 
     private var isConfigured: Bool {
         APIKeyManager.shared.hasAPIKey(forProvider: descriptor.providerKey)
@@ -39,6 +65,26 @@ struct ProviderDetailPanel: View {
 
     private var isDoubaoSpeech: Bool {
         descriptor.providerKey.caseInsensitiveCompare("Doubao Speech") == .orderedSame
+    }
+
+    private var isAliyunQwen: Bool {
+        descriptor.providerKey.caseInsensitiveCompare(AliyunQwenSpeechProvider.key) == .orderedSame
+    }
+
+    private var aliyunSelectedRegion: AliyunQwenRegion {
+        AliyunQwenRegion(rawValue: aliyunRegion) ?? AliyunQwenSpeechSettings.defaults.region
+    }
+
+    private var aliyunAPIHostValidationMessage: String? {
+        guard isAliyunQwen, !aliyunAPIHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
+        do {
+            _ = try AliyunQwenSpeechSettings.current().webSocketURL()
+            return nil
+        } catch {
+            return error.localizedDescription
+        }
     }
 
     private var iconName: String {
@@ -57,6 +103,10 @@ struct ProviderDetailPanel: View {
 
                     if isDoubaoSpeech {
                         doubaoRecognitionSettingsSection
+                    }
+
+                    if isAliyunQwen {
+                        aliyunRecognitionSettingsSection
                     }
 
                     if descriptor.hasTranscription {
@@ -129,42 +179,42 @@ struct ProviderDetailPanel: View {
     private var doubaoRecognitionSettingsSection: some View {
         ProviderConfigurationGroup(title: "Recognition Options") {
             VStack(alignment: .leading, spacing: 0) {
-                doubaoToggleRow(
+                optionToggleRow(
                     title: "Two-pass recognition",
                     detail: "Uses a second recognition pass for more accurate final text.",
                     isOn: $doubaoEnableTwoPassRecognition
                 )
                 .accessibilityIdentifier("doubao.settings.twoPassRecognition")
                 Divider()
-                doubaoToggleRow(
+                optionToggleRow(
                     title: "Text normalization",
                     detail: "Converts spoken numbers, dates, and amounts to written form.",
                     isOn: $doubaoEnableTextNormalization
                 )
                 .accessibilityIdentifier("doubao.settings.textNormalization")
                 Divider()
-                doubaoToggleRow(
+                optionToggleRow(
                     title: "Automatic punctuation",
                     detail: "Adds punctuation to improve readability.",
                     isOn: $doubaoEnablePunctuation
                 )
                 .accessibilityIdentifier("doubao.settings.automaticPunctuation")
                 Divider()
-                doubaoToggleRow(
+                optionToggleRow(
                     title: "Semantic smoothing",
                     detail: "Removes filler words and repeated phrases from recognition results.",
                     isOn: $doubaoEnableSemanticSmoothing
                 )
                 .accessibilityIdentifier("doubao.settings.semanticSmoothing")
                 Divider()
-                doubaoToggleRow(
+                optionToggleRow(
                     title: "Accelerate first text",
                     detail: "Returns initial text sooner, with a possible reduction in early accuracy.",
                     isOn: $doubaoEnableFirstTextAcceleration
                 )
                 .accessibilityIdentifier("doubao.settings.firstTextAcceleration")
                 Divider()
-                doubaoStepperRow(
+                optionStepperRow(
                     title: "First-text acceleration level",
                     detail: "Higher values return the first text faster (0–20).",
                     value: $doubaoFirstTextAccelerationLevel,
@@ -176,7 +226,7 @@ struct ProviderDetailPanel: View {
                 .disabled(!doubaoEnableFirstTextAcceleration)
                 .opacity(doubaoEnableFirstTextAcceleration ? 1 : 0.55)
                 Divider()
-                doubaoStepperRow(
+                optionStepperRow(
                     title: "Silence finalization threshold",
                     detail: "Lower values finalize sentences sooner but may split speech early.",
                     value: $doubaoSilenceFinalizationMilliseconds,
@@ -199,7 +249,157 @@ struct ProviderDetailPanel: View {
         }
     }
 
-    private func doubaoToggleRow(
+    private var aliyunRecognitionSettingsSection: some View {
+        ProviderConfigurationGroup(title: "Recognition Options") {
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Service region")
+                            .font(.system(size: 12, weight: .medium))
+                        Text("The API key and endpoint must belong to the same region.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 12)
+                    Picker("Service region", selection: $aliyunRegion) {
+                        ForEach(AliyunQwenRegion.allCases) { region in
+                            Text(region.displayName).tag(region.rawValue)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 190)
+                }
+                .padding(.vertical, 10)
+                .accessibilityIdentifier("aliyun.settings.region")
+
+                Divider()
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("API host")
+                        .font(.system(size: 12, weight: .medium))
+                    TextField(aliyunSelectedRegion.sharedHost, text: $aliyunAPIHost)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 11, design: .monospaced))
+                        .accessibilityIdentifier("aliyun.settings.apiHost")
+                    Text("Leave blank to use the shared endpoint, or enter the dedicated Workspace endpoint.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if let message = aliyunAPIHostValidationMessage {
+                        Text(message)
+                            .font(.caption)
+                            .foregroundStyle(AppTheme.Status.error)
+                    }
+                }
+                .padding(.vertical, 10)
+
+                Divider()
+                optionToggleRow(
+                    title: "Semantic sentence segmentation",
+                    detail: "Uses semantic boundaries for higher accuracy, with greater final-result latency.",
+                    isOn: $aliyunSemanticPunctuationEnabled
+                )
+                .onChange(of: aliyunSemanticPunctuationEnabled) { _, enabled in
+                    if enabled { aliyunMultiThresholdModeEnabled = false }
+                }
+                .accessibilityIdentifier("aliyun.settings.semanticPunctuation")
+                Divider()
+                optionStepperRow(
+                    title: "VAD silence threshold",
+                    detail: "Lower values finalize sentences sooner but may split speech early.",
+                    value: $aliyunMaxSentenceSilenceMilliseconds,
+                    range: AliyunQwenSpeechSettings.sentenceSilenceRange,
+                    step: 100,
+                    suffix: " ms"
+                )
+                .accessibilityIdentifier("aliyun.settings.sentenceSilence")
+                Divider()
+                optionToggleRow(
+                    title: "Multi-threshold VAD",
+                    detail: "Prevents VAD from producing excessively long sentences.",
+                    isOn: $aliyunMultiThresholdModeEnabled
+                )
+                .disabled(aliyunSemanticPunctuationEnabled)
+                .opacity(aliyunSemanticPunctuationEnabled ? 0.55 : 1)
+                .accessibilityIdentifier("aliyun.settings.multiThreshold")
+                Divider()
+                optionToggleRow(
+                    title: "Keep silent sessions alive",
+                    detail: "Keeps the server connection active while VoiceInk sends silent audio.",
+                    isOn: $aliyunHeartbeatEnabled
+                )
+                .accessibilityIdentifier("aliyun.settings.heartbeat")
+                Divider()
+                optionToggleRow(
+                    title: "Use VoiceInk vocabulary",
+                    detail: "Sends vocabulary and proper nouns as per-session inline hotwords.",
+                    isOn: $aliyunUseVoiceInkVocabulary
+                )
+                .accessibilityIdentifier("aliyun.settings.vocabulary")
+                Divider()
+                optionStepperRow(
+                    title: "Hotword weight",
+                    detail: "Higher values make the model more likely to recognize configured terms (1–5).",
+                    value: $aliyunVocabularyWeight,
+                    range: AliyunQwenSpeechSettings.vocabularyWeightRange,
+                    step: 1,
+                    suffix: ""
+                )
+                .disabled(!aliyunUseVoiceInkVocabulary)
+                .opacity(aliyunUseVoiceInkVocabulary ? 1 : 0.55)
+                .accessibilityIdentifier("aliyun.settings.vocabularyWeight")
+                Divider()
+                optionToggleRow(
+                    title: "Custom noise threshold",
+                    detail: "Fine-tunes VAD sensitivity for unusually noisy or quiet environments.",
+                    isOn: $aliyunSpeechNoiseThresholdEnabled
+                )
+                .accessibilityIdentifier("aliyun.settings.noiseThresholdEnabled")
+                Divider()
+                optionDoubleStepperRow(
+                    title: "Speech/noise threshold",
+                    detail: "Lower values retain more sound; higher values filter more aggressively (-1.0–1.0).",
+                    value: $aliyunSpeechNoiseThreshold,
+                    range: AliyunQwenSpeechSettings.speechNoiseThresholdRange,
+                    step: 0.1
+                )
+                .disabled(!aliyunSpeechNoiseThresholdEnabled)
+                .opacity(aliyunSpeechNoiseThresholdEnabled ? 1 : 0.55)
+                .accessibilityIdentifier("aliyun.settings.noiseThreshold")
+                Divider()
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Recognition context")
+                        .font(.system(size: 12, weight: .medium))
+                    Text("Add domain terms or prior context to improve recognition (up to 400 characters).")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    TextField("Optional context", text: $aliyunContextPrompt, axis: .vertical)
+                        .textFieldStyle(.roundedBorder)
+                        .lineLimit(2...4)
+                        .onChange(of: aliyunContextPrompt) { _, value in
+                            if value.count > AliyunQwenSpeechSettings.maximumContextLength {
+                                aliyunContextPrompt = String(
+                                    value.prefix(AliyunQwenSpeechSettings.maximumContextLength)
+                                )
+                            }
+                        }
+                        .accessibilityIdentifier("aliyun.settings.contextPrompt")
+                }
+                .padding(.vertical, 10)
+            }
+            .padding(.horizontal, 12)
+            .background(ProviderSurface(cornerRadius: 10))
+            .accessibilityIdentifier("aliyun.settings.recognitionOptions")
+
+            Label(
+                "Recognition options sync through iCloud; the API host and context stay on this Mac.",
+                systemImage: "icloud"
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+    }
+
+    private func optionToggleRow(
         title: LocalizedStringKey,
         detail: LocalizedStringKey,
         isOn: Binding<Bool>
@@ -218,7 +418,7 @@ struct ProviderDetailPanel: View {
         .padding(.vertical, 10)
     }
 
-    private func doubaoStepperRow(
+    private func optionStepperRow(
         title: LocalizedStringKey,
         detail: LocalizedStringKey,
         value: Binding<Int>,
@@ -240,6 +440,34 @@ struct ProviderDetailPanel: View {
 
             Stepper(value: value, in: range, step: step) {
                 Text("\(value.wrappedValue)\(suffix)")
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .frame(minWidth: 52, alignment: .trailing)
+            }
+        }
+        .padding(.vertical, 10)
+    }
+
+    private func optionDoubleStepperRow(
+        title: LocalizedStringKey,
+        detail: LocalizedStringKey,
+        value: Binding<Double>,
+        range: ClosedRange<Double>,
+        step: Double
+    ) -> some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.system(size: 12, weight: .medium))
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 12)
+
+            Stepper(value: value, in: range, step: step) {
+                Text(value.wrappedValue.formatted(.number.precision(.fractionLength(1))))
                     .font(.system(size: 11, weight: .medium, design: .monospaced))
                     .frame(minWidth: 52, alignment: .trailing)
             }
@@ -638,6 +866,7 @@ struct ProviderDetailPanel: View {
         isShowingRemoveAPIKeyConfirmation = false
         arkModel = descriptor.aiProvider == .ark ? aiService.selectedModel(for: .ark) : ""
         normalizeDoubaoNumericSettingsIfNeeded()
+        normalizeAliyunSettingsIfNeeded()
     }
 
     private func normalizeDoubaoNumericSettingsIfNeeded() {
@@ -651,8 +880,34 @@ struct ProviderDetailPanel: View {
         }
     }
 
+    private func normalizeAliyunSettingsIfNeeded() {
+        guard isAliyunQwen else { return }
+        let settings = AliyunQwenSpeechSettings.current()
+        if aliyunRegion != settings.region.rawValue {
+            aliyunRegion = settings.region.rawValue
+        }
+        if aliyunMaxSentenceSilenceMilliseconds != settings.maxSentenceSilenceMilliseconds {
+            aliyunMaxSentenceSilenceMilliseconds = settings.maxSentenceSilenceMilliseconds
+        }
+        if aliyunMultiThresholdModeEnabled != settings.multiThresholdModeEnabled {
+            aliyunMultiThresholdModeEnabled = settings.multiThresholdModeEnabled
+        }
+        if aliyunSpeechNoiseThreshold != settings.speechNoiseThreshold {
+            aliyunSpeechNoiseThreshold = settings.speechNoiseThreshold
+        }
+        if aliyunVocabularyWeight != settings.vocabularyWeight {
+            aliyunVocabularyWeight = settings.vocabularyWeight
+        }
+        if aliyunContextPrompt != settings.contextPrompt {
+            aliyunContextPrompt = settings.contextPrompt
+        }
+    }
+
     private var canVerifyAPIKey: Bool {
         guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !isVerifying else {
+            return false
+        }
+        if isAliyunQwen, aliyunAPIHostValidationMessage != nil {
             return false
         }
         return descriptor.aiProvider != .ark

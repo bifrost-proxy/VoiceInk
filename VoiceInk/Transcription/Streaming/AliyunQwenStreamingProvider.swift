@@ -1,0 +1,530 @@
+import Foundation
+import SwiftData
+
+enum AliyunQwenStreamingProtocolError: LocalizedError, Equatable {
+    case invalidMessage(String)
+    case server(code: String, message: String)
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidMessage(let message):
+            String(format: String(localized: "Invalid Alibaba Cloud ASR response: %@"), message)
+        case .server(let code, let message):
+            String(format: String(localized: "Alibaba Cloud ASR error %@: %@"), code, message)
+        }
+    }
+}
+
+struct AliyunQwenSentence: Equatable, Sendable {
+    let id: Int
+    let text: String
+    let isFinal: Bool
+    let isHeartbeat: Bool
+}
+
+enum AliyunQwenServerEvent: Equatable, Sendable {
+    case taskStarted
+    case result(AliyunQwenSentence)
+    case taskFinished
+    case taskFailed(code: String, message: String)
+    case unknown(String)
+}
+
+enum AliyunQwenStreamingProtocol {
+    static func makeRunTask(
+        taskID: String,
+        model: String,
+        format: String,
+        sampleRate: Int,
+        language: String?,
+        customVocabulary: [String],
+        settings: AliyunQwenSpeechSettings
+    ) throws -> String {
+        var parameters: [String: Any] = [
+            "format": format,
+            "sample_rate": sampleRate,
+            "semantic_punctuation_enabled": settings.semanticPunctuationEnabled,
+            "max_sentence_silence": settings.maxSentenceSilenceMilliseconds,
+            "multi_threshold_mode_enabled": settings.multiThresholdModeEnabled,
+            "heartbeat": settings.heartbeatEnabled,
+        ]
+
+        if let language = normalizedLanguage(language) {
+            parameters["language_hints"] = [language]
+        }
+        if settings.speechNoiseThresholdEnabled {
+            parameters["speech_noise_threshold"] = settings.speechNoiseThreshold
+        }
+
+        let vocabulary = normalizedVocabulary(customVocabulary, settings: settings)
+        if !vocabulary.isEmpty {
+            parameters["vocabulary"] = vocabulary
+        }
+
+        var input: [String: Any] = [:]
+        let contextPrompt = settings.contextPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !contextPrompt.isEmpty {
+            input["context"] = [
+                [
+                    "role": "user",
+                    "content": [
+                        [
+                            "type": "input_text",
+                            "text": String(contextPrompt.prefix(AliyunQwenSpeechSettings.maximumContextLength)),
+                        ]
+                    ],
+                ]
+            ]
+        }
+
+        let request: [String: Any] = [
+            "header": [
+                "action": "run-task",
+                "task_id": taskID,
+                "streaming": "duplex",
+            ],
+            "payload": [
+                "task_group": "audio",
+                "task": "asr",
+                "function": "recognition",
+                "model": model,
+                "parameters": parameters,
+                "input": input,
+            ],
+        ]
+        return try encode(request)
+    }
+
+    static func makeFinishTask(taskID: String) throws -> String {
+        try encode([
+            "header": [
+                "action": "finish-task",
+                "task_id": taskID,
+                "streaming": "duplex",
+            ],
+            "payload": ["input": [:] as [String: Any]],
+        ])
+    }
+
+    static func parseServerMessage(_ message: URLSessionWebSocketTask.Message) throws -> AliyunQwenServerEvent {
+        guard case .string(let text) = message else {
+            throw AliyunQwenStreamingProtocolError.invalidMessage("Expected a JSON text frame")
+        }
+        guard
+            let data = text.data(using: .utf8),
+            let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let header = root["header"] as? [String: Any],
+            let event = header["event"] as? String
+        else {
+            throw AliyunQwenStreamingProtocolError.invalidMessage("Missing event header")
+        }
+
+        switch event {
+        case "task-started":
+            return .taskStarted
+        case "result-generated":
+            guard
+                let payload = root["payload"] as? [String: Any],
+                let output = payload["output"] as? [String: Any],
+                let sentence = output["sentence"] as? [String: Any]
+            else {
+                throw AliyunQwenStreamingProtocolError.invalidMessage("Missing recognition sentence")
+            }
+            return .result(
+                AliyunQwenSentence(
+                    id: sentence["sentence_id"] as? Int ?? 0,
+                    text: sentence["text"] as? String ?? "",
+                    isFinal: sentence["sentence_end"] as? Bool ?? false,
+                    isHeartbeat: sentence["heartbeat"] as? Bool ?? false
+                )
+            )
+        case "task-finished":
+            return .taskFinished
+        case "task-failed":
+            return .taskFailed(
+                code: header["error_code"] as? String ?? "UNKNOWN",
+                message: header["error_message"] as? String ?? String(localized: "Unknown server error")
+            )
+        default:
+            return .unknown(event)
+        }
+    }
+
+    private static func normalizedLanguage(_ language: String?) -> String? {
+        guard let language else { return nil }
+        let normalized = language.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard normalized != "auto", AliyunQwenSpeechProvider.supportedLanguageCodes.contains(normalized) else {
+            return nil
+        }
+        return normalized
+    }
+
+    private static func normalizedVocabulary(
+        _ terms: [String],
+        settings: AliyunQwenSpeechSettings
+    ) -> [String: Int] {
+        guard settings.useVoiceInkVocabulary else { return [:] }
+        var result: [String: Int] = [:]
+        for term in terms {
+            let normalized = term.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !normalized.isEmpty, result[normalized] == nil else { continue }
+            result[normalized] = settings.vocabularyWeight
+            if result.count == 2_000 { break }
+        }
+        return result
+    }
+
+    private static func encode(_ object: [String: Any]) throws -> String {
+        guard JSONSerialization.isValidJSONObject(object) else {
+            throw AliyunQwenStreamingProtocolError.invalidMessage("Could not encode request")
+        }
+        let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        guard let text = String(data: data, encoding: .utf8) else {
+            throw AliyunQwenStreamingProtocolError.invalidMessage("Could not encode request as UTF-8")
+        }
+        return text
+    }
+}
+
+final class AliyunQwenStreamingProvider: StreamingTranscriptionProvider {
+    private let modelContext: ModelContext
+    private let session: AliyunQwenWebSocketSession
+    private var eventsContinuation: AsyncStream<StreamingTranscriptionEvent>.Continuation?
+    private(set) var transcriptionEvents: AsyncStream<StreamingTranscriptionEvent>
+
+    init(modelContext: ModelContext) {
+        self.modelContext = modelContext
+        var continuation: AsyncStream<StreamingTranscriptionEvent>.Continuation!
+        transcriptionEvents = AsyncStream { continuation = $0 }
+        eventsContinuation = continuation
+        session = AliyunQwenWebSocketSession(eventsContinuation: continuation)
+    }
+
+    deinit {
+        eventsContinuation?.finish()
+    }
+
+    func connect(model: any TranscriptionModel, language: String?) async throws {
+        guard
+            let apiKey = APIKeyManager.shared.getAPIKey(forProvider: AliyunQwenSpeechProvider.key),
+            !apiKey.isEmpty
+        else {
+            throw StreamingTranscriptionError.missingAPIKey
+        }
+
+        try await session.connect(
+            apiKey: apiKey,
+            model: model.name,
+            language: language,
+            customVocabulary: customHotwordTerms(),
+            settings: .current(),
+            format: "pcm"
+        )
+    }
+
+    func sendAudioChunk(_ data: Data) async throws {
+        try await session.sendAudioChunk(data)
+    }
+
+    func commit() async throws {
+        try await session.commit()
+    }
+
+    func disconnect() async {
+        await session.disconnect()
+        eventsContinuation?.finish()
+    }
+
+    func customHotwordTerms() -> [String] {
+        TranscriptionVocabularyContext.uniqueTerms(from: modelContext)
+    }
+}
+
+actor AliyunQwenWebSocketSession {
+    private let eventsContinuation: AsyncStream<StreamingTranscriptionEvent>.Continuation?
+    private var urlSession: URLSession?
+    private var webSocketTask: URLSessionWebSocketTask?
+    private var receiveTask: Task<Void, Never>?
+    private var taskID: String?
+    private var pendingAudio = Data()
+    private var committedSentences: [Int: String] = [:]
+    private var didFinish = false
+    private var finishContinuation: CheckedContinuation<Void, Error>?
+    private var startTimedOut = false
+    private var finishTimeoutTask: Task<Void, Never>?
+
+    init(eventsContinuation: AsyncStream<StreamingTranscriptionEvent>.Continuation?) {
+        self.eventsContinuation = eventsContinuation
+    }
+
+    static func verify(apiKey: String, model: String, settings: AliyunQwenSpeechSettings) async throws {
+        let session = AliyunQwenWebSocketSession(eventsContinuation: nil)
+        do {
+            try await session.connect(
+                apiKey: apiKey,
+                model: model,
+                language: nil,
+                customVocabulary: [],
+                settings: settings,
+                format: "pcm"
+            )
+            try await session.sendAudioChunk(Data(count: 3_200))
+            try await session.commit()
+            await session.disconnect()
+        } catch {
+            await session.disconnect()
+            throw error
+        }
+    }
+
+    func connect(
+        apiKey: String,
+        model: String,
+        language: String?,
+        customVocabulary: [String],
+        settings: AliyunQwenSpeechSettings,
+        format: String
+    ) async throws {
+        guard webSocketTask == nil else { return }
+
+        let endpoint = try settings.webSocketURL()
+        let delegate = AliyunQwenWebSocketOpenDelegate()
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 10
+        configuration.timeoutIntervalForResource = 30
+        let urlSession = URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
+
+        var request = URLRequest(url: endpoint)
+        request.timeoutInterval = 10
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("VoiceInk/macOS", forHTTPHeaderField: "User-Agent")
+
+        let webSocketTask = urlSession.webSocketTask(with: request)
+        self.urlSession = urlSession
+        self.webSocketTask = webSocketTask
+        let taskID = UUID().uuidString
+        self.taskID = taskID
+        webSocketTask.resume()
+
+        do {
+            try await delegate.waitUntilOpen(timeout: 10)
+            let runTask = try AliyunQwenStreamingProtocol.makeRunTask(
+                taskID: taskID,
+                model: model,
+                format: format,
+                sampleRate: 16_000,
+                language: language,
+                customVocabulary: customVocabulary,
+                settings: settings
+            )
+            try await webSocketTask.send(.string(runTask))
+            try await receiveTaskStarted()
+        } catch {
+            closeSocket()
+            if error is AliyunQwenStreamingProtocolError || error is AliyunQwenSettingsError {
+                throw error
+            }
+            throw StreamingTranscriptionError.connectionFailed(error.localizedDescription)
+        }
+
+        eventsContinuation?.yield(.sessionStarted)
+        receiveTask = Task { [weak self] in
+            await self?.receiveLoop()
+        }
+    }
+
+    func sendAudioChunk(_ data: Data) async throws {
+        guard webSocketTask != nil else { throw StreamingTranscriptionError.notConnected }
+        pendingAudio.append(data)
+        while pendingAudio.count >= 3_200 {
+            let chunk = pendingAudio.prefix(3_200)
+            pendingAudio.removeFirst(3_200)
+            try await sendBinary(Data(chunk))
+        }
+    }
+
+    func commit() async throws {
+        guard let webSocketTask, let taskID else { throw StreamingTranscriptionError.notConnected }
+        if !pendingAudio.isEmpty {
+            let remainder = pendingAudio
+            pendingAudio.removeAll(keepingCapacity: true)
+            try await sendBinary(remainder)
+        }
+
+        let finishTask = try AliyunQwenStreamingProtocol.makeFinishTask(taskID: taskID)
+        try await webSocketTask.send(.string(finishTask))
+        try await waitForTaskFinished()
+        eventsContinuation?.yield(.committed(text: ""))
+    }
+
+    func finalTranscript() -> String {
+        committedSentences.keys.sorted().compactMap { committedSentences[$0] }.joined(separator: " ")
+    }
+
+    func disconnect() {
+        receiveTask?.cancel()
+        receiveTask = nil
+        finishTimeoutTask?.cancel()
+        finishTimeoutTask = nil
+        finishContinuation?.resume(throwing: StreamingTranscriptionError.notConnected)
+        finishContinuation = nil
+        closeSocket()
+    }
+
+    private func receiveTaskStarted() async throws {
+        guard let webSocketTask else { throw StreamingTranscriptionError.notConnected }
+        startTimedOut = false
+        let timeoutTask = Task<Void, Never> { [weak self] in
+            try? await Task.sleep(for: .seconds(10))
+            await self?.cancelForStartTimeout()
+        }
+        defer { timeoutTask.cancel() }
+
+        do {
+            while true {
+                let message = try await webSocketTask.receive()
+                switch try AliyunQwenStreamingProtocol.parseServerMessage(message) {
+                case .taskStarted:
+                    return
+                case .taskFailed(let code, let message):
+                    throw AliyunQwenStreamingProtocolError.server(code: code, message: message)
+                default:
+                    continue
+                }
+            }
+        } catch {
+            if startTimedOut { throw StreamingTranscriptionError.timeout }
+            throw error
+        }
+    }
+
+    private func receiveLoop() async {
+        guard let webSocketTask else { return }
+        do {
+            while !Task.isCancelled {
+                let message = try await webSocketTask.receive()
+                switch try AliyunQwenStreamingProtocol.parseServerMessage(message) {
+                case .result(let sentence):
+                    guard !sentence.isHeartbeat else { continue }
+                    if sentence.isFinal {
+                        guard committedSentences[sentence.id] == nil else { continue }
+                        committedSentences[sentence.id] = sentence.text
+                        if !sentence.text.isEmpty {
+                            eventsContinuation?.yield(.committed(text: sentence.text))
+                        }
+                    } else if !sentence.text.isEmpty {
+                        eventsContinuation?.yield(.partial(text: sentence.text))
+                    }
+                case .taskFinished:
+                    didFinish = true
+                    finishTimeoutTask?.cancel()
+                    finishTimeoutTask = nil
+                    finishContinuation?.resume()
+                    finishContinuation = nil
+                    return
+                case .taskFailed(let code, let message):
+                    let error = AliyunQwenStreamingProtocolError.server(code: code, message: message)
+                    finishTimeoutTask?.cancel()
+                    finishTimeoutTask = nil
+                    finishContinuation?.resume(throwing: error)
+                    finishContinuation = nil
+                    eventsContinuation?.yield(.error(error))
+                    return
+                default:
+                    continue
+                }
+            }
+        } catch {
+            guard !Task.isCancelled, !didFinish else { return }
+            finishTimeoutTask?.cancel()
+            finishTimeoutTask = nil
+            finishContinuation?.resume(throwing: error)
+            finishContinuation = nil
+            eventsContinuation?.yield(.error(error))
+        }
+    }
+
+    private func waitForTaskFinished() async throws {
+        if didFinish { return }
+        try await withCheckedThrowingContinuation { continuation in
+            finishContinuation = continuation
+            finishTimeoutTask = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(10))
+                await self?.failFinishForTimeout()
+            }
+        }
+    }
+
+    private func sendBinary(_ data: Data) async throws {
+        guard let webSocketTask else { throw StreamingTranscriptionError.notConnected }
+        try await webSocketTask.send(.data(data))
+    }
+
+    private func cancelForStartTimeout() {
+        startTimedOut = true
+        webSocketTask?.cancel(with: .goingAway, reason: nil)
+    }
+
+    private func failFinishForTimeout() {
+        guard let finishContinuation else { return }
+        self.finishContinuation = nil
+        finishTimeoutTask = nil
+        finishContinuation.resume(throwing: StreamingTranscriptionError.timeout)
+    }
+
+    private func closeSocket() {
+        webSocketTask?.cancel(with: .goingAway, reason: nil)
+        webSocketTask = nil
+        urlSession?.invalidateAndCancel()
+        urlSession = nil
+        taskID = nil
+    }
+}
+
+private final class AliyunQwenWebSocketOpenDelegate: NSObject, URLSessionWebSocketDelegate, @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Void, Error>?
+    private var completedResult: Result<Void, Error>?
+
+    func waitUntilOpen(timeout: TimeInterval) async throws {
+        try await withCheckedThrowingContinuation { continuation in
+            lock.lock()
+            if let completedResult {
+                lock.unlock()
+                continuation.resume(with: completedResult)
+                return
+            }
+            self.continuation = continuation
+            lock.unlock()
+
+            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { [weak self] in
+                self?.finish(.failure(StreamingTranscriptionError.timeout))
+            }
+        }
+    }
+
+    func urlSession(
+        _: URLSession,
+        webSocketTask _: URLSessionWebSocketTask,
+        didOpenWithProtocol _: String?
+    ) {
+        finish(.success(()))
+    }
+
+    func urlSession(_: URLSession, task _: URLSessionTask, didCompleteWithError error: Error?) {
+        if let error { finish(.failure(error)) }
+    }
+
+    private func finish(_ result: Result<Void, Error>) {
+        lock.lock()
+        guard completedResult == nil else {
+            lock.unlock()
+            return
+        }
+        completedResult = result
+        let continuation = continuation
+        self.continuation = nil
+        lock.unlock()
+        continuation?.resume(with: result)
+    }
+}

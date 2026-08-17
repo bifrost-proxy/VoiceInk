@@ -71,7 +71,7 @@ struct CloudProviderManagementView: View {
         }
 
         let preferredOrder = [
-            "Volcengine Ark", "Doubao Speech", "Groq", "Cerebras", "Gemini", "OpenAI",
+            "Volcengine Ark", "Doubao Speech", "Alibaba Cloud Qwen", "Groq", "Cerebras", "Gemini", "OpenAI",
             "OpenRouter", "Anthropic", "Mistral",
             "Deepgram", "ElevenLabs", "Soniox", "Speechmatics", "AssemblyAI", "xAI", "Cartesia",
         ]
@@ -186,6 +186,8 @@ struct ProviderDescriptor: Identifiable {
             return "provider-cartesia"
         case "doubao speech":
             return nil
+        case "alibaba cloud qwen":
+            return nil
         default:
             return nil
         }
@@ -225,6 +227,8 @@ struct ProviderDescriptor: Identifiable {
             return URL(string: "https://play.cartesia.ai/keys")
         case "doubao speech":
             return URL(string: "https://console.volcengine.com/speech/new/setting/apikeys?projectName=default")
+        case "alibaba cloud qwen":
+            return URL(string: "https://bailian.console.aliyun.com/?tab=model#/api-key")
         default:
             return nil
         }

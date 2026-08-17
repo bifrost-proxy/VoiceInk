@@ -42,6 +42,7 @@ enum CloudProviderRegistry {
         XAIProvider(),
         CartesiaProvider(),
         DoubaoSpeechProvider(),
+        AliyunQwenSpeechProvider(),
     ]
 
     static func provider(for modelProvider: ModelProvider) -> (any CloudProvider)? {
