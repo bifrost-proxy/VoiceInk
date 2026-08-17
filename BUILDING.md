@@ -143,3 +143,13 @@ If you encounter any build issues:
 5. Make sure whisper.xcframework is properly built and linked
 
 For more help, check the [issues](https://github.com/bifrost-proxy/VoiceInk/issues) section or create a new issue.
+
+## Publishing a Release
+
+Pushing a `vMAJOR.MINOR.PATCH` tag runs `.github/workflows/release.yml`. The workflow builds and validates the app, publishes the GitHub Release assets, and then updates `Casks/voiceink.rb` in `bifrost-proxy/homebrew-voiceink`.
+
+The repository must define an Actions secret named `HOMEBREW_TAP_TOKEN`. Use a fine-grained personal access token scoped only to `bifrost-proxy/homebrew-voiceink` with repository contents read and write access. The default `GITHUB_TOKEN` cannot update a different repository.
+
+Homebrew tap updates are serialized. Before committing, the workflow compares the published version with the version already in the tap and skips older releases, so overlapping release jobs cannot downgrade the Cask.
+
+To retry or backfill synchronization without rebuilding a release, manually run the `Release VoiceInk` workflow and provide an existing `vMAJOR.MINOR.PATCH` release tag. The release build job is skipped for manual runs; only the Homebrew synchronization job runs.
