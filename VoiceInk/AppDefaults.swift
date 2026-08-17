@@ -132,6 +132,10 @@ enum AppDefaults {
             "ShortEnhancementWordThreshold": 3,
             "EnhancementTimeoutSeconds": 7,
             "EnhancementRetryOnTimeout": true,
+            LocalCLIService.executionModeKey: LocalCLIExecutionMode.command.rawValue,
+            LocalCLIService.timeoutSecondsKey: LocalCLIService.defaultTimeoutSeconds,
+            LocalCLIService.codexModelKey: "",
+            LocalCLIService.codexReasoningEffortKey: LocalCLIService.defaultCodexReasoningEffort,
 
             // Model
             "PrewarmModelOnWake": true,

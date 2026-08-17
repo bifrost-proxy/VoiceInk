@@ -17,6 +17,12 @@ struct APIKeyManagementView: View {
     @State private var isEditingURL = false
     @State private var localCLICommandTemplate: String = ""
     @State private var localCLITimeoutSeconds: Double = LocalCLIService.defaultTimeoutSeconds
+    @State private var localCLIExecutionMode: LocalCLIExecutionMode = .command
+    @State private var localCLICodexModels: [CodexModelOption] = []
+    @State private var localCLICodexModel: String = ""
+    @State private var localCLICodexReasoningEffort: String = LocalCLIService.defaultCodexReasoningEffort
+    @State private var isRefreshingCodexModels = false
+    @State private var codexAppServerError: String?
     @State private var isSyncingLocalCLIState = false
     @State private var arkModel: String =
         UserDefaults.standard.string(forKey: "Volcengine ArkSelectedModel") ?? ""
@@ -42,7 +48,30 @@ struct APIKeyManagementView: View {
                 .pickerStyle(.automatic)
                 .tint(AppTheme.Status.infoStrong)
 
-                if aiService.isAPIKeyValid && aiService.selectedProvider != .ollama {
+                if aiService.selectedProvider == .localCLI && localCLIExecutionMode == .codexAppServer {
+                    Spacer()
+                    if isRefreshingCodexModels {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("Connecting")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                    } else if codexAppServerError != nil {
+                        Circle()
+                            .fill(AppTheme.Status.error)
+                            .frame(width: 8, height: 8)
+                        Text("Disconnected")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                    } else if !localCLICodexModels.isEmpty {
+                        Circle()
+                            .fill(AppTheme.Status.positive)
+                            .frame(width: 8, height: 8)
+                        Text("Connected")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                    }
+                } else if aiService.isAPIKeyValid && aiService.selectedProvider != .ollama {
                     Spacer()
                     Circle()
                         .fill(AppTheme.Status.positive)
@@ -83,6 +112,7 @@ struct APIKeyManagementView: View {
                 }
                 if aiService.selectedProvider == .localCLI {
                     syncLocalCLIStateFromService()
+                    refreshCodexModelsIfNeeded()
                 }
                 syncSelectedCustomModelIfNeeded()
                 syncArkModelIfNeeded()
@@ -199,41 +229,113 @@ struct APIKeyManagementView: View {
                     }
 
                 } else if aiService.selectedProvider == .localCLI {
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack {
-                            Text("Command")
-                                .font(.subheadline)
-                                .foregroundColor(.secondary)
-                            Spacer()
-                            Menu("Load Template") {
-                                ForEach(LocalCLITemplate.allCases) { template in
-                                    Button(template.displayName) {
-                                        aiService.loadLocalCLITemplate(template)
-                                        syncLocalCLIStateFromService()
-                                    }
-                                }
+                    HStack {
+                        Picker("Execution", selection: $localCLIExecutionMode) {
+                            ForEach(LocalCLIExecutionMode.allCases) { mode in
+                                Text(mode.displayName).tag(mode)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .onChange(of: localCLIExecutionMode) { _, newValue in
+                            guard !isSyncingLocalCLIState else { return }
+                            aiService.updateLocalCLIExecutionMode(newValue)
+                            if newValue == .codexAppServer {
+                                refreshCodexModels()
                             }
                         }
 
-                        TextEditor(text: $localCLICommandTemplate)
-                            .font(.system(.body, design: .monospaced))
-                            .multilineTextAlignment(.leading)
-                            .frame(minHeight: 100)
-                            .padding(4)
-                            .background(
-                                RoundedRectangle(cornerRadius: 8)
-                                    .fill(Color(NSColor.textBackgroundColor))
-                            )
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 8)
-                                    .stroke(AppTheme.Border.subtle, lineWidth: 1)
-                            )
-                            .onChange(of: localCLICommandTemplate) { _, newValue in
-                                guard !isSyncingLocalCLIState else { return }
-                                if newValue != aiService.localCLICommandTemplate {
-                                    aiService.updateLocalCLICommandTemplate(newValue)
+                        Menu("Load Template") {
+                            ForEach(LocalCLITemplate.allCases) { template in
+                                Button(template.displayName) {
+                                    aiService.loadLocalCLITemplate(template)
+                                    syncLocalCLIStateFromService()
+                                    refreshCodexModelsIfNeeded()
                                 }
                             }
+                        }
+                    }
+
+                    if localCLIExecutionMode == .codexAppServer {
+                        HStack {
+                            Picker("Model", selection: $localCLICodexModel) {
+                                ForEach(localCLICodexModels) { model in
+                                    Text(model.title).tag(model.model)
+                                }
+                            }
+                            .disabled(localCLICodexModels.isEmpty)
+                            .onChange(of: localCLICodexModel) { _, newValue in
+                                guard !isSyncingLocalCLIState, !newValue.isEmpty else { return }
+                                aiService.updateLocalCLICodexModel(newValue, availableModels: localCLICodexModels)
+                                syncLocalCLIStateFromService()
+                            }
+
+                            Button {
+                                refreshCodexModels()
+                            } label: {
+                                Label("Refresh", systemImage: "arrow.clockwise")
+                            }
+                            .disabled(isRefreshingCodexModels)
+                        }
+
+                        Picker("Reasoning Effort", selection: $localCLICodexReasoningEffort) {
+                            ForEach(selectedCodexModel?.supportedReasoningEfforts ?? [], id: \.self) { effort in
+                                Text(effort.capitalized).tag(effort)
+                            }
+                        }
+                        .disabled(selectedCodexModel == nil)
+                        .onChange(of: localCLICodexReasoningEffort) { _, newValue in
+                            guard !isSyncingLocalCLIState, !newValue.isEmpty else { return }
+                            aiService.updateLocalCLICodexReasoningEffort(newValue)
+                        }
+
+                        Text("VoiceInk keeps one Codex App Server process running and creates an isolated session for each enhancement. Low reasoning effort is recommended for faster polishing.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+
+                        if let codexAppServerError {
+                            Text(codexAppServerError)
+                                .font(.caption)
+                                .foregroundColor(AppTheme.Status.error)
+                                .textSelection(.enabled)
+                        } else if localCLICodexModels.isEmpty && !isRefreshingCodexModels {
+                            Text("Refresh the model list to check Codex sign-in and availability.")
+                                .font(.caption)
+                                .foregroundColor(AppTheme.Status.warningStrong)
+                        }
+                    } else {
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack {
+                                Text("Command")
+                                    .font(.subheadline)
+                                    .foregroundColor(.secondary)
+                            }
+
+                            TextEditor(text: $localCLICommandTemplate)
+                                .font(.system(.body, design: .monospaced))
+                                .multilineTextAlignment(.leading)
+                                .frame(minHeight: 100)
+                                .padding(4)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 8)
+                                        .fill(Color(NSColor.textBackgroundColor))
+                                )
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 8)
+                                        .stroke(AppTheme.Border.subtle, lineWidth: 1)
+                                )
+                                .onChange(of: localCLICommandTemplate) { _, newValue in
+                                    guard !isSyncingLocalCLIState else { return }
+                                    if newValue != aiService.localCLICommandTemplate {
+                                        aiService.updateLocalCLICommandTemplate(newValue)
+                                    }
+                                }
+                        }
+
+                        Text(
+                            "Environment variables available: VOICEINK_SYSTEM_PROMPT, VOICEINK_USER_PROMPT, VOICEINK_FULL_PROMPT. VoiceInk also writes VOICEINK_FULL_PROMPT to stdin for every command."
+                        )
+                        .font(.caption)
+                        .foregroundColor(.secondary)
                     }
 
                     Picker("Timeout", selection: $localCLITimeoutSeconds) {
@@ -249,12 +351,6 @@ struct APIKeyManagementView: View {
                     .onChange(of: localCLITimeoutSeconds) { _, newValue in
                         aiService.updateLocalCLITimeoutSeconds(newValue)
                     }
-
-                    Text(
-                        "Environment variables available: VOICEINK_SYSTEM_PROMPT, VOICEINK_USER_PROMPT, VOICEINK_FULL_PROMPT. VoiceInk also writes VOICEINK_FULL_PROMPT to stdin for every command."
-                    )
-                    .font(.caption)
-                    .foregroundColor(.secondary)
 
                     if !aiService.isAPIKeyValid {
                         Text("Load a template or enter a command to enable Local CLI enhancement.")
@@ -342,6 +438,7 @@ struct APIKeyManagementView: View {
             }
             if aiService.selectedProvider == .localCLI {
                 syncLocalCLIStateFromService()
+                refreshCodexModelsIfNeeded()
             }
         }
     }
@@ -380,8 +477,36 @@ struct APIKeyManagementView: View {
         isSyncingLocalCLIState = true
         localCLICommandTemplate = aiService.localCLICommandTemplate
         localCLITimeoutSeconds = aiService.localCLITimeoutSeconds
+        localCLIExecutionMode = aiService.localCLIExecutionMode
+        localCLICodexModel = aiService.localCLICodexModel
+        localCLICodexReasoningEffort = aiService.localCLICodexReasoningEffort
         DispatchQueue.main.async {
             isSyncingLocalCLIState = false
+        }
+    }
+
+    private var selectedCodexModel: CodexModelOption? {
+        localCLICodexModels.first { $0.model == localCLICodexModel || $0.id == localCLICodexModel }
+    }
+
+    private func refreshCodexModelsIfNeeded() {
+        guard localCLIExecutionMode == .codexAppServer else { return }
+        refreshCodexModels()
+    }
+
+    private func refreshCodexModels() {
+        guard !isRefreshingCodexModels else { return }
+        isRefreshingCodexModels = true
+        codexAppServerError = nil
+        Task { @MainActor in
+            do {
+                localCLICodexModels = try await aiService.fetchLocalCLICodexModels()
+                syncLocalCLIStateFromService()
+            } catch {
+                localCLICodexModels = []
+                codexAppServerError = error.localizedDescription
+            }
+            isRefreshingCodexModels = false
         }
     }
 

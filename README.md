@@ -148,6 +148,12 @@ API Key 只会加密保存在当前 Mac 的登录钥匙串中，不会写入偏�
 
 VoiceInk 使用火山方舟北京地域固定的 OpenAI 兼容接口，无需配置 Base URL。
 
+### Codex CLI 润色
+
+已经安装并登录 Codex CLI 的用户可以在 **设置 → AI 模型 → Local CLI** 中载入 **Codex** 模板。VoiceInk 会启动一个共享的 Codex App Server，并在应用运行期间复用该进程；每次润色仍会创建独立的临时会话，避免不同转写内容互相进入上下文。
+
+设置页会读取当前 Codex 账号实际可用的模型和推理强度。短文本润色建议选择 Luna、Mini、Spark 等低延迟模型并使用 **Low** 推理强度；模型可用范围以当前账号返回的目录为准。模型、推理强度、超时时间和执行模式属于普通配置，可通过 VoiceInk 的 iCloud 配置同步；Codex 登录凭据仍由 Codex 自己管理。若 App Server 不可用，可以切回 **Command** 执行方式继续使用自定义命令。
+
 ### 从源码构建
 
 请参阅[构建指南](BUILDING.md)自行构建 VoiceInk。
