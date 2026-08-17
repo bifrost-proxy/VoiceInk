@@ -241,6 +241,8 @@ final class AliyunQwenStreamingProvider: StreamingTranscriptionProvider {
 
 actor AliyunQwenWebSocketSession {
     private let eventsContinuation: AsyncStream<StreamingTranscriptionEvent>.Continuation?
+    private let connectionPool: CloudSpeechConnectionPool
+    private let connector: any CloudSpeechWebSocketConnecting
     private var connection: (any CloudSpeechWebSocketConnection)?
     private var receiveTask: Task<Void, Never>?
     private var taskID: String?
@@ -252,8 +254,14 @@ actor AliyunQwenWebSocketSession {
     private var finishTimeoutTask: Task<Void, Never>?
     private var preconnectionTarget: CloudSpeechConnectionTarget?
 
-    init(eventsContinuation: AsyncStream<StreamingTranscriptionEvent>.Continuation?) {
+    init(
+        eventsContinuation: AsyncStream<StreamingTranscriptionEvent>.Continuation?,
+        connectionPool: CloudSpeechConnectionPool = .shared,
+        connector: any CloudSpeechWebSocketConnecting = URLSessionCloudSpeechWebSocketConnector()
+    ) {
         self.eventsContinuation = eventsContinuation
+        self.connectionPool = connectionPool
+        self.connector = connector
     }
 
     static func verify(apiKey: String, model: String, settings: AliyunQwenSpeechSettings) async throws {
@@ -290,10 +298,10 @@ actor AliyunQwenWebSocketSession {
         self.taskID = taskID
 
         do {
-            let standbyConnection = await CloudSpeechConnectionPool.shared.lease(for: target)
+            let standbyConnection = await connectionPool.lease(for: target)
             connection = standbyConnection
             if connection == nil {
-                connection = try await URLSessionCloudSpeechWebSocketConnector().open(
+                connection = try await connector.open(
                     target: target,
                     onClosed: nil
                 )
@@ -312,7 +320,7 @@ actor AliyunQwenWebSocketSession {
                 try await connection.send(.string(runTask))
             } catch where standbyConnection != nil {
                 connection.close()
-                self.connection = try await URLSessionCloudSpeechWebSocketConnector().open(
+                self.connection = try await connector.open(
                     target: target,
                     onClosed: nil
                 )
@@ -376,7 +384,7 @@ actor AliyunQwenWebSocketSession {
         finishContinuation = nil
         closeSocket()
         if let completedTarget {
-            await CloudSpeechConnectionPool.shared.recordUseCompleted(for: completedTarget)
+            await connectionPool.recordUseCompleted(for: completedTarget)
         }
     }
 
@@ -384,7 +392,12 @@ actor AliyunQwenWebSocketSession {
         guard let connection else { throw StreamingTranscriptionError.notConnected }
         startTimedOut = false
         let timeoutTask = Task<Void, Never> { [weak self] in
-            try? await Task.sleep(for: .seconds(10))
+            do {
+                try await Task.sleep(for: .seconds(10))
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
             await self?.cancelForStartTimeout()
         }
         defer { timeoutTask.cancel() }
@@ -458,7 +471,12 @@ actor AliyunQwenWebSocketSession {
         try await withCheckedThrowingContinuation { continuation in
             finishContinuation = continuation
             finishTimeoutTask = Task { [weak self] in
-                try? await Task.sleep(for: .seconds(10))
+                do {
+                    try await Task.sleep(for: .seconds(10))
+                } catch {
+                    return
+                }
+                guard !Task.isCancelled else { return }
                 await self?.failFinishForTimeout()
             }
         }

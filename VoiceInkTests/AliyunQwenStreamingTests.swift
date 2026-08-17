@@ -9,6 +9,9 @@ private let aliyunQwenIntegrationDirectory = URL(
 )
 private let aliyunQwenIntegrationAPIKeyURL = aliyunQwenIntegrationDirectory.appendingPathComponent("api-key.pipe")
 private let aliyunQwenIntegrationAPIHostURL = aliyunQwenIntegrationDirectory.appendingPathComponent("api-host.pipe")
+private let aliyunQwenIntegrationAudioPathURL = aliyunQwenIntegrationDirectory.appendingPathComponent(
+    "audio-path.pipe"
+)
 
 struct AliyunQwenStreamingTests {
     @Test func providerSettingsHaveCompleteChineseLocalizations() throws {
@@ -94,6 +97,72 @@ struct AliyunQwenStreamingTests {
             model: AliyunQwenSpeechProvider.modelID,
             settings: settings
         )
+    }
+
+    @Test func successfulTaskStartDoesNotCloseTheConnectionWhenItsTimeoutIsCancelled() async throws {
+        let connection = AliyunQwenLifecycleTestConnection()
+        let connector = AliyunQwenLifecycleTestConnector(connection: connection)
+        let pool = CloudSpeechConnectionPool(connector: connector)
+        let session = AliyunQwenWebSocketSession(
+            eventsContinuation: nil,
+            connectionPool: pool,
+            connector: connector
+        )
+
+        try await session.connect(
+            apiKey: "test-key",
+            model: AliyunQwenSpeechProvider.modelID,
+            language: "zh",
+            customVocabulary: [],
+            settings: settings(region: .beijing, host: "test.cn-beijing.maas.aliyuncs.com"),
+            format: "pcm"
+        )
+        try await Task.sleep(for: .milliseconds(50))
+
+        #expect(!connection.isClosed)
+        await session.disconnect()
+        #expect(connection.isClosed)
+        await pool.shutdown()
+    }
+
+    @Test(
+        .enabled(
+            if: FileManager.default.fileExists(atPath: aliyunQwenIntegrationAPIKeyURL.path)
+                && FileManager.default.fileExists(atPath: aliyunQwenIntegrationAudioPathURL.path)
+        )
+    )
+    func dedicatedWorkspaceCredentialTranscribesRealAudio() async throws {
+        let apiKey = try readIntegrationPipe(aliyunQwenIntegrationAPIKeyURL)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let apiHost = try readIntegrationPipe(aliyunQwenIntegrationAPIHostURL)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let audioPath = try readIntegrationPipe(aliyunQwenIntegrationAudioPathURL)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let audioData = try Data(contentsOf: URL(fileURLWithPath: audioPath))
+        let session = AliyunQwenWebSocketSession(eventsContinuation: nil)
+
+        do {
+            try await session.connect(
+                apiKey: apiKey,
+                model: AliyunQwenSpeechProvider.modelID,
+                language: "zh",
+                customVocabulary: [],
+                settings: settings(region: .beijing, host: apiHost),
+                format: "wav"
+            )
+            for offset in stride(from: 0, to: audioData.count, by: 3_200) {
+                let end = min(offset + 3_200, audioData.count)
+                try await session.sendAudioChunk(audioData.subdata(in: offset..<end))
+                try await Task.sleep(for: .milliseconds(100))
+            }
+            try await session.commit()
+            let transcript = await session.finalTranscript()
+            await session.disconnect()
+            #expect(!transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        } catch {
+            await session.disconnect()
+            throw error
+        }
     }
 
     private func readIntegrationPipe(_ url: URL) throws -> String {
@@ -373,5 +442,57 @@ struct AliyunQwenStreamingTests {
             vocabularyWeight: 4,
             contextPrompt: ""
         )
+    }
+}
+
+private struct AliyunQwenLifecycleTestConnector: CloudSpeechWebSocketConnecting {
+    let connection: AliyunQwenLifecycleTestConnection
+
+    func open(
+        target _: CloudSpeechConnectionTarget,
+        onClosed _: (@Sendable (Error?) -> Void)?
+    ) async throws -> any CloudSpeechWebSocketConnection {
+        connection
+    }
+}
+
+private final class AliyunQwenLifecycleTestConnection: CloudSpeechWebSocketConnection, @unchecked Sendable {
+    private let lock = NSLock()
+    private var receiveCount = 0
+    private var storedIsClosed = false
+
+    var isClosed: Bool {
+        lock.withLock { storedIsClosed }
+    }
+
+    func send(_: URLSessionWebSocketTask.Message) async throws {}
+
+    func receive() async throws -> URLSessionWebSocketTask.Message {
+        let currentReceiveCount = lock.withLock {
+            receiveCount += 1
+            return receiveCount
+        }
+        if currentReceiveCount == 1 {
+            let payload: [String: Any] = [
+                "header": [
+                    "event": "task-started",
+                    "task_id": UUID().uuidString,
+                ],
+                "payload": [:] as [String: Any],
+            ]
+            let data = try JSONSerialization.data(withJSONObject: payload)
+            return .string(String(decoding: data, as: UTF8.self))
+        }
+
+        try await Task.sleep(for: .seconds(60))
+        throw CancellationError()
+    }
+
+    func ping() async throws {}
+
+    func close() {
+        lock.withLock {
+            storedIsClosed = true
+        }
     }
 }
