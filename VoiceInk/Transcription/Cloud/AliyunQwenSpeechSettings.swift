@@ -180,7 +180,7 @@ struct AliyunQwenSpeechSettings: Equatable, Sendable {
             components.port == nil,
             components.query == nil,
             components.fragment == nil,
-            components.path.isEmpty || components.path == "/" || components.path == "/api-ws/v1/inference"
+            Self.supportedConsolePaths.contains(Self.normalizedPath(components.path))
         else {
             throw AliyunQwenSettingsError.invalidAPIHost
         }
@@ -205,6 +205,18 @@ struct AliyunQwenSpeechSettings: Equatable, Sendable {
             throw AliyunQwenSettingsError.invalidAPIHost
         }
         return url
+    }
+
+    private static let supportedConsolePaths: Set<String> = [
+        "",
+        "/api-ws/v1/inference",
+        "/api/v1",
+        "/compatible-mode/v1",
+    ]
+
+    private static func normalizedPath(_ path: String) -> String {
+        guard path.count > 1, path.hasSuffix("/") else { return path == "/" ? "" : path }
+        return String(path.dropLast())
     }
 
     private static func bool(forKey key: String, fallback: Bool, in defaults: UserDefaults) -> Bool {

@@ -268,8 +268,6 @@ actor AliyunQwenWebSocketSession {
                 settings: settings,
                 format: "pcm"
             )
-            try await session.sendAudioChunk(Data(count: 3_200))
-            try await session.commit()
             await session.disconnect()
         } catch {
             await session.disconnect()

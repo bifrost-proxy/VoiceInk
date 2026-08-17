@@ -3,7 +3,40 @@ import SwiftData
 import Testing
 @testable import VoiceInk
 
+private let aliyunQwenIntegrationDirectory = URL(
+    fileURLWithPath: "/tmp/voiceink-aliyun-qwen-integration",
+    isDirectory: true
+)
+private let aliyunQwenIntegrationAPIKeyURL = aliyunQwenIntegrationDirectory.appendingPathComponent("api-key.pipe")
+private let aliyunQwenIntegrationAPIHostURL = aliyunQwenIntegrationDirectory.appendingPathComponent("api-host.pipe")
+
 struct AliyunQwenStreamingTests {
+    @Test(
+        .enabled(if: FileManager.default.fileExists(atPath: aliyunQwenIntegrationAPIKeyURL.path))
+    )
+    func dedicatedWorkspaceCredentialConnectsToConfiguredHost() async throws {
+        let apiKey = try readIntegrationPipe(aliyunQwenIntegrationAPIKeyURL)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let apiHost = try readIntegrationPipe(aliyunQwenIntegrationAPIHostURL)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        #expect(!apiKey.isEmpty)
+        #expect(!apiHost.isEmpty)
+        let settings = settings(region: .beijing, host: apiHost)
+
+        try await AliyunQwenWebSocketSession.verify(
+            apiKey: apiKey,
+            model: AliyunQwenSpeechProvider.modelID,
+            settings: settings
+        )
+    }
+
+    private func readIntegrationPipe(_ url: URL) throws -> String {
+        let handle = try #require(FileHandle(forReadingAtPath: url.path))
+        defer { try? handle.close() }
+        let data = try #require(try handle.readToEnd())
+        return String(decoding: data, as: UTF8.self)
+    }
+
     @Test func catalogExposesExactNativeStreamingModelAndLanguages() throws {
         let provider = try #require(CloudProviderRegistry.provider(for: .aliyunQwen))
         let model = try #require(provider.models.first)
@@ -174,16 +207,32 @@ struct AliyunQwenStreamingTests {
         defaults.set(100, forKey: AliyunQwenSpeechSettings.Keys.maxSentenceSilenceMilliseconds)
         defaults.set(99, forKey: AliyunQwenSpeechSettings.Keys.vocabularyWeight)
         defaults.set(4.2, forKey: AliyunQwenSpeechSettings.Keys.speechNoiseThreshold)
+        defaults.set(
+            "https://user-workspace.cn-beijing.maas.aliyuncs.com/api/v1",
+            forKey: AliyunQwenSpeechSettings.Keys.apiHost
+        )
         let clamped = AliyunQwenSpeechSettings.current(in: defaults)
         #expect(clamped.maxSentenceSilenceMilliseconds == 200)
         #expect(clamped.vocabularyWeight == 5)
         #expect(clamped.speechNoiseThreshold == 1)
+        #expect(try clamped.webSocketURL().absoluteString ==
+            "wss://user-workspace.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference")
 
         #expect(try AliyunQwenSpeechSettings.defaults.webSocketURL().absoluteString ==
             "wss://dashscope.aliyuncs.com/api-ws/v1/inference")
         let dedicated = settings(region: .singapore, host: "workspace.ap-southeast-1.maas.aliyuncs.com")
         #expect(try dedicated.webSocketURL().absoluteString ==
             "wss://workspace.ap-southeast-1.maas.aliyuncs.com/api-ws/v1/inference")
+        let beijingHost = "ws-example.cn-beijing.maas.aliyuncs.com"
+        for value in [
+            beijingHost,
+            "https://\(beijingHost)/compatible-mode/v1",
+            "https://\(beijingHost)/api/v1",
+            "wss://\(beijingHost)/api-ws/v1/inference",
+        ] {
+            #expect(try settings(region: .beijing, host: value).webSocketURL().absoluteString ==
+                "wss://\(beijingHost)/api-ws/v1/inference")
+        }
         #expect(throws: AliyunQwenSettingsError.apiHostRegionMismatch) {
             _ = try self.settings(region: .beijing, host: "dashscope-intl.aliyuncs.com").webSocketURL()
         }
