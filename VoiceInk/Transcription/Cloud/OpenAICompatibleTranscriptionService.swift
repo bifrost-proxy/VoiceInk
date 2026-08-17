@@ -8,12 +8,21 @@ class OpenAICompatibleTranscriptionService {
                 domain: "CustomWhisperTranscriptionService", code: -1,
                 userInfo: [NSLocalizedDescriptionKey: "Invalid API endpoint URL"])
         }
+        guard
+            let apiKey = APIKeyManager.shared.getCustomModelAPIKey(
+                forModelId: model.id,
+                allowAuthenticationUI: true
+            ),
+            !apiKey.isEmpty
+        else {
+            throw CloudTranscriptionError.missingAPIKey
+        }
 
         let boundary = "Boundary-\(UUID().uuidString)"
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer \(model.apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
 
         let body = try buildRequestBody(
             audioURL: audioURL, modelName: model.modelName, boundary: boundary, context: context)

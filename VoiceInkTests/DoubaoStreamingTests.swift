@@ -1,7 +1,86 @@
 import Foundation
+import Security
 import SwiftData
 import Testing
 @testable import VoiceInk
+
+private final class APIKeyKeychainStoreStub: APIKeyKeychainStore {
+    let readStarted = DispatchSemaphore(value: 0)
+    let allowReadToFinish = DispatchSemaphore(value: 0)
+    var blocksReads = false
+    var readResult: KeychainDataReadResult = .notFound
+
+    private let lock = NSLock()
+    private var _readKeys: [String] = []
+    private var _savedKeys: [String] = []
+
+    var readKeys: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return _readKeys
+    }
+
+    var savedKeys: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return _savedKeys
+    }
+
+    func save(
+        data: Data,
+        forKey key: String,
+        syncable: Bool,
+        storagePolicy: KeychainStoragePolicy
+    ) -> Bool {
+        lock.lock()
+        _savedKeys.append(key)
+        lock.unlock()
+        return true
+    }
+
+    func readData(
+        forKey key: String,
+        syncable: Bool,
+        storagePolicy: KeychainStoragePolicy,
+        allowAuthenticationUI: Bool
+    ) -> KeychainDataReadResult {
+        lock.lock()
+        _readKeys.append(key)
+        lock.unlock()
+        readStarted.signal()
+        if blocksReads {
+            allowReadToFinish.wait()
+        }
+        return readResult
+    }
+
+    func getString(
+        forKey key: String,
+        syncable: Bool,
+        storagePolicy: KeychainStoragePolicy,
+        allowAuthenticationUI: Bool
+    ) -> String? {
+        switch readData(
+            forKey: key,
+            syncable: syncable,
+            storagePolicy: storagePolicy,
+            allowAuthenticationUI: allowAuthenticationUI
+        ) {
+        case .value(let data):
+            return String(data: data, encoding: .utf8)
+        case .notFound, .unavailable:
+            return nil
+        }
+    }
+
+    func delete(
+        forKey key: String,
+        syncable: Bool,
+        storagePolicy: KeychainStoragePolicy
+    ) -> Bool {
+        true
+    }
+}
 
 struct DoubaoStreamingTests {
     @Test func poiCityInputExplainsSingleCityLimitInChinese() throws {
@@ -379,21 +458,9 @@ struct DoubaoStreamingTests {
         let bundleKey = "keychainBundle-\(UUID().uuidString)"
         let firstModelID = UUID()
         let secondModelID = UUID()
-        let firstLegacyKey = "customModel_\(firstModelID.uuidString)_APIKey"
-        let secondLegacyKey = "customModel_\(secondModelID.uuidString)_APIKey"
         defer {
             _ = KeychainService.shared.delete(
                 forKey: bundleKey,
-                syncable: false,
-                storagePolicy: .keychainOnly
-            )
-            _ = KeychainService.shared.delete(
-                forKey: firstLegacyKey,
-                syncable: false,
-                storagePolicy: .keychainOnly
-            )
-            _ = KeychainService.shared.delete(
-                forKey: secondLegacyKey,
                 syncable: false,
                 storagePolicy: .keychainOnly
             )
@@ -416,23 +483,6 @@ struct DoubaoStreamingTests {
             )
         )
 
-        // Prove the reload uses only the consolidated item, not the legacy
-        // per-model entries retained for compatibility with older releases.
-        #expect(
-            KeychainService.shared.delete(
-                forKey: firstLegacyKey,
-                syncable: false,
-                storagePolicy: .keychainOnly
-            )
-        )
-        #expect(
-            KeychainService.shared.delete(
-                forKey: secondLegacyKey,
-                syncable: false,
-                storagePolicy: .keychainOnly
-            )
-        )
-
         let reader = APIKeyManager(
             bundleKeyIdentifier: bundleKey,
             protectsUserCredentialsDuringTests: false
@@ -440,6 +490,81 @@ struct DoubaoStreamingTests {
         #expect(reader.preloadAllAPIKeys())
         #expect(reader.getCustomModelAPIKey(forModelId: firstModelID) == "first-batch-value")
         #expect(reader.getCustomModelAPIKey(forModelId: secondModelID) == "second-batch-value")
+    }
+
+    @Test func APIKeyManagerLaunchPreloadDoesNotBlockOrFanOutToLegacyItems() throws {
+        let bundleKey = "backgroundBundle-\(UUID().uuidString)"
+        let store = APIKeyKeychainStoreStub()
+        store.blocksReads = true
+        store.readResult = .value(try JSONEncoder().encode(["deepgramAPIKey": "background-value"]))
+        let queue = DispatchQueue(label: "VoiceInkTests.APIKeyPreload.\(UUID().uuidString)")
+        let manager = APIKeyManager(
+            bundleKeyIdentifier: bundleKey,
+            protectsUserCredentialsDuringTests: false,
+            keychain: store,
+            preloadQueue: queue
+        )
+        let completed = DispatchSemaphore(value: 0)
+        let observer = NotificationCenter.default.addObserver(
+            forName: .aiProviderKeyChanged,
+            object: manager,
+            queue: nil
+        ) { _ in
+            completed.signal()
+        }
+        defer { NotificationCenter.default.removeObserver(observer) }
+
+        manager.preloadAllAPIKeysInBackground()
+
+        #expect(store.readStarted.wait(timeout: .now() + 1) == .success)
+        #expect(manager.getAPIKey(forProvider: "Deepgram", allowAuthenticationUI: true) == nil)
+        #expect(store.readKeys == [bundleKey])
+
+        store.allowReadToFinish.signal()
+        #expect(completed.wait(timeout: .now() + 1) == .success)
+        #expect(manager.getAPIKey(forProvider: "Deepgram") == "background-value")
+        #expect(store.readKeys == [bundleKey])
+    }
+
+    @Test func APIKeyManagerDoesNotRetryRejectedLaunchAccess() {
+        let bundleKey = "rejectedBundle-\(UUID().uuidString)"
+        let store = APIKeyKeychainStoreStub()
+        store.readResult = .unavailable(errSecAuthFailed)
+        let manager = APIKeyManager(
+            bundleKeyIdentifier: bundleKey,
+            protectsUserCredentialsDuringTests: false,
+            keychain: store
+        )
+        let completed = DispatchSemaphore(value: 0)
+        let observer = NotificationCenter.default.addObserver(
+            forName: .aiProviderKeyChanged,
+            object: manager,
+            queue: nil
+        ) { _ in
+            completed.signal()
+        }
+        defer { NotificationCenter.default.removeObserver(observer) }
+
+        manager.preloadAllAPIKeysInBackground()
+
+        #expect(completed.wait(timeout: .now() + 1) == .success)
+        #expect(manager.getAPIKey(forProvider: "Deepgram", allowAuthenticationUI: true) == nil)
+        #expect(manager.getAPIKey(forProvider: "Gemini", allowAuthenticationUI: true) == nil)
+        #expect(store.readKeys == [bundleKey])
+    }
+
+    @Test func APIKeyManagerWritesOnlyTheConsolidatedBundle() {
+        let bundleKey = "singleBundle-\(UUID().uuidString)"
+        let store = APIKeyKeychainStoreStub()
+        let manager = APIKeyManager(
+            bundleKeyIdentifier: bundleKey,
+            protectsUserCredentialsDuringTests: false,
+            keychain: store
+        )
+
+        #expect(manager.preloadAllAPIKeys())
+        #expect(manager.saveAPIKey("new-value", forProvider: "Deepgram"))
+        #expect(store.savedKeys == [bundleKey])
     }
 
     @Test func APIKeyManagerDoesNotOverwriteAnUnreadableBundle() throws {

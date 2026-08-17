@@ -1,6 +1,37 @@
 import Foundation
 import os
 
+protocol APIKeyKeychainStore: AnyObject {
+    func save(
+        data: Data,
+        forKey key: String,
+        syncable: Bool,
+        storagePolicy: KeychainStoragePolicy
+    ) -> Bool
+
+    func readData(
+        forKey key: String,
+        syncable: Bool,
+        storagePolicy: KeychainStoragePolicy,
+        allowAuthenticationUI: Bool
+    ) -> KeychainDataReadResult
+
+    func getString(
+        forKey key: String,
+        syncable: Bool,
+        storagePolicy: KeychainStoragePolicy,
+        allowAuthenticationUI: Bool
+    ) -> String?
+
+    func delete(
+        forKey key: String,
+        syncable: Bool,
+        storagePolicy: KeychainStoragePolicy
+    ) -> Bool
+}
+
+extension KeychainService: APIKeyKeychainStore {}
+
 /// Manages API keys using secure Keychain storage.
 final class APIKeyManager {
     static let shared = APIKeyManager()
@@ -8,10 +39,18 @@ final class APIKeyManager {
     static let bundledKeychainIdentifier = "voiceInkAPIKeyBundleV1"
 
     private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "APIKeyManager")
-    private let keychain = KeychainService.shared
+    private enum BundleLoadState {
+        case idle
+        case loading
+        case loaded
+        case unavailable
+    }
+
+    private let keychain: any APIKeyKeychainStore
     private let cachedKeys = OSAllocatedUnfairLock(initialState: [String: String]())
-    private let hasLoadedBundle = OSAllocatedUnfairLock(initialState: false)
+    private let bundleLoadState = OSAllocatedUnfairLock(initialState: BundleLoadState.idle)
     private let bundleWriteLock = NSLock()
+    private let preloadQueue: DispatchQueue
     private let bundleKeyIdentifier: String
     private let protectsUserCredentialsDuringTests: Bool
 
@@ -37,10 +76,17 @@ final class APIKeyManager {
 
     init(
         bundleKeyIdentifier: String = APIKeyManager.bundledKeychainIdentifier,
-        protectsUserCredentialsDuringTests: Bool = true
+        protectsUserCredentialsDuringTests: Bool = true,
+        keychain: any APIKeyKeychainStore = KeychainService.shared,
+        preloadQueue: DispatchQueue = DispatchQueue(
+            label: "com.prakashjoshipax.voiceink.api-key-preload",
+            qos: .userInitiated
+        )
     ) {
         self.bundleKeyIdentifier = bundleKeyIdentifier
         self.protectsUserCredentialsDuringTests = protectsUserCredentialsDuringTests
+        self.keychain = keychain
+        self.preloadQueue = preloadQueue
     }
 
     /// Loads the consolidated credential bundle with one Keychain request.
@@ -49,20 +95,63 @@ final class APIKeyManager {
     @discardableResult
     func preloadAllAPIKeys(allowAuthenticationUI: Bool = true) -> Bool {
         guard !shouldProtectUserCredentials else { return true }
-        if hasLoadedBundle.withLock({ $0 }) {
-            return true
+
+        let shouldLoad = bundleLoadState.withLock { state -> Bool in
+            switch state {
+            case .loaded:
+                return false
+            case .loading:
+                return false
+            case .idle, .unavailable:
+                state = .loading
+                return true
+            }
         }
 
-        let values: [String: String]
-        switch keychain.readData(
+        if !shouldLoad {
+            return bundleLoadState.withLock { state in
+                if case .loaded = state { return true }
+                return false
+            }
+        }
+
+        return loadCredentialBundle(allowAuthenticationUI: allowAuthenticationUI)
+    }
+
+    /// Starts the only launch-time Keychain read away from the main thread.
+    /// A rejected or unavailable bundle is not retried automatically during
+    /// this launch, so callers fall back to their existing "missing key" UI.
+    func preloadAllAPIKeysInBackground() {
+        guard !shouldProtectUserCredentials else { return }
+
+        let shouldLoad = bundleLoadState.withLock { state -> Bool in
+            guard case .idle = state else { return false }
+            state = .loading
+            return true
+        }
+        guard shouldLoad else { return }
+
+        preloadQueue.async { [weak self] in
+            guard let self else { return }
+            _ = self.loadCredentialBundle(allowAuthenticationUI: true)
+            NotificationCenter.default.post(name: .aiProviderKeyChanged, object: self)
+        }
+    }
+
+    private func loadCredentialBundle(allowAuthenticationUI: Bool) -> Bool {
+        let result = keychain.readData(
             forKey: bundleKeyIdentifier,
             syncable: false,
             storagePolicy: .keychainOnly,
             allowAuthenticationUI: allowAuthenticationUI
-        ) {
+        )
+
+        let values: [String: String]
+        switch result {
         case .value(let data):
             guard let decoded = try? JSONDecoder().decode([String: String].self, from: data) else {
                 logger.error("The consolidated credential bundle could not be decoded")
+                bundleLoadState.withLock { $0 = .unavailable }
                 return false
             }
             values = decoded
@@ -72,13 +161,14 @@ final class APIKeyManager {
             logger.error(
                 "The consolidated credential bundle is unavailable, status: \(status, privacy: .public)"
             )
+            bundleLoadState.withLock { $0 = .unavailable }
             return false
         }
 
         cachedKeys.withLock { cache in
             cache.merge(values) { _, newValue in newValue }
         }
-        hasLoadedBundle.withLock { $0 = true }
+        bundleLoadState.withLock { $0 = .loaded }
         logger.info("Preloaded \(values.count, privacy: .public) credentials from one Keychain bundle")
         return true
     }
@@ -90,12 +180,6 @@ final class APIKeyManager {
     func saveAPIKey(_ key: String, forProvider provider: String) -> Bool {
         guard prepareBundleForMutation() else { return false }
         let keyIdentifier = keychainIdentifier(forProvider: provider)
-        let legacySuccess = keychain.save(
-            key,
-            forKey: keyIdentifier,
-            syncable: false,
-            storagePolicy: Self.storagePolicy(forProvider: provider)
-        )
         cache(key, forIdentifier: keyIdentifier)
         let bundleSuccess = persistCachedKeys()
         if bundleSuccess {
@@ -103,14 +187,11 @@ final class APIKeyManager {
                 "Saved API key for provider: \(provider, privacy: .public) with key: \(keyIdentifier, privacy: .public)"
             )
         }
-        if !legacySuccess {
-            logger.warning("Failed to update legacy per-provider Keychain item for: \(keyIdentifier, privacy: .public)")
-        }
         return bundleSuccess
     }
 
     /// Retrieves an API key for a provider.
-    func getAPIKey(forProvider provider: String, allowAuthenticationUI: Bool = true) -> String? {
+    func getAPIKey(forProvider provider: String, allowAuthenticationUI: Bool = false) -> String? {
         guard !shouldProtectUserCredentials else { return nil }
         let keyIdentifier = keychainIdentifier(forProvider: provider)
         return getCachedOrStoredKey(
@@ -145,14 +226,7 @@ final class APIKeyManager {
     func hasAPIKey(forProvider provider: String) -> Bool {
         guard !shouldProtectUserCredentials else { return false }
         let keyIdentifier = keychainIdentifier(forProvider: provider)
-        if cachedKeys.withLock({ $0[keyIdentifier] != nil }) {
-            return true
-        }
-        return keychain.exists(
-            forKey: keyIdentifier,
-            syncable: false,
-            storagePolicy: Self.storagePolicy(forProvider: provider)
-        )
+        return cachedKeys.withLock { $0[keyIdentifier] != nil }
     }
 
     // MARK: - Custom Model API Keys
@@ -162,20 +236,16 @@ final class APIKeyManager {
     func saveCustomModelAPIKey(_ key: String, forModelId modelId: UUID) -> Bool {
         guard prepareBundleForMutation() else { return false }
         let keyIdentifier = customModelKeyIdentifier(for: modelId)
-        let legacySuccess = keychain.save(key, forKey: keyIdentifier, syncable: false, storagePolicy: .keychainOnly)
         cache(key, forIdentifier: keyIdentifier)
         let bundleSuccess = persistCachedKeys()
         if bundleSuccess {
             logger.info("Saved API key for custom model: \(modelId.uuidString, privacy: .public)")
         }
-        if !legacySuccess {
-            logger.warning("Failed to update legacy custom-model Keychain item: \(keyIdentifier, privacy: .public)")
-        }
         return bundleSuccess
     }
 
     /// Retrieves an API key for a custom model.
-    func getCustomModelAPIKey(forModelId modelId: UUID, allowAuthenticationUI: Bool = true) -> String? {
+    func getCustomModelAPIKey(forModelId modelId: UUID, allowAuthenticationUI: Bool = false) -> String? {
         guard !shouldProtectUserCredentials else { return nil }
         let keyIdentifier = customModelKeyIdentifier(for: modelId)
         return getCachedOrStoredKey(
@@ -208,21 +278,17 @@ final class APIKeyManager {
     func saveCustomAIProviderAPIKey(_ key: String, forProviderId providerId: UUID) -> Bool {
         guard prepareBundleForMutation() else { return false }
         let keyIdentifier = customAIProviderKeyIdentifier(for: providerId)
-        let legacySuccess = keychain.save(key, forKey: keyIdentifier, syncable: false, storagePolicy: .keychainOnly)
         cache(key, forIdentifier: keyIdentifier)
         let bundleSuccess = persistCachedKeys()
         if bundleSuccess {
             logger.info("Saved API key for custom AI provider: \(providerId.uuidString, privacy: .public)")
-        }
-        if !legacySuccess {
-            logger.warning("Failed to update legacy custom-provider Keychain item: \(keyIdentifier, privacy: .public)")
         }
         return bundleSuccess
     }
 
     func getCustomAIProviderAPIKey(
         forProviderId providerId: UUID,
-        allowAuthenticationUI: Bool = true
+        allowAuthenticationUI: Bool = false
     ) -> String? {
         guard !shouldProtectUserCredentials else { return nil }
         let keyIdentifier = customAIProviderKeyIdentifier(for: providerId)
@@ -282,12 +348,26 @@ final class APIKeyManager {
             return cached
         }
 
+        // Launch-time callers must never fall through to one Keychain query
+        // per legacy credential. While the consolidated read is pending, or
+        // after the user rejects it, report the credential as unavailable for
+        // this launch instead of showing another authorization dialog.
+        let canReadLegacyItem = bundleLoadState.withLock { state -> Bool in
+            switch state {
+            case .idle, .loaded:
+                return true
+            case .loading, .unavailable:
+                return false
+            }
+        }
+        guard canReadLegacyItem, allowAuthenticationUI else { return nil }
+
         guard
             let stored = keychain.getString(
                 forKey: identifier,
                 syncable: false,
                 storagePolicy: storagePolicy,
-                allowAuthenticationUI: allowAuthenticationUI
+                allowAuthenticationUI: true
             )
         else {
             return nil
@@ -313,7 +393,10 @@ final class APIKeyManager {
     }
 
     private func persistCachedKeys() -> Bool {
-        guard hasLoadedBundle.withLock({ $0 }) else { return false }
+        guard bundleLoadState.withLock({ state in
+            if case .loaded = state { return true }
+            return false
+        }) else { return false }
 
         bundleWriteLock.lock()
         defer { bundleWriteLock.unlock() }
@@ -334,7 +417,11 @@ final class APIKeyManager {
 
     private func prepareBundleForMutation() -> Bool {
         guard !shouldProtectUserCredentials else { return false }
-        return hasLoadedBundle.withLock { $0 } || preloadAllAPIKeys()
+        let isLoaded = bundleLoadState.withLock { state in
+            if case .loaded = state { return true }
+            return false
+        }
+        return isLoaded || preloadAllAPIKeys()
     }
 
     /// Unit tests launch the complete application as an unsigned host. Keep

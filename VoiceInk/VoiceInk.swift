@@ -46,7 +46,7 @@ struct VoiceInkApp: App {
         AppAppearancePreference.applyStored()
         OnboardingV2Migration.prepareIfNeeded()
         CloudConfigurationSyncService.shared.preparePreferencesForLaunch()
-        APIKeyManager.shared.preloadAllAPIKeys()
+        APIKeyManager.shared.preloadAllAPIKeysInBackground()
 
         let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "Initialization")
         // Keep existing model order stable; append new models after synced entities.
