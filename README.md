@@ -59,17 +59,17 @@ VoiceInk 是一款 macOS 原生应用，可以快速将语音转换为文字。�
 brew install --cask bifrost-proxy/voiceink/voiceink
 ```
 
-Homebrew 的第三方 Cask 单行安装命令必须使用完整的 `owner/tap/cask` 格式。也可以使用下面的两步命令：
+Homebrew 官方仓库也包含一个同名的 `voiceink` Cask，因此即使已经添加 Tap，安装和升级时仍须使用完整的 `owner/tap/cask` 名称：
 
 ```shell
 brew tap bifrost-proxy/voiceink
-brew install --cask voiceink
+brew install --cask bifrost-proxy/voiceink/voiceink
 ```
 
 Homebrew 会先使用版本固定的 SHA-256 校验发布包，再移除 ad-hoc 签名应用的隔离属性，避免首次启动时被 Gatekeeper 拦截。请使用下面的命令升级：
 
 ```shell
-brew upgrade --cask --greedy voiceink
+brew upgrade --cask --greedy bifrost-proxy/voiceink/voiceink
 ```
 
 ### 直接下载
