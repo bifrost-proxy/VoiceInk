@@ -38,6 +38,8 @@ struct ProviderDetailPanel: View {
     private var doubaoPOICityName = DoubaoSpeechSettings.defaults.poiCityName
     @AppStorage(DoubaoSpeechSettings.Keys.enableMusicFunctionCall)
     private var doubaoEnableMusicFunctionCall = DoubaoSpeechSettings.defaults.enableMusicFunctionCall
+    @AppStorage(DoubaoSpeechSettings.Keys.keepConnectionReady)
+    private var doubaoKeepConnectionReady = DoubaoSpeechSettings.defaults.keepConnectionReady
     @AppStorage(AliyunQwenSpeechSettings.Keys.region)
     private var aliyunRegion = AliyunQwenSpeechSettings.defaults.region.rawValue
     @AppStorage(AliyunQwenSpeechSettings.Keys.apiHost)
@@ -64,6 +66,8 @@ struct ProviderDetailPanel: View {
     private var aliyunVocabularyWeight = AliyunQwenSpeechSettings.defaults.vocabularyWeight
     @AppStorage(AliyunQwenSpeechSettings.Keys.contextPrompt)
     private var aliyunContextPrompt = AliyunQwenSpeechSettings.defaults.contextPrompt
+    @AppStorage(AliyunQwenSpeechSettings.Keys.keepConnectionReady)
+    private var aliyunKeepConnectionReady = AliyunQwenSpeechSettings.defaults.keepConnectionReady
 
     private var isConfigured: Bool {
         APIKeyManager.shared.hasAPIKey(forProvider: descriptor.providerKey)
@@ -191,6 +195,34 @@ struct ProviderDetailPanel: View {
                 }
 
                 verificationStatusMessage
+
+                if isDoubaoSpeech || isAliyunQwen {
+                    Divider()
+                    if isDoubaoSpeech {
+                        optionToggleRow(
+                            title: "Keep a connection ready",
+                            detail:
+                                "Keeps one authenticated WebSocket ready. After 30 minutes without recognition, preconnection pauses until the next use; no audio is sent while waiting.",
+                            isOn: $doubaoKeepConnectionReady
+                        )
+                        .disabled(!isConfigured)
+                        .opacity(isConfigured ? 1 : 0.55)
+                        .accessibilityIdentifier("doubao.settings.keepConnectionReady")
+                    } else {
+                        optionToggleRow(
+                            title: "Keep a connection ready",
+                            detail:
+                                "Keeps one authenticated WebSocket ready. After 30 minutes without recognition, preconnection pauses until the next use; no audio is sent while waiting.",
+                            isOn: $aliyunKeepConnectionReady
+                        )
+                        .disabled(!isConfigured)
+                        .opacity(isConfigured ? 1 : 0.55)
+                        .accessibilityIdentifier("aliyun.settings.keepConnectionReady")
+                    }
+                    Text("This device only. May use a small amount of network activity and power.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
         }
     }

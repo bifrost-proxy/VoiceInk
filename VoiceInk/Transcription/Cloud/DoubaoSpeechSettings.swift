@@ -12,6 +12,7 @@ struct DoubaoSpeechSettings: Equatable, Sendable {
         static let enablePOIFunctionCall = "DoubaoSpeechEnablePOIFunctionCall"
         static let poiCityName = "DoubaoSpeechPOICityName"
         static let enableMusicFunctionCall = "DoubaoSpeechEnableMusicFunctionCall"
+        static let keepConnectionReady = "DoubaoSpeechKeepConnectionReady"
     }
 
     static let accelerationLevelRange = 0...20
@@ -27,7 +28,8 @@ struct DoubaoSpeechSettings: Equatable, Sendable {
         silenceFinalizationMilliseconds: 800,
         enablePOIFunctionCall: false,
         poiCityName: "",
-        enableMusicFunctionCall: false
+        enableMusicFunctionCall: false,
+        keepConnectionReady: false
     )
 
     let enableTwoPassRecognition: Bool
@@ -40,6 +42,7 @@ struct DoubaoSpeechSettings: Equatable, Sendable {
     let enablePOIFunctionCall: Bool
     let poiCityName: String
     let enableMusicFunctionCall: Bool
+    let keepConnectionReady: Bool
 
     init(
         enableTwoPassRecognition: Bool,
@@ -51,7 +54,8 @@ struct DoubaoSpeechSettings: Equatable, Sendable {
         silenceFinalizationMilliseconds: Int,
         enablePOIFunctionCall: Bool = false,
         poiCityName: String = "",
-        enableMusicFunctionCall: Bool = false
+        enableMusicFunctionCall: Bool = false,
+        keepConnectionReady: Bool = false
     ) {
         self.enableTwoPassRecognition = enableTwoPassRecognition
         self.enableTextNormalization = enableTextNormalization
@@ -64,6 +68,7 @@ struct DoubaoSpeechSettings: Equatable, Sendable {
         self.enablePOIFunctionCall = enablePOIFunctionCall
         self.poiCityName = poiCityName.trimmingCharacters(in: .whitespacesAndNewlines)
         self.enableMusicFunctionCall = enableMusicFunctionCall
+        self.keepConnectionReady = keepConnectionReady
     }
 
     static func current(in defaults: UserDefaults = .standard) -> DoubaoSpeechSettings {
@@ -112,6 +117,11 @@ struct DoubaoSpeechSettings: Equatable, Sendable {
             enableMusicFunctionCall: bool(
                 forKey: Keys.enableMusicFunctionCall,
                 fallback: Self.defaults.enableMusicFunctionCall,
+                in: defaults
+            ),
+            keepConnectionReady: bool(
+                forKey: Keys.keepConnectionReady,
+                fallback: Self.defaults.keepConnectionReady,
                 in: defaults
             )
         )
