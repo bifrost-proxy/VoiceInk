@@ -296,6 +296,18 @@ class AIService: ObservableObject {
         localCLIService.timeoutSeconds
     }
 
+    var localCLIExecutionMode: LocalCLIExecutionMode {
+        localCLIService.executionMode
+    }
+
+    var localCLICodexModel: String {
+        localCLIService.codexModel
+    }
+
+    var localCLICodexReasoningEffort: String {
+        localCLIService.codexReasoningEffort
+    }
+
     func availableModels(for provider: AIProvider) -> [String] {
         if provider == .ollama {
             return ollamaService.availableModels.map { $0.name }
@@ -384,6 +396,7 @@ class AIService: ObservableObject {
     }
 
     func reloadFromSynchronizedDefaults() {
+        localCLIService.reloadFromDefaults()
         selectedModels.removeAll()
         loadSavedModelSelections()
         loadSavedOpenRouterModels()
@@ -670,6 +683,33 @@ class AIService: ObservableObject {
     func updateLocalCLITimeoutSeconds(_ timeout: Double) {
         localCLIService.timeoutSeconds = timeout
         refreshLocalCLIConfigurationState()
+    }
+
+    func updateLocalCLIExecutionMode(_ mode: LocalCLIExecutionMode) {
+        localCLIService.executionMode = mode
+        refreshLocalCLIConfigurationState()
+    }
+
+    func updateLocalCLICodexModel(_ model: String, availableModels: [CodexModelOption]) {
+        localCLIService.codexModel = model
+        if let selected = availableModels.first(where: { $0.id == model || $0.model == model }) {
+            localCLIService.codexReasoningEffort = CodexAppServerProtocol.resolvedEffort(
+                localCLIService.codexReasoningEffort,
+                for: selected
+            )
+        }
+        refreshLocalCLIConfigurationState()
+    }
+
+    func updateLocalCLICodexReasoningEffort(_ effort: String) {
+        localCLIService.codexReasoningEffort = effort
+        refreshLocalCLIConfigurationState()
+    }
+
+    func fetchLocalCLICodexModels() async throws -> [CodexModelOption] {
+        let models = try await localCLIService.availableCodexModels()
+        _ = localCLIService.selectedCodexModel(from: models)
+        return models
     }
 
     func enhanceWithLocalCLI(systemPrompt: String, userPrompt: String) async throws -> String {

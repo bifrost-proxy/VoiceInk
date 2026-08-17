@@ -1,5 +1,19 @@
 import Foundation
 
+enum LocalCLIExecutionMode: String, CaseIterable, Identifiable {
+    case command
+    case codexAppServer
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .command: return String(localized: "Command")
+        case .codexAppServer: return String(localized: "Codex App Server")
+        }
+    }
+}
+
 enum LocalCLITemplate: String, CaseIterable, Identifiable {
     case pi
     case claude
@@ -36,7 +50,13 @@ final class LocalCLIService {
     static let commandTemplateKey = "localCLICommandTemplate"
     static let selectedTemplateKey = "localCLISelectedTemplate"
     static let timeoutSecondsKey = "localCLITimeoutSeconds"
+    static let executionModeKey = "localCLIExecutionMode"
+    static let codexModelKey = "localCLICodexModel"
+    static let codexReasoningEffortKey = "localCLICodexReasoningEffort"
     static let defaultTimeoutSeconds: Double = 45
+    static let defaultCodexReasoningEffort = "low"
+
+    private let codexAppServer = CodexAppServerService()
 
     var commandTemplate: String {
         didSet {
@@ -61,8 +81,34 @@ final class LocalCLIService {
         }
     }
 
+    var executionMode: LocalCLIExecutionMode {
+        didSet {
+            UserDefaults.standard.set(executionMode.rawValue, forKey: Self.executionModeKey)
+            if executionMode != .codexAppServer {
+                codexAppServer.shutdown()
+            }
+        }
+    }
+
+    var codexModel: String {
+        didSet {
+            UserDefaults.standard.set(codexModel, forKey: Self.codexModelKey)
+        }
+    }
+
+    var codexReasoningEffort: String {
+        didSet {
+            UserDefaults.standard.set(codexReasoningEffort, forKey: Self.codexReasoningEffortKey)
+        }
+    }
+
     var isConfigured: Bool {
-        !commandTemplate.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        switch executionMode {
+        case .command:
+            return !commandTemplate.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        case .codexAppServer:
+            return true
+        }
     }
 
     init() {
@@ -73,16 +119,64 @@ final class LocalCLIService {
 
         let savedTimeout = UserDefaults.standard.double(forKey: Self.timeoutSecondsKey)
         timeoutSeconds = savedTimeout > 0 ? savedTimeout : Self.defaultTimeoutSeconds
+
+        codexModel = UserDefaults.standard.string(forKey: Self.codexModelKey) ?? ""
+        codexReasoningEffort =
+            UserDefaults.standard.string(forKey: Self.codexReasoningEffortKey)
+            ?? Self.defaultCodexReasoningEffort
+
+        let persistedDefaults = Bundle.main.bundleIdentifier.flatMap {
+            UserDefaults.standard.persistentDomain(forName: $0)
+        }
+        if let savedMode = persistedDefaults?[Self.executionModeKey] as? String,
+            let mode = LocalCLIExecutionMode(rawValue: savedMode)
+        {
+            executionMode = mode
+        } else if selectedTemplate == .codex && commandTemplate == LocalCLITemplate.codex.commandTemplate {
+            // Migrate only the untouched built-in Codex template. Custom commands remain custom.
+            executionMode = .codexAppServer
+            UserDefaults.standard.set(executionMode.rawValue, forKey: Self.executionModeKey)
+        } else {
+            executionMode = .command
+        }
     }
 
     func loadTemplate(_ template: LocalCLITemplate) {
         selectedTemplate = template
         commandTemplate = template.commandTemplate
+        executionMode = template == .codex ? .codexAppServer : .command
+    }
+
+    func reloadFromDefaults() {
+        let defaults = UserDefaults.standard
+        selectedTemplate = LocalCLITemplate(rawValue: defaults.string(forKey: Self.selectedTemplateKey) ?? "") ?? .pi
+        commandTemplate = defaults.string(forKey: Self.commandTemplateKey) ?? ""
+        let savedTimeout = defaults.double(forKey: Self.timeoutSecondsKey)
+        timeoutSeconds = savedTimeout > 0 ? savedTimeout : Self.defaultTimeoutSeconds
+        codexModel = defaults.string(forKey: Self.codexModelKey) ?? ""
+        codexReasoningEffort = defaults.string(forKey: Self.codexReasoningEffortKey) ?? Self.defaultCodexReasoningEffort
+        executionMode =
+            LocalCLIExecutionMode(rawValue: defaults.string(forKey: Self.executionModeKey) ?? "") ?? .command
     }
 
     func enhance(systemPrompt: String, userPrompt: String) async throws -> String {
         guard isConfigured else {
             throw LocalCLIError.commandNotConfigured
+        }
+
+        if executionMode == .codexAppServer {
+            let models = try await availableCodexModels()
+            guard let model = selectedCodexModel(from: models) else {
+                throw LocalCLIError.noCodexModels
+            }
+            let effort = CodexAppServerProtocol.resolvedEffort(codexReasoningEffort, for: model)
+            return try await codexAppServer.enhance(
+                systemPrompt: systemPrompt,
+                userPrompt: userPrompt,
+                model: model.model,
+                effort: effort,
+                timeout: timeoutSeconds
+            )
         }
 
         let fullPrompt = Self.makeFullPrompt(systemPrompt: systemPrompt, userPrompt: userPrompt)
@@ -93,6 +187,38 @@ final class LocalCLIService {
             fullPrompt: fullPrompt,
             timeout: timeoutSeconds
         )
+    }
+
+    func availableCodexModels() async throws -> [CodexModelOption] {
+        try await codexAppServer.listModels()
+    }
+
+    @discardableResult
+    func selectedCodexModel(from models: [CodexModelOption]) -> CodexModelOption? {
+        var didChangeSelection = false
+        if let selected = models.first(where: { $0.id == codexModel || $0.model == codexModel }) {
+            let resolvedEffort = CodexAppServerProtocol.resolvedEffort(codexReasoningEffort, for: selected)
+            if resolvedEffort != codexReasoningEffort {
+                codexReasoningEffort = resolvedEffort
+                didChangeSelection = true
+            }
+            if didChangeSelection {
+                notifyConfigurationChanged()
+            }
+            return selected
+        }
+
+        guard let recommended = CodexAppServerProtocol.recommendedModel(in: models) else { return nil }
+        codexModel = recommended.model
+        codexReasoningEffort = CodexAppServerProtocol.resolvedEffort(Self.defaultCodexReasoningEffort, for: recommended)
+        notifyConfigurationChanged()
+        return recommended
+    }
+
+    private func notifyConfigurationChanged() {
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(name: .AppSettingsDidChange, object: nil)
+        }
     }
 
     static func makeFullPrompt(systemPrompt: String, userPrompt: String) -> String {
@@ -199,6 +325,7 @@ final class LocalCLIService {
 
 enum LocalCLIError: Error, LocalizedError {
     case commandNotConfigured
+    case noCodexModels
     case commandNotFound(String)
     case timeout(seconds: Double)
     case nonZeroExit(status: Int, stderr: String)
@@ -209,6 +336,8 @@ enum LocalCLIError: Error, LocalizedError {
         switch self {
         case .commandNotConfigured:
             return String(localized: "Local CLI command is not configured. Load a template or enter a command first.")
+        case .noCodexModels:
+            return String(localized: "Codex did not return any available models. Check your Codex sign-in and try again.")
         case .commandNotFound(let details):
             return String(
                 format: String(

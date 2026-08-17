@@ -20040,6 +20040,78 @@
         }
       }
     },
+    "Codex App Server" : {
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Codex App Server" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Codex App Server" } }
+      }
+    },
+    "Codex App Server failed: %@" : {
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Codex App Server ist fehlgeschlagen: %@" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Codex App Server 执行失败：%@" } }
+      }
+    },
+    "Codex App Server is unavailable: %@" : {
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Codex App Server ist nicht verfügbar: %@" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Codex App Server 不可用：%@" } }
+      }
+    },
+    "Codex App Server returned an invalid response: %@" : {
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Codex App Server hat eine ungültige Antwort zurückgegeben: %@" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Codex App Server 返回了无效响应：%@" } }
+      }
+    },
+    "Codex App Server returned empty output." : {
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Codex App Server hat eine leere Ausgabe zurückgegeben." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Codex App Server 返回了空结果。" } }
+      }
+    },
+    "Codex did not return any available models. Check your Codex sign-in and try again." : {
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Codex hat keine verfügbaren Modelle zurückgegeben. Prüfe die Codex-Anmeldung und versuche es erneut." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Codex 未返回任何可用模型。请检查 Codex 登录状态后重试。" } }
+      }
+    },
+    "Codex enhancement timed out after %lld seconds." : {
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Die Codex-Optimierung wurde nach %1$lld Sekunden wegen Zeitüberschreitung beendet." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "Codex 润色在 %1$lld 秒后超时。" } }
+      }
+    },
+    "Connecting" : {
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Verbindung wird hergestellt" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "正在连接" } }
+      }
+    },
+    "Execution" : {
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Ausführung" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "执行方式" } }
+      }
+    },
+    "Reasoning Effort" : {
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Denkaufwand" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "推理强度" } }
+      }
+    },
+    "Refresh the model list to check Codex sign-in and availability." : {
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Aktualisiere die Modellliste, um Anmeldung und Verfügbarkeit von Codex zu prüfen." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "刷新模型列表以检查 Codex 登录状态和可用性。" } }
+      }
+    },
+    "VoiceInk keeps one Codex App Server process running and creates an isolated session for each enhancement. Low reasoning effort is recommended for faster polishing." : {
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "VoiceInk hält einen Codex-App-Server-Prozess aktiv und erstellt für jede Optimierung eine isolierte Sitzung. Für schnelleres Polieren wird ein niedriger Denkaufwand empfohlen." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "VoiceInk 会保持一个 Codex App Server 进程运行，并为每次润色创建隔离会话。建议使用低推理强度以加快润色速度。" } }
+      }
+    },
     "When enabled, VoiceInk checks for a new version at launch and once every hour. Downloaded updates are verified before VoiceInk installs and restarts automatically." : {
       "localizations" : {
         "de" : {
