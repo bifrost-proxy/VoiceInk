@@ -1,0 +1,57 @@
+name: Test VoiceInk
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    runs-on: macos-26
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Select Xcode 26.5
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo xcode-select -s /Applications/Xcode_26.5.app/Contents/Developer
+          xcodebuild -version
+
+      - name: Restore native dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/VoiceInk-Dependencies/whisper.cpp/build-apple/whisper.xcframework
+            Dependencies/SherpaOnnxMac/Binaries
+          key: native-dependencies-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Makefile', 'scripts/prepare-sherpa-onnx.sh') }}
+
+      - name: Prepare native dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          make whisper
+          scripts/prepare-sherpa-onnx.sh
+
+      - name: Run unit tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild test \
+            -project VoiceInk.xcodeproj \
+            -scheme VoiceInk \
+            -destination 'platform=macOS,arch=arm64' \
+            -only-testing:VoiceInkTests \
+            -parallel-testing-enabled NO \
+            CODE_SIGNING_ALLOWED=NO \
+            ENABLE_TESTABILITY=YES
