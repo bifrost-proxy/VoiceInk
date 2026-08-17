@@ -174,7 +174,7 @@ class RecordingShortcutManager: ObservableObject {
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor in
-                await self?.recorderUIManager.refreshRecordingPermissionGuidance()
+                self?.recorderUIManager.refreshRecordingPermissionGuidance()
                 guard AXIsProcessTrusted() else {
                     AccessibilityShortcutPermissionPrompt.showIfNeeded()
                     return
@@ -196,7 +196,11 @@ class RecordingShortcutManager: ObservableObject {
             let shortcuts = configuredShortcutsForAccessibilityFallback()
             let fallbackCount = accessibilityFallbackMonitor.start(shortcuts: shortcuts)
             AccessibilityShortcutPermissionPrompt.showIfNeeded()
-            if fallbackCount == 0, !shortcuts.isEmpty {
+            if Self.needsProactiveAccessibilityGuidance(
+                recordingShortcuts: configuredRecordingShortcuts(),
+                configuredShortcutCount: shortcuts.count,
+                registeredFallbackCount: fallbackCount
+            ) {
                 Task { @MainActor [weak self] in
                     await self?.recorderUIManager.presentRecordingPermissionGuidance()
                 }
@@ -310,6 +314,12 @@ class RecordingShortcutManager: ObservableObject {
         var shortcuts = Array(
             ShortcutStore.shortcuts(for: ShortcutAction.globalUtilityActions).values
         )
+        shortcuts.append(contentsOf: configuredRecordingShortcuts())
+        return shortcuts
+    }
+
+    private func configuredRecordingShortcuts() -> [Shortcut] {
+        var shortcuts: [Shortcut] = []
         if primaryRecordingShortcut == .custom,
             let shortcut = ShortcutStore.shortcut(for: .primaryRecording)
         {
@@ -326,6 +336,15 @@ class RecordingShortcutManager: ObservableObject {
             }
         }
         return shortcuts
+    }
+
+    static func needsProactiveAccessibilityGuidance(
+        recordingShortcuts: [Shortcut],
+        configuredShortcutCount: Int,
+        registeredFallbackCount: Int
+    ) -> Bool {
+        recordingShortcuts.contains(where: \.isModifierOnly)
+            || (configuredShortcutCount > 0 && registeredFallbackCount == 0)
     }
 
     private func recordingMode(for action: ShortcutAction) -> Mode? {

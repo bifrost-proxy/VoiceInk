@@ -13,7 +13,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             "🧭 Application finished launching. hasMenuBarManager=\((self.menuBarManager != nil), privacy: .public); activationPolicy=\(WindowDiagnostics.activationPolicyDescription(NSApplication.shared.activationPolicy()), privacy: .public); snapshot=\(WindowDiagnostics.windowSnapshot(), privacy: .public)"
         )
         menuBarManager?.applyActivationPolicy()
-        auditPrivacyPermissionsIfNeeded()
         UpdateManager.shared.start()
 
         if ProcessInfo.processInfo.environment["VOICEINK_UPDATE_ROLLBACK"] == "1" {
@@ -28,10 +27,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 alert.runModal()
             }
         }
-    }
-
-    func applicationDidBecomeActive(_ notification: Notification) {
-        auditPrivacyPermissionsIfNeeded()
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -58,15 +53,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         return false
-    }
-
-    private func auditPrivacyPermissionsIfNeeded() {
-        let hasCompletedOnboarding = UserDefaults.standard.bool(forKey: "hasCompletedOnboardingV2")
-        Task { @MainActor in
-            await StartupPermissionAuditService.auditIfNeeded(
-                hasCompletedOnboarding: hasCompletedOnboarding
-            )
-        }
     }
 
     // Stash URL when app cold-starts to avoid spawning a new window/tab

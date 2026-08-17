@@ -392,7 +392,7 @@ struct RecorderPermissionGuidanceView: View {
 
     private var accentColor: Color {
         switch guidance {
-        case .required:
+        case .required, .requesting:
             return .orange
         case .ready:
             return .green
@@ -429,6 +429,8 @@ struct RecorderPermissionGuidanceView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
             .buttonStyle(.plain)
+            .disabled(!guidance.isActionEnabled)
+            .opacity(guidance.isActionEnabled ? 1 : 0.7)
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 14)

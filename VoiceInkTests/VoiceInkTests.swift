@@ -851,41 +851,6 @@ struct VoiceInkTests {
         )
     }
 
-    @Test func adHocPermissionRegistrationIsRequestedOncePerInstalledBuild() {
-        #expect(
-            PrivacyPermissionResetService.shouldAutomaticallyRequestPermission(
-                isGranted: false,
-                hasCompletedOnboarding: true,
-                currentRegistrationIdentifier: "2.2.3-7",
-                lastRequestedRegistrationIdentifier: "2.2.2-6"
-            )
-        )
-        #expect(
-            !PrivacyPermissionResetService.shouldAutomaticallyRequestPermission(
-                isGranted: false,
-                hasCompletedOnboarding: true,
-                currentRegistrationIdentifier: "2.2.3-7",
-                lastRequestedRegistrationIdentifier: "2.2.3-7"
-            )
-        )
-        #expect(
-            !PrivacyPermissionResetService.shouldAutomaticallyRequestPermission(
-                isGranted: true,
-                hasCompletedOnboarding: true,
-                currentRegistrationIdentifier: "2.2.3-7",
-                lastRequestedRegistrationIdentifier: "2.2.2-6"
-            )
-        )
-        #expect(
-            !PrivacyPermissionResetService.shouldAutomaticallyRequestPermission(
-                isGranted: false,
-                hasCompletedOnboarding: false,
-                currentRegistrationIdentifier: "2.2.3-7",
-                lastRequestedRegistrationIdentifier: nil
-            )
-        )
-    }
-
     @Test func bundledChineseASRModelsAreDownloadableAndSelectable() {
         let models = TranscriptionModelRegistry.models
         let expectedNames = [
