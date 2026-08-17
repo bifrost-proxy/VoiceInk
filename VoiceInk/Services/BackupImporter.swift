@@ -107,6 +107,9 @@ enum BackupImporter {
             ShortcutStore.setShortcut(shortcut2.shortcut, for: .secondaryRecording)
             recordingShortcutManager.secondaryRecordingShortcut = .custom
         }
+        if let copyShortcut = general.copyLastTranscriptionShortcut {
+            ShortcutStore.setShortcut(copyShortcut.shortcut, for: .copyLastTranscription)
+        }
         if let pasteShortcut = general.pasteLastTranscriptionShortcut {
             ShortcutStore.setShortcut(pasteShortcut.shortcut, for: .pasteLastTranscription)
         }
@@ -121,6 +124,9 @@ enum BackupImporter {
         }
         if let historyShortcut = general.openHistoryWindowShortcut {
             ShortcutStore.setShortcut(historyShortcut.shortcut, for: .openHistoryWindow)
+        }
+        if let dockShortcut = general.toggleDockIconShortcut {
+            ShortcutStore.setShortcut(dockShortcut.shortcut, for: .toggleDockIcon)
         }
         if let dictionaryShortcut = general.quickAddToDictionaryShortcut {
             ShortcutStore.setShortcut(dictionaryShortcut.shortcut, for: .quickAddToDictionary)

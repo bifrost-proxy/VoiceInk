@@ -43,6 +43,7 @@ class RecordingShortcutManager: ObservableObject {
 
     private var engine: VoiceInkEngine
     private var recorderUIManager: RecorderUIManager
+    private let menuBarManager: MenuBarManager
     private var recorderPanelShortcutManager: RecorderPanelShortcutManager
     private let modeShortcutManager: ModeShortcutManager
     private let shortcutMonitor = ShortcutMonitor()
@@ -95,7 +96,11 @@ class RecordingShortcutManager: ObservableObject {
         recordingState != .transcribing && recordingState != .enhancing && recordingState != .busy
     }
 
-    init(engine: VoiceInkEngine, recorderUIManager: RecorderUIManager) {
+    init(
+        engine: VoiceInkEngine,
+        recorderUIManager: RecorderUIManager,
+        menuBarManager: MenuBarManager
+    ) {
         ShortcutMigration.migrateLegacyShortcutsIfNeeded()
 
         self.primaryRecordingShortcut = ShortcutMigration.migrateShortcutSelection(
@@ -142,6 +147,7 @@ class RecordingShortcutManager: ObservableObject {
 
         self.engine = engine
         self.recorderUIManager = recorderUIManager
+        self.menuBarManager = menuBarManager
         self.recorderPanelShortcutManager = RecorderPanelShortcutManager(recorderUIManager: recorderUIManager)
         self.shortcutModeHandler = shortcutModeHandler
         self.primaryRecordingShortcutModeSource = primaryRecordingShortcutModeSource
@@ -187,7 +193,7 @@ class RecordingShortcutManager: ObservableObject {
         removeAllMonitoring()
 
         guard AXIsProcessTrusted() else {
-            let shortcuts = configuredRecordingShortcuts()
+            let shortcuts = configuredShortcutsForAccessibilityFallback()
             let fallbackCount = accessibilityFallbackMonitor.start(shortcuts: shortcuts)
             AccessibilityShortcutPermissionPrompt.showIfNeeded()
             if fallbackCount == 0, !shortcuts.isEmpty {
@@ -300,8 +306,10 @@ class RecordingShortcutManager: ObservableObject {
         }
     }
 
-    private func configuredRecordingShortcuts() -> [Shortcut] {
-        var shortcuts: [Shortcut] = []
+    private func configuredShortcutsForAccessibilityFallback() -> [Shortcut] {
+        var shortcuts = Array(
+            ShortcutStore.shortcuts(for: ShortcutAction.globalUtilityActions).values
+        )
         if primaryRecordingShortcut == .custom,
             let shortcut = ShortcutStore.shortcut(for: .primaryRecording)
         {
@@ -333,6 +341,8 @@ class RecordingShortcutManager: ObservableObject {
 
     private func handleGlobalShortcut(_ action: ShortcutAction) async {
         switch action {
+        case .copyLastTranscription:
+            LastTranscriptionService.copyLastTranscription(from: engine.modelContext)
         case .pasteLastTranscription:
             LastTranscriptionService.pasteLastTranscription(from: engine.modelContext)
         case .pasteLastEnhancement:
@@ -345,10 +355,9 @@ class RecordingShortcutManager: ObservableObject {
                 enhancementService: engine.enhancementService
             )
         case .openHistoryWindow:
-            HistoryWindowController.shared.showHistoryWindow(
-                modelContainer: engine.modelContext.container,
-                engine: engine
-            )
+            menuBarManager.openHistoryWindow()
+        case .toggleDockIcon:
+            menuBarManager.toggleMenuBarOnly()
         case .quickAddToDictionary:
             DictionaryQuickAddManager.shared.toggle(modelContainer: engine.modelContext.container)
         default:

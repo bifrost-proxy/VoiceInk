@@ -3,11 +3,13 @@ import Foundation
 enum ShortcutAction: Hashable {
     case primaryRecording
     case secondaryRecording
+    case copyLastTranscription
     case pasteLastTranscription
     case pasteLastEnhancement
     case retryLastTranscription
     case cancelRecorder
     case openHistoryWindow
+    case toggleDockIcon
     case quickAddToDictionary
     case mode(UUID)
     case recorderPanelEscape
@@ -32,6 +34,8 @@ enum ShortcutAction: Hashable {
             return "primaryRecording"
         case .secondaryRecording:
             return "secondaryRecording"
+        case .copyLastTranscription:
+            return "copyLastTranscription"
         case .pasteLastTranscription:
             return "pasteLastTranscription"
         case .pasteLastEnhancement:
@@ -42,6 +46,8 @@ enum ShortcutAction: Hashable {
             return "cancelRecorder"
         case .openHistoryWindow:
             return "openHistoryWindow"
+        case .toggleDockIcon:
+            return "toggleDockIcon"
         case .quickAddToDictionary:
             return "quickAddToDictionary"
         case .mode(let id):
@@ -59,6 +65,8 @@ enum ShortcutAction: Hashable {
             return String(localized: "Primary Shortcut")
         case .secondaryRecording:
             return String(localized: "Secondary Shortcut")
+        case .copyLastTranscription:
+            return String(localized: "Copy Last Transcription")
         case .pasteLastTranscription:
             return String(localized: "Paste Last Transcription")
         case .pasteLastEnhancement:
@@ -69,6 +77,8 @@ enum ShortcutAction: Hashable {
             return String(localized: "Cancel Recording")
         case .openHistoryWindow:
             return String(localized: "Open History Window")
+        case .toggleDockIcon:
+            return String(localized: "Show or Hide Dock Icon")
         case .quickAddToDictionary:
             return String(localized: "Quick Add to Dictionary")
         case .mode(let id):
@@ -89,10 +99,12 @@ enum ShortcutAction: Hashable {
     }
 
     static let globalUtilityActions: [Self] = [
+        .copyLastTranscription,
         .pasteLastTranscription,
         .pasteLastEnhancement,
         .retryLastTranscription,
         .openHistoryWindow,
+        .toggleDockIcon,
         .quickAddToDictionary,
     ]
 
@@ -103,11 +115,13 @@ enum ShortcutAction: Hashable {
     static let legacyKeyboardShortcutActions: [Self] = [
         .primaryRecording,
         .secondaryRecording,
+        .copyLastTranscription,
         .pasteLastTranscription,
         .pasteLastEnhancement,
         .retryLastTranscription,
         .cancelRecorder,
         .openHistoryWindow,
+        .toggleDockIcon,
         .quickAddToDictionary,
     ]
 

@@ -69,11 +69,13 @@ struct CustomModelBackup: Codable {
 struct GeneralBackup: Codable {
     let primaryRecordingShortcut: ShortcutBackup?
     let secondaryRecordingShortcut: ShortcutBackup?
+    let copyLastTranscriptionShortcut: ShortcutBackup?
     let pasteLastTranscriptionShortcut: ShortcutBackup?
     let pasteLastEnhancementShortcut: ShortcutBackup?
     let retryLastTranscriptionShortcut: ShortcutBackup?
     let cancelRecorderShortcut: ShortcutBackup?
     let openHistoryWindowShortcut: ShortcutBackup?
+    let toggleDockIconShortcut: ShortcutBackup?
     let quickAddToDictionaryShortcut: ShortcutBackup?
     let primaryRecordingShortcutRawValue: String?
     let secondaryRecordingShortcutRawValue: String?

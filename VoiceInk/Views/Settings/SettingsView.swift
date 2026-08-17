@@ -124,6 +124,13 @@ struct SettingsView: View {
             }
 
             Section("Additional Shortcuts") {
+                LabeledContent("Copy Last Transcription") {
+                    ShortcutRecorder(action: .copyLastTranscription) {
+                        recordingShortcutManager.updateShortcutStatus()
+                    }
+                    .controlSize(.small)
+                }
+
                 LabeledContent("Paste Last Transcription (Original)") {
                     ShortcutRecorder(action: .pasteLastTranscription) {
                         recordingShortcutManager.updateShortcutStatus()
@@ -140,6 +147,20 @@ struct SettingsView: View {
 
                 LabeledContent("Retry Last Transcription") {
                     ShortcutRecorder(action: .retryLastTranscription) {
+                        recordingShortcutManager.updateShortcutStatus()
+                    }
+                    .controlSize(.small)
+                }
+
+                LabeledContent("Open History Window") {
+                    ShortcutRecorder(action: .openHistoryWindow) {
+                        recordingShortcutManager.updateShortcutStatus()
+                    }
+                    .controlSize(.small)
+                }
+
+                LabeledContent("Show or Hide Dock Icon") {
+                    ShortcutRecorder(action: .toggleDockIcon) {
                         recordingShortcutManager.updateShortcutStatus()
                     }
                     .controlSize(.small)
