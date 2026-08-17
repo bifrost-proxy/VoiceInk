@@ -36,7 +36,7 @@ struct TranscriptionReliabilityTests {
 
     @Test func stalledStreamingWorkStopsBlockingAtTheDeadline() async {
         let stalled = Task.detached {
-            try? await Task.sleep(for: .seconds(5))
+            _ = try? await Task.sleep(for: .seconds(5))
         }
         let startedAt = ContinuousClock.now
 
