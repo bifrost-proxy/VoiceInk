@@ -1,13 +1,43 @@
 import SwiftUI
 
 struct NotchRecorderView<S: RecorderStateProvider & ObservableObject>: View {
-    @ObservedObject var stateProvider: S
+    let stateProvider: S
     let recorder: Recorder
-    @ObservedObject var assistantSession: AssistantSession
+    let assistantSession: AssistantSession
     let onRecordButtonTapped: () -> Void
     let onCloseTapped: () -> Void
     let onAssistantFollowUp: (String) -> Void
     @AppStorage(RecorderDisplaySettingsKeys.showLiveTranscript) private var showLiveTranscript = true
+    @StateObject private var presentationModel: RecorderWindowPresentationModel<S>
+    @State private var isTranscriptContentVisible = false
+
+    init(
+        stateProvider: S,
+        recorder: Recorder,
+        assistantSession: AssistantSession,
+        onRecordButtonTapped: @escaping () -> Void,
+        onCloseTapped: @escaping () -> Void,
+        onAssistantFollowUp: @escaping (String) -> Void
+    ) {
+        self.stateProvider = stateProvider
+        self.recorder = recorder
+        self.assistantSession = assistantSession
+        self.onRecordButtonTapped = onRecordButtonTapped
+        self.onCloseTapped = onCloseTapped
+        self.onAssistantFollowUp = onAssistantFollowUp
+
+        let defaults = UserDefaults.standard
+        let initialShowLiveTranscript = defaults.object(
+            forKey: RecorderDisplaySettingsKeys.showLiveTranscript
+        ) == nil ? true : defaults.bool(forKey: RecorderDisplaySettingsKeys.showLiveTranscript)
+        _presentationModel = StateObject(
+            wrappedValue: RecorderWindowPresentationModel(
+                stateProvider: stateProvider,
+                assistantSession: assistantSession,
+                showLiveTranscript: initialShowLiveTranscript
+            )
+        )
+    }
 
     // MARK: - Display State
 
@@ -18,19 +48,18 @@ struct NotchRecorderView<S: RecorderStateProvider & ObservableObject>: View {
         case assistant
     }
 
+    private var presentation: RecorderWindowPresentation {
+        presentationModel.value
+    }
+
     private var displayState: DisplayState {
-        if assistantSession.isVisible {
+        if presentation.assistantIsVisible {
             return .assistant
         }
 
-        switch stateProvider.recordingState {
+        switch presentation.recordingState {
         case .recording, .transcribing, .enhancing:
-            let shouldShowLive = RecorderTranscriptPresentation.shouldShow(
-                showLiveTranscript: showLiveTranscript,
-                recordingState: stateProvider.recordingState,
-                text: stateProvider.partialTranscript
-            )
-            return shouldShowLive ? .liveText : .active
+            return presentation.hasVisibleTranscript ? .liveText : .active
         default:
             return .collapsed
         }
@@ -101,12 +130,7 @@ struct NotchRecorderView<S: RecorderStateProvider & ObservableObject>: View {
     }
 
     private var shouldShowCloseButton: Bool {
-        displayState == .assistant && stateProvider.recordingState == .idle && !assistantSession.isBusy
-    }
-
-    private var liveAssistantFollowUpText: String {
-        guard showLiveTranscript, stateProvider.recordingState == .recording else { return "" }
-        return stateProvider.partialTranscript
+        displayState == .assistant && presentation.recordingState == .idle && !presentation.assistantIsBusy
     }
 
     // MARK: - Animation
@@ -125,6 +149,22 @@ struct NotchRecorderView<S: RecorderStateProvider & ObservableObject>: View {
             pill.position(x: geo.size.width / 2, y: pillHeight / 2)
         }
         .animation(pillAnimation, value: displayState)
+        .onChange(of: showLiveTranscript) { _, isEnabled in
+            presentationModel.updateShowLiveTranscript(isEnabled)
+        }
+        .task(id: presentation.hasVisibleTranscript) {
+            guard presentation.hasVisibleTranscript else {
+                isTranscriptContentVisible = false
+                return
+            }
+            try? await Task.sleep(
+                nanoseconds: RecorderWindowTransitionPolicy.transcriptRevealDelayMilliseconds * 1_000_000
+            )
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeOut(duration: RecorderWindowTransitionPolicy.transcriptFadeDuration)) {
+                isTranscriptContentVisible = true
+            }
+        }
     }
 
     // MARK: - Pill
@@ -156,7 +196,7 @@ struct NotchRecorderView<S: RecorderStateProvider & ObservableObject>: View {
                     RecorderCloseButton(action: onCloseTapped)
                 } else {
                     RecorderRecordButton(
-                        recordingState: stateProvider.recordingState,
+                        recordingState: presentation.recordingState,
                         action: onRecordButtonTapped
                     )
                 }
@@ -175,7 +215,7 @@ struct NotchRecorderView<S: RecorderStateProvider & ObservableObject>: View {
             HStack(spacing: 0) {
                 Spacer(minLength: 0)
                 RecorderStatusDisplay(
-                    currentState: stateProvider.recordingState,
+                    currentState: presentation.recordingState,
                     recorder: recorder,
                     menuBarHeight: notchHeight
                 )
@@ -196,9 +236,9 @@ struct NotchRecorderView<S: RecorderStateProvider & ObservableObject>: View {
 
     private var liveTextPanel: some View {
         VStack(spacing: 0) {
-            if displayState == .liveText {
+            if isTranscriptContentVisible && displayState == .liveText {
                 Divider().background(Color.white.opacity(0.15))
-                LiveTranscriptView(text: stateProvider.partialTranscript)
+                RecorderLiveTranscript(stateProvider: stateProvider)
                     .padding(.horizontal, 8)
             }
         }
@@ -210,9 +250,10 @@ struct NotchRecorderView<S: RecorderStateProvider & ObservableObject>: View {
         VStack(spacing: 0) {
             if displayState == .assistant {
                 Divider().background(Color.white.opacity(0.15))
-                AssistantPanelView(
+                RecorderAssistantPanel(
+                    stateProvider: stateProvider,
                     session: assistantSession,
-                    liveFollowUpText: liveAssistantFollowUpText,
+                    showLiveTranscript: showLiveTranscript,
                     onSend: onAssistantFollowUp
                 )
             }
