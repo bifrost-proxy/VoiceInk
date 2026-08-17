@@ -33,6 +33,13 @@ struct AudioInputChannelSelection: Equatable {
     }
 }
 
+enum AudioCaptureBufferingPolicy {
+    /// Keeps roughly several seconds of hardware input available during short
+    /// CPU bursts. The ring stores preallocated Float32 buffers, so increasing
+    /// it does not allocate from the realtime render callback.
+    static let inputRingSlotCount = 256
+}
+
 // MARK: - Core Audio Recorder (AUHAL-based, does not change system default device)
 final class CoreAudioRecorder: @unchecked Sendable {
     private final class InputBufferSlot: @unchecked Sendable {
@@ -92,10 +99,10 @@ final class CoreAudioRecorder: @unchecked Sendable {
 
     // Keep the render callback realtime-safe; processing is best-effort under sustained overload.
     private let audioProcessingQueue = DispatchQueue(
-        label: "com.prakashjoshipax.voiceink.audioProcessing", qos: .userInitiated)
+        label: "com.prakashjoshipax.voiceink.audioProcessing", qos: .userInteractive)
     private let audioProcessingQueueKey = DispatchSpecificKey<Void>()
     private let maxFramesPerRender: UInt32 = 4096
-    private let inputRingSlotCount = 96
+    private let inputRingSlotCount = AudioCaptureBufferingPolicy.inputRingSlotCount
     private var inputBufferSlots: [InputBufferSlot] = []
     private var inputBufferCapacitySamples: UInt32 = 0
     private let inputWriteIndex = ManagedAtomic<UInt64>(0)
