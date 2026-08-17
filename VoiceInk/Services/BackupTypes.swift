@@ -103,9 +103,14 @@ struct GeneralBackup: Codable {
 
 struct WordBackup: Codable {
     let word: String
+    let kindRawValue: String?
 
-    init(word: String) {
+    init(
+        word: String,
+        kindRawValue: String? = nil
+    ) {
         self.word = word
+        self.kindRawValue = kindRawValue
     }
 }
 

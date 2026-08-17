@@ -39,16 +39,25 @@ enum DoubaoStreamingProtocol {
     private static let jsonWithoutCompression: UInt8 = 0x10
     private static let rawWithoutCompression: UInt8 = 0x00
 
-    static func makeFullClientRequest(customVocabulary: [String] = []) throws -> Data {
+    static func makeFullClientRequest(
+        customVocabulary: [String] = [],
+        settings: DoubaoSpeechSettings = .defaults
+    ) throws -> Data {
         var request: [String: Any] = [
             "model_name": "bigmodel",
-            "enable_nonstream": true,
-            "enable_itn": true,
-            "enable_punc": true,
+            "enable_nonstream": settings.enableTwoPassRecognition,
+            "enable_itn": settings.enableTextNormalization,
+            "enable_punc": settings.enablePunctuation,
+            "enable_ddc": settings.enableSemanticSmoothing,
+            "enable_accelerate_text": settings.enableFirstTextAcceleration,
             "show_utterances": true,
             "result_type": "full",
-            "end_window_size": 800,
+            "end_window_size": settings.silenceFinalizationMilliseconds,
         ]
+
+        if settings.enableFirstTextAcceleration {
+            request["accelerate_score"] = settings.firstTextAccelerationLevel
+        }
 
         let vocabulary = customVocabulary
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -240,7 +249,8 @@ final class DoubaoStreamingProvider: StreamingTranscriptionProvider {
         try await session.connect(
             apiKey: apiKey,
             resourceID: model.name,
-            customVocabulary: customVocabularyTerms(),
+            customVocabulary: customHotwordTerms(),
+            settings: DoubaoSpeechSettings.current(),
             endpoint: .optimizedStreaming,
             startReceiving: true
         )
@@ -259,16 +269,10 @@ final class DoubaoStreamingProvider: StreamingTranscriptionProvider {
         eventsContinuation?.finish()
     }
 
-    private func customVocabularyTerms() -> [String] {
-        let descriptor = FetchDescriptor<VocabularyWord>(sortBy: [SortDescriptor(\.word)])
-        guard let vocabularyWords = try? modelContext.fetch(descriptor) else { return [] }
-
-        var seen = Set<String>()
-        return vocabularyWords.compactMap { entry in
-            let term = entry.word.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !term.isEmpty, seen.insert(term.lowercased()).inserted else { return nil }
-            return term
-        }
+    /// Builds the inline hotword context accepted by Doubao. Both ordinary
+    /// vocabulary and proper nouns are sent as `hotwords[].word`.
+    func customHotwordTerms() -> [String] {
+        TranscriptionVocabularyContext.uniqueTerms(from: modelContext)
     }
 }
 
@@ -303,6 +307,7 @@ actor DoubaoWebSocketSession {
             apiKey: apiKey,
             resourceID: resourceID,
             customVocabulary: [],
+            settings: .defaults,
             endpoint: .verification,
             startReceiving: false
         )
@@ -324,6 +329,7 @@ actor DoubaoWebSocketSession {
         apiKey: String,
         resourceID: String,
         customVocabulary: [String],
+        settings: DoubaoSpeechSettings,
         endpoint: Endpoint,
         startReceiving: Bool
     ) async throws {
@@ -349,7 +355,8 @@ actor DoubaoWebSocketSession {
         do {
             try await delegate.waitUntilOpen(timeout: 10)
             let initialRequest = try DoubaoStreamingProtocol.makeFullClientRequest(
-                customVocabulary: customVocabulary
+                customVocabulary: customVocabulary,
+                settings: settings
             )
             try await webSocketTask.send(.data(initialRequest))
         } catch {

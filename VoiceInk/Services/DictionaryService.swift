@@ -13,7 +13,8 @@ enum DictionaryService {
     static func addVocabularyWords(
         _ input: String,
         existing: [VocabularyWord],
-        context: ModelContext
+        context: ModelContext,
+        kind: VocabularyEntryKind = .vocabulary
     ) -> String? {
         let parts =
             input
@@ -27,7 +28,11 @@ enum DictionaryService {
             if existing.contains(where: { $0.word.lowercased() == word.lowercased() }) {
                 return String(format: String(localized: "'%@' is already in the vocabulary"), word)
             }
-            return insertVocabularyWord(word, context: context)
+            return insertVocabularyWord(
+                word,
+                context: context,
+                kind: kind
+            )
         }
 
         var addedWords = Set(existing.map { $0.word.lowercased() })
@@ -35,7 +40,11 @@ enum DictionaryService {
         for word in parts {
             let lower = word.lowercased()
             if !addedWords.contains(lower) {
-                if let error = insertVocabularyWord(word, context: context) {
+                if let error = insertVocabularyWord(
+                    word,
+                    context: context,
+                    kind: kind
+                ) {
                     errors.append(error)
                 }
                 addedWords.insert(lower)
@@ -45,8 +54,12 @@ enum DictionaryService {
     }
 
     @discardableResult
-    private static func insertVocabularyWord(_ word: String, context: ModelContext) -> String? {
-        let entry = VocabularyWord(word: word)
+    private static func insertVocabularyWord(
+        _ word: String,
+        context: ModelContext,
+        kind: VocabularyEntryKind
+    ) -> String? {
+        let entry = VocabularyWord(word: word, kind: kind)
         context.insert(entry)
         do {
             try context.save()

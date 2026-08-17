@@ -12,6 +12,17 @@ final class CloudConfigurationSyncService: ObservableObject {
     struct VocabularyItem: Codable, Equatable {
         let word: String
         let dateAdded: Date
+        let kindRawValue: String?
+
+        init(
+            word: String,
+            dateAdded: Date,
+            kindRawValue: String? = nil
+        ) {
+            self.word = word
+            self.dateAdded = dateAdded
+            self.kindRawValue = kindRawValue
+        }
     }
 
     struct ReplacementItem: Codable, Equatable {
@@ -498,7 +509,13 @@ final class CloudConfigurationSyncService: ObservableObject {
             }
 
             for item in content.vocabulary {
-                modelContext.insert(VocabularyWord(word: item.word, dateAdded: item.dateAdded))
+                modelContext.insert(
+                    VocabularyWord(
+                        word: item.word,
+                        dateAdded: item.dateAdded,
+                        kind: item.kindRawValue.flatMap(VocabularyEntryKind.init(rawValue:)) ?? .vocabulary
+                    )
+                )
             }
             for item in content.replacements {
                 let replacement = WordReplacement(
@@ -538,7 +555,13 @@ final class CloudConfigurationSyncService: ObservableObject {
 
         do {
             let vocabulary = try modelContext.fetch(FetchDescriptor<VocabularyWord>())
-                .map { VocabularyItem(word: $0.word, dateAdded: $0.dateAdded) }
+                .map {
+                    VocabularyItem(
+                        word: $0.word,
+                        dateAdded: $0.dateAdded,
+                        kindRawValue: $0.kind.rawValue
+                    )
+                }
                 .sorted { lhs, rhs in
                     if lhs.word == rhs.word { return lhs.dateAdded < rhs.dateAdded }
                     return lhs.word.localizedStandardCompare(rhs.word) == .orderedAscending

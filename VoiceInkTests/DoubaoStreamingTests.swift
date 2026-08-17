@@ -1,4 +1,5 @@
 import Foundation
+import SwiftData
 import Testing
 @testable import VoiceInk
 
@@ -35,9 +36,107 @@ struct DoubaoStreamingTests {
         #expect(audio["channel"] as? Int == 1)
         #expect(request["model_name"] as? String == "bigmodel")
         #expect(request["enable_nonstream"] as? Bool == true)
+        #expect(request["enable_itn"] as? Bool == true)
+        #expect(request["enable_punc"] as? Bool == true)
+        #expect(request["enable_ddc"] as? Bool == false)
+        #expect(request["enable_accelerate_text"] as? Bool == false)
+        #expect(request["accelerate_score"] == nil)
         #expect(request["show_utterances"] as? Bool == true)
+        #expect(request["end_window_size"] as? Int == 800)
         #expect((user["uid"] as? String)?.hasPrefix("voiceink-") == true)
         #expect(user["did"] == nil)
+
+        let corpus = try #require(request["corpus"] as? [String: Any])
+        let contextString = try #require(corpus["context"] as? String)
+        let context = try #require(
+            JSONSerialization.jsonObject(with: Data(contextString.utf8)) as? [String: Any]
+        )
+        let hotwords = try #require(context["hotwords"] as? [[String: String]])
+        #expect(hotwords.compactMap { $0["word"] } == ["VoiceInk", "豆包"])
+    }
+
+    @Test func configurableRecognitionOptionsMapToOfficialRequestFields() throws {
+        let settings = DoubaoSpeechSettings(
+            enableTwoPassRecognition: false,
+            enableTextNormalization: false,
+            enablePunctuation: false,
+            enableSemanticSmoothing: true,
+            enableFirstTextAcceleration: true,
+            firstTextAccelerationLevel: 12,
+            silenceFinalizationMilliseconds: 1_200
+        )
+        let frame = try DoubaoStreamingProtocol.makeFullClientRequest(settings: settings)
+        let bytes = [UInt8](frame)
+        let payload = Data(bytes[8...])
+        let root = try #require(JSONSerialization.jsonObject(with: payload) as? [String: Any])
+        let request = try #require(root["request"] as? [String: Any])
+
+        #expect(request["enable_nonstream"] as? Bool == false)
+        #expect(request["enable_itn"] as? Bool == false)
+        #expect(request["enable_punc"] as? Bool == false)
+        #expect(request["enable_ddc"] as? Bool == true)
+        #expect(request["enable_accelerate_text"] as? Bool == true)
+        #expect(request["accelerate_score"] as? Int == 12)
+        #expect(request["end_window_size"] as? Int == 1_200)
+        #expect(request["show_utterances"] as? Bool == true)
+        #expect(request["result_type"] as? String == "full")
+    }
+
+    @MainActor
+    @Test func doubaoSettingsUseSafeDefaultsClampRangesAndRemainICloudEligible() throws {
+        let suiteName = "VoiceInkTests.DoubaoSettings.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        #expect(DoubaoSpeechSettings.current(in: defaults) == .defaults)
+
+        defaults.set(99, forKey: DoubaoSpeechSettings.Keys.firstTextAccelerationLevel)
+        defaults.set(100, forKey: DoubaoSpeechSettings.Keys.silenceFinalizationMilliseconds)
+        let clamped = DoubaoSpeechSettings.current(in: defaults)
+        #expect(clamped.firstTextAccelerationLevel == 20)
+        #expect(clamped.silenceFinalizationMilliseconds == 300)
+
+        let keys = [
+            DoubaoSpeechSettings.Keys.enableTwoPassRecognition,
+            DoubaoSpeechSettings.Keys.enableTextNormalization,
+            DoubaoSpeechSettings.Keys.enablePunctuation,
+            DoubaoSpeechSettings.Keys.enableSemanticSmoothing,
+            DoubaoSpeechSettings.Keys.enableFirstTextAcceleration,
+            DoubaoSpeechSettings.Keys.firstTextAccelerationLevel,
+            DoubaoSpeechSettings.Keys.silenceFinalizationMilliseconds,
+        ]
+        #expect(keys.allSatisfy(CloudConfigurationSyncService.isEligiblePreferenceKey))
+    }
+
+    @Test func vocabularyAndProperNounsBecomeDoubaoHotwordsButReplacementsDoNot() throws {
+        let configuration = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container = try ModelContainer(
+            for: VocabularyWord.self,
+            WordReplacement.self,
+            configurations: configuration
+        )
+        let context = ModelContext(container)
+        context.insert(VocabularyWord(word: "VoiceInk"))
+        context.insert(VocabularyWord(word: "豆包语音", kind: .properNoun))
+        context.insert(VocabularyWord(word: "另一个专有词", kind: .properNoun))
+        context.insert(WordReplacement(originalText: "voice ink", replacementText: "VoiceInk App"))
+        try context.save()
+
+        let provider = DoubaoStreamingProvider(modelContext: context)
+        let reusableContext = TranscriptionVocabularyContext.entries(from: context)
+
+        #expect(Set(provider.customHotwordTerms()) == ["VoiceInk", "另一个专有词", "豆包语音"])
+        #expect(Dictionary(uniqueKeysWithValues: reusableContext.map { ($0.term, $0) }) == [
+            "VoiceInk": TranscriptionVocabularyContextEntry(
+                term: "VoiceInk", kind: .vocabulary),
+            "另一个专有词": TranscriptionVocabularyContextEntry(
+                term: "另一个专有词", kind: .properNoun),
+            "豆包语音": TranscriptionVocabularyContextEntry(
+                term: "豆包语音",
+                kind: .properNoun
+            ),
+        ])
     }
 
     @Test func audioFramesMarkOnlyTheCommitAsFinal() {
