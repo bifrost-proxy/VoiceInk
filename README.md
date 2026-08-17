@@ -164,6 +164,7 @@ VoiceInk 使用火山方舟北京地域固定的 OpenAI 兼容接口，无需配
 
 ## 文档
 
+- [模型选择建议](docs/recommended-models.md)：按语言、设备、隐私和延迟选择转写与润色模型
 - [构建指南](BUILDING.md)：从源码构建项目
 - [贡献指南](CONTRIBUTING.md)：参与 VoiceInk 项目
 - [行为准则](CODE_OF_CONDUCT.md)：社区行为规范

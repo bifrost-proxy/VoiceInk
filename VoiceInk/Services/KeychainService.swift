@@ -10,6 +10,12 @@ enum KeychainStoragePolicy: Equatable {
     case keychainOnly
 }
 
+enum KeychainDataReadResult {
+    case value(Data)
+    case notFound
+    case unavailable(OSStatus)
+}
+
 /// Securely stores and retrieves secrets using Keychain. Synchronization is
 /// controlled independently with `syncable`; API key callers disable it.
 /// Standard credentials use UserDefaults in local builds for compatibility,
@@ -139,19 +145,17 @@ final class KeychainService {
             }
         #endif
 
-        var query = baseQuery(forKey: key, syncable: syncable, storagePolicy: storagePolicy)
-        query[kSecReturnData as String] = kCFBooleanTrue
-        query[kSecMatchLimit as String] = kSecMatchLimitOne
-        if !allowAuthenticationUI {
-            preventAuthenticationUI(in: &query)
-        }
-
-        var result: AnyObject?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
-
-        if status == errSecSuccess {
-            return result as? Data
-        } else if status != errSecItemNotFound {
+        switch readData(
+            forKey: key,
+            syncable: syncable,
+            storagePolicy: storagePolicy,
+            allowAuthenticationUI: allowAuthenticationUI
+        ) {
+        case .value(let data):
+            return data
+        case .notFound:
+            break
+        case .unavailable(let status):
             logger.error(
                 "Failed to retrieve keychain item for key: \(key, privacy: .public), status: \(status, privacy: .public)"
             )
@@ -168,6 +172,47 @@ final class KeychainService {
         #endif
 
         return nil
+    }
+
+    /// Reads one item while preserving the Security framework status. Callers
+    /// that maintain a consolidated item must distinguish "missing" from an
+    /// authorization failure before they safely replace its contents.
+    func readData(
+        forKey key: String,
+        syncable: Bool = true,
+        storagePolicy: KeychainStoragePolicy = .standard,
+        allowAuthenticationUI: Bool = true
+    ) -> KeychainDataReadResult {
+        #if LOCAL_BUILD
+            if storagePolicy == .standard {
+                if let data = defaults.data(forKey: localPrefix + key) {
+                    return .value(data)
+                }
+                return .notFound
+            }
+        #endif
+
+        var query = baseQuery(forKey: key, syncable: syncable, storagePolicy: storagePolicy)
+        query[kSecReturnData as String] = kCFBooleanTrue
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        if !allowAuthenticationUI {
+            preventAuthenticationUI(in: &query)
+        }
+
+        var result: AnyObject?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+
+        switch status {
+        case errSecSuccess:
+            if let data = result as? Data {
+                return .value(data)
+            }
+            return .unavailable(errSecDecode)
+        case errSecItemNotFound:
+            return .notFound
+        default:
+            return .unavailable(status)
+        }
     }
 
     /// Deletes an item from Keychain.

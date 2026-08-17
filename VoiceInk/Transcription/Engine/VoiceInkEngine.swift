@@ -453,13 +453,35 @@ class VoiceInkEngine: NSObject, ObservableObject {
                     }
                 } else {
                     logger.error("Recording permission denied")
+                    Task { @MainActor [weak self] in
+                        guard let self else { return }
+                        RecordingPermissionPreflight.handleDeniedMicrophonePermission()
+                        await self.failRecordingPreflight(
+                            title: RecordingPermissionIssue.microphone.notificationTitle,
+                            actionLabel: String(localized: "Open Settings"),
+                            action: {
+                                RecordingPermissionPreflight.openSettings(for: .microphone)
+                            }
+                        )
+                    }
                 }
             }
         }
     }
 
-    private func requestRecordPermission(response: @escaping (Bool) -> Void) {
-        response(true)
+    private func requestRecordPermission(response: @escaping @MainActor @Sendable (Bool) -> Void) {
+        Task { @MainActor in
+            switch AVCaptureDevice.authorizationStatus(for: .audio) {
+            case .authorized:
+                response(true)
+            case .notDetermined:
+                response(await AVCaptureDevice.requestAccess(for: .audio))
+            case .denied, .restricted:
+                response(false)
+            @unknown default:
+                response(false)
+            }
+        }
     }
 
     private func stopRecordingAtDurationLimit(recordingID: UUID) async {
@@ -597,6 +619,19 @@ class VoiceInkEngine: NSObject, ObservableObject {
 
         let mode = modeId.flatMap(ModeManager.shared.getConfiguration(with:))
             ?? ModeManager.shared.currentEffectiveConfiguration
+        if let permissionIssue = await RecordingPermissionPreflight.checkContextPermissions(
+            requiresScreenRecording: mode?.useScreenCapture ?? false
+        ) {
+            await failRecordingPreflight(
+                title: permissionIssue.notificationTitle,
+                actionLabel: String(localized: "Open Settings"),
+                action: {
+                    RecordingPermissionPreflight.openSettings(for: permissionIssue)
+                }
+            )
+            return false
+        }
+
         let resolution = ModeRuntimeResolver.transcriptionModelResolution(
             mode: mode,
             transcriptionModelManager: transcriptionModelManager

@@ -1829,6 +1829,22 @@
         }
       }
     },
+    "Accessibility permission is required for recording shortcuts" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Für Aufnahme-Kurzbefehle ist Bedienungshilfenzugriff erforderlich"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "录音快捷键需要辅助功能权限"
+          }
+        }
+      }
+    },
     "Accuracy" : {
       "localizations" : {
         "de" : {
@@ -6485,18 +6501,18 @@
         }
       }
     },
-    "e.g. support@tryvoiceink.com" : {
+    "e.g. name@example.com" : {
       "localizations" : {
         "de" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "z. B. support@tryvoiceink.com"
+            "value" : "z. B. name@example.com"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "例如：support@tryvoiceink.com"
+            "value" : "例如：name@example.com"
           }
         }
       }
@@ -9975,6 +9991,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "麦克风"
+          }
+        }
+      }
+    },
+    "Microphone permission is required to record" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zum Aufnehmen ist Mikrofonzugriff erforderlich"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "录音需要麦克风权限"
           }
         }
       }
@@ -14247,6 +14279,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "屏幕录制"
+          }
+        }
+      }
+    },
+    "Screen Recording permission is required for this mode" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Für diesen Modus ist die Berechtigung zur Bildschirmaufnahme erforderlich"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此模式需要屏幕录制权限"
           }
         }
       }
