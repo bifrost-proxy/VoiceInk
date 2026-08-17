@@ -19398,6 +19398,22 @@
         }
       }
     },
+    "Download the update now. VoiceInk will verify it, install it, and restart automatically." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lade das Update jetzt. VoiceInk prüft und installiert es und startet danach automatisch neu."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "立即下载更新。VoiceInk 将完成校验和安装，然后自动重新启动。"
+          }
+        }
+      }
+    },
     "Downloading VoiceInk…" : {
       "localizations" : {
         "de" : {
