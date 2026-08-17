@@ -32,6 +32,12 @@ struct ProviderDetailPanel: View {
     @AppStorage(DoubaoSpeechSettings.Keys.silenceFinalizationMilliseconds)
     private var doubaoSilenceFinalizationMilliseconds =
         DoubaoSpeechSettings.defaults.silenceFinalizationMilliseconds
+    @AppStorage(DoubaoSpeechSettings.Keys.enablePOIFunctionCall)
+    private var doubaoEnablePOIFunctionCall = DoubaoSpeechSettings.defaults.enablePOIFunctionCall
+    @AppStorage(DoubaoSpeechSettings.Keys.poiCityName)
+    private var doubaoPOICityName = DoubaoSpeechSettings.defaults.poiCityName
+    @AppStorage(DoubaoSpeechSettings.Keys.enableMusicFunctionCall)
+    private var doubaoEnableMusicFunctionCall = DoubaoSpeechSettings.defaults.enableMusicFunctionCall
     @AppStorage(AliyunQwenSpeechSettings.Keys.region)
     private var aliyunRegion = AliyunQwenSpeechSettings.defaults.region.rawValue
     @AppStorage(AliyunQwenSpeechSettings.Keys.apiHost)
@@ -257,6 +263,34 @@ struct ProviderDetailPanel: View {
                 .accessibilityIdentifier("doubao.settings.twoPassRecognition")
                 Divider()
                 optionToggleRow(
+                    title: "POI recognition assistance",
+                    detail: "Uses Doubao's map-domain recommendations for difficult place names.",
+                    isOn: $doubaoEnablePOIFunctionCall
+                )
+                .accessibilityIdentifier("doubao.settings.poiFunctionCall")
+                .disabled(!doubaoEnableTwoPassRecognition)
+                .opacity(doubaoEnableTwoPassRecognition ? 1 : 0.55)
+                Divider()
+                optionTextFieldRow(
+                    title: "POI city",
+                    detail: "Optional prefecture-level city hint, such as Beijing or Shanghai.",
+                    placeholder: "Optional city",
+                    text: $doubaoPOICityName
+                )
+                .accessibilityIdentifier("doubao.settings.poiCityName")
+                .disabled(!doubaoEnableTwoPassRecognition || !doubaoEnablePOIFunctionCall)
+                .opacity(doubaoEnableTwoPassRecognition && doubaoEnablePOIFunctionCall ? 1 : 0.55)
+                Divider()
+                optionToggleRow(
+                    title: "Music recognition assistance",
+                    detail: "Uses Doubao's music-domain recommendations for difficult artist, song, and album names.",
+                    isOn: $doubaoEnableMusicFunctionCall
+                )
+                .accessibilityIdentifier("doubao.settings.musicFunctionCall")
+                .disabled(!doubaoEnableTwoPassRecognition)
+                .opacity(doubaoEnableTwoPassRecognition ? 1 : 0.55)
+                Divider()
+                optionToggleRow(
                     title: "Text normalization",
                     detail: "Converts spoken numbers, dates, and amounts to written form.",
                     isOn: $doubaoEnableTextNormalization
@@ -311,7 +345,7 @@ struct ProviderDetailPanel: View {
             .accessibilityIdentifier("doubao.settings.recognitionOptions")
 
             Label(
-                "These non-sensitive options sync through iCloud configuration sync.",
+                "Recognition options sync through iCloud; the optional POI city stays on this Mac.",
                 systemImage: "icloud"
             )
             .font(.caption)
@@ -472,6 +506,31 @@ struct ProviderDetailPanel: View {
                     .font(.system(size: 11, weight: .medium, design: .monospaced))
                     .frame(minWidth: 52, alignment: .trailing)
             }
+        }
+        .padding(.vertical, 10)
+    }
+
+    private func optionTextFieldRow(
+        title: LocalizedStringKey,
+        detail: LocalizedStringKey,
+        placeholder: LocalizedStringKey,
+        text: Binding<String>
+    ) -> some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.system(size: 12, weight: .medium))
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 12)
+
+            TextField(placeholder, text: text)
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 160)
         }
         .padding(.vertical, 10)
     }

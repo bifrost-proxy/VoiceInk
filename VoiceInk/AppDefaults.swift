@@ -83,6 +83,12 @@ enum AppDefaults {
                 DoubaoSpeechSettings.defaults.firstTextAccelerationLevel,
             DoubaoSpeechSettings.Keys.silenceFinalizationMilliseconds:
                 DoubaoSpeechSettings.defaults.silenceFinalizationMilliseconds,
+            DoubaoSpeechSettings.Keys.enablePOIFunctionCall:
+                DoubaoSpeechSettings.defaults.enablePOIFunctionCall,
+            DoubaoSpeechSettings.Keys.poiCityName:
+                DoubaoSpeechSettings.defaults.poiCityName,
+            DoubaoSpeechSettings.Keys.enableMusicFunctionCall:
+                DoubaoSpeechSettings.defaults.enableMusicFunctionCall,
             AliyunQwenSpeechSettings.Keys.region: AliyunQwenSpeechSettings.defaults.region.rawValue,
             AliyunQwenSpeechSettings.Keys.apiHost: AliyunQwenSpeechSettings.defaults.apiHost,
             AliyunQwenSpeechSettings.Keys.semanticPunctuationEnabled:

@@ -9,6 +9,9 @@ struct DoubaoSpeechSettings: Equatable, Sendable {
         static let enableFirstTextAcceleration = "DoubaoSpeechEnableFirstTextAcceleration"
         static let firstTextAccelerationLevel = "DoubaoSpeechFirstTextAccelerationLevel"
         static let silenceFinalizationMilliseconds = "DoubaoSpeechSilenceFinalizationMilliseconds"
+        static let enablePOIFunctionCall = "DoubaoSpeechEnablePOIFunctionCall"
+        static let poiCityName = "DoubaoSpeechPOICityName"
+        static let enableMusicFunctionCall = "DoubaoSpeechEnableMusicFunctionCall"
     }
 
     static let accelerationLevelRange = 0...20
@@ -21,7 +24,10 @@ struct DoubaoSpeechSettings: Equatable, Sendable {
         enableSemanticSmoothing: false,
         enableFirstTextAcceleration: false,
         firstTextAccelerationLevel: 0,
-        silenceFinalizationMilliseconds: 800
+        silenceFinalizationMilliseconds: 800,
+        enablePOIFunctionCall: false,
+        poiCityName: "",
+        enableMusicFunctionCall: false
     )
 
     let enableTwoPassRecognition: Bool
@@ -31,6 +37,9 @@ struct DoubaoSpeechSettings: Equatable, Sendable {
     let enableFirstTextAcceleration: Bool
     let firstTextAccelerationLevel: Int
     let silenceFinalizationMilliseconds: Int
+    let enablePOIFunctionCall: Bool
+    let poiCityName: String
+    let enableMusicFunctionCall: Bool
 
     init(
         enableTwoPassRecognition: Bool,
@@ -39,7 +48,10 @@ struct DoubaoSpeechSettings: Equatable, Sendable {
         enableSemanticSmoothing: Bool,
         enableFirstTextAcceleration: Bool,
         firstTextAccelerationLevel: Int,
-        silenceFinalizationMilliseconds: Int
+        silenceFinalizationMilliseconds: Int,
+        enablePOIFunctionCall: Bool = false,
+        poiCityName: String = "",
+        enableMusicFunctionCall: Bool = false
     ) {
         self.enableTwoPassRecognition = enableTwoPassRecognition
         self.enableTextNormalization = enableTextNormalization
@@ -49,6 +61,9 @@ struct DoubaoSpeechSettings: Equatable, Sendable {
         self.firstTextAccelerationLevel = Self.accelerationLevelRange.clamped(firstTextAccelerationLevel)
         self.silenceFinalizationMilliseconds = Self.silenceFinalizationRange.clamped(
             silenceFinalizationMilliseconds)
+        self.enablePOIFunctionCall = enablePOIFunctionCall
+        self.poiCityName = poiCityName.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.enableMusicFunctionCall = enableMusicFunctionCall
     }
 
     static func current(in defaults: UserDefaults = .standard) -> DoubaoSpeechSettings {
@@ -86,6 +101,17 @@ struct DoubaoSpeechSettings: Equatable, Sendable {
             silenceFinalizationMilliseconds: integer(
                 forKey: Keys.silenceFinalizationMilliseconds,
                 fallback: Self.defaults.silenceFinalizationMilliseconds,
+                in: defaults
+            ),
+            enablePOIFunctionCall: bool(
+                forKey: Keys.enablePOIFunctionCall,
+                fallback: Self.defaults.enablePOIFunctionCall,
+                in: defaults
+            ),
+            poiCityName: defaults.string(forKey: Keys.poiCityName) ?? Self.defaults.poiCityName,
+            enableMusicFunctionCall: bool(
+                forKey: Keys.enableMusicFunctionCall,
+                fallback: Self.defaults.enableMusicFunctionCall,
                 in: defaults
             )
         )

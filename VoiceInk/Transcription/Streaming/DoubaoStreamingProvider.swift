@@ -43,6 +43,10 @@ enum DoubaoStreamingProtocol {
         customVocabulary: [String] = [],
         settings: DoubaoSpeechSettings = .defaults
     ) throws -> Data {
+        // Domain function calls are documented only for the optimized
+        // bidirectional stream when second-pass recognition is enabled.
+        let enablePOIFunctionCall = settings.enableTwoPassRecognition && settings.enablePOIFunctionCall
+        let enableMusicFunctionCall = settings.enableTwoPassRecognition && settings.enableMusicFunctionCall
         var request: [String: Any] = [
             "model_name": "bigmodel",
             "enable_nonstream": settings.enableTwoPassRecognition,
@@ -58,17 +62,29 @@ enum DoubaoStreamingProtocol {
         if settings.enableFirstTextAcceleration {
             request["accelerate_score"] = settings.firstTextAccelerationLevel
         }
+        if enablePOIFunctionCall {
+            request["enable_poi_fc"] = true
+        }
+        if enableMusicFunctionCall {
+            request["enable_music_fc"] = true
+        }
 
         let vocabulary = customVocabulary
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
             .prefix(50)
 
+        var context: [String: Any] = [:]
         if !vocabulary.isEmpty {
-            let hotwords = vocabulary.map { ["word": $0] }
-            let contextData = try JSONSerialization.data(withJSONObject: ["hotwords": hotwords])
+            context["hotwords"] = vocabulary.map { ["word": $0] }
+        }
+        if enablePOIFunctionCall, !settings.poiCityName.isEmpty {
+            context["loc_info"] = ["city_name": settings.poiCityName]
+        }
+        if !context.isEmpty {
+            let contextData = try JSONSerialization.data(withJSONObject: context)
             guard let context = String(data: contextData, encoding: .utf8) else {
-                throw DoubaoStreamingProtocolError.invalidFrame("Could not encode custom vocabulary")
+                throw DoubaoStreamingProtocolError.invalidFrame("Could not encode recognition context")
             }
             request["corpus"] = ["context": context]
         }
