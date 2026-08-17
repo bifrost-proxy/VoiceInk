@@ -414,7 +414,8 @@ struct VoiceInkApp: App {
         didShowLaunchReminders = true
 
         if !AXIsProcessTrusted() {
-            AccessibilityShortcutPermissionPrompt.showIfNeeded()
+            // RecordingShortcutManager chooses exactly one permission surface:
+            // the recorder guidance when it can help, otherwise the standalone tip.
             return
         }
 

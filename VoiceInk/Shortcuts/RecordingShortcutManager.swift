@@ -92,6 +92,12 @@ class RecordingShortcutManager: ObservableObject {
         }
     }
 
+    enum MissingAccessibilityPresentation: Equatable {
+        case suppressed
+        case recorderGuidance
+        case standalonePrompt
+    }
+
     private static func canHandleShortcutAction(for recordingState: RecordingState) -> Bool {
         recordingState != .transcribing && recordingState != .enhancing && recordingState != .busy
     }
@@ -176,7 +182,7 @@ class RecordingShortcutManager: ObservableObject {
             Task { @MainActor in
                 self?.recorderUIManager.refreshRecordingPermissionGuidance()
                 guard AXIsProcessTrusted() else {
-                    AccessibilityShortcutPermissionPrompt.showIfNeeded()
+                    self?.refreshShortcutMonitoring()
                     return
                 }
                 self?.refreshShortcutMonitoringAfterAccessibilityAuthorization()
@@ -195,15 +201,20 @@ class RecordingShortcutManager: ObservableObject {
         guard AXIsProcessTrusted() else {
             let shortcuts = configuredShortcutsForAccessibilityFallback()
             let fallbackCount = accessibilityFallbackMonitor.start(shortcuts: shortcuts)
-            AccessibilityShortcutPermissionPrompt.showIfNeeded()
-            if Self.needsProactiveAccessibilityGuidance(
+            switch Self.missingAccessibilityPresentation(
+                isRecorderGuidancePresented: recorderUIManager.isRecordingPermissionGuidancePresented,
                 recordingShortcuts: configuredRecordingShortcuts(),
                 configuredShortcutCount: shortcuts.count,
                 registeredFallbackCount: fallbackCount
             ) {
+            case .suppressed:
+                break
+            case .recorderGuidance:
                 Task { @MainActor [weak self] in
                     await self?.recorderUIManager.presentRecordingPermissionGuidance()
                 }
+            case .standalonePrompt:
+                AccessibilityShortcutPermissionPrompt.showIfNeeded()
             }
             return
         }
@@ -345,6 +356,25 @@ class RecordingShortcutManager: ObservableObject {
     ) -> Bool {
         recordingShortcuts.contains(where: \.isModifierOnly)
             || (configuredShortcutCount > 0 && registeredFallbackCount == 0)
+    }
+
+    static func missingAccessibilityPresentation(
+        isRecorderGuidancePresented: Bool,
+        recordingShortcuts: [Shortcut],
+        configuredShortcutCount: Int,
+        registeredFallbackCount: Int
+    ) -> MissingAccessibilityPresentation {
+        if isRecorderGuidancePresented {
+            return .suppressed
+        }
+        if needsProactiveAccessibilityGuidance(
+            recordingShortcuts: recordingShortcuts,
+            configuredShortcutCount: configuredShortcutCount,
+            registeredFallbackCount: registeredFallbackCount
+        ) {
+            return .recorderGuidance
+        }
+        return .standalonePrompt
     }
 
     private func recordingMode(for action: ShortcutAction) -> Mode? {
