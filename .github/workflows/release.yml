@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing release tag to sync to Homebrew
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -14,6 +20,7 @@ concurrency:
 
 jobs:
   release:
+    if: github.event_name == 'push'
     runs-on: macos-26
     timeout-minutes: 90
 
@@ -90,10 +97,13 @@ jobs:
 
   update-homebrew-tap:
     needs: release
+    if: ${{ always() && (github.event_name == 'workflow_dispatch' || needs.release.result == 'success') }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: read
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
     concurrency:
       group: update-homebrew-tap
       cancel-in-progress: false
@@ -105,6 +115,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
           if [[ -z "$HOMEBREW_TAP_TOKEN" ]]; then
             echo "::error::HOMEBREW_TAP_TOKEN must grant contents:write on bifrost-proxy/homebrew-voiceink"
             exit 1
@@ -124,7 +135,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/voiceink-cask"
-          gh release download "$GITHUB_REF_NAME" \
+          gh release download "$RELEASE_TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --pattern voiceink.rb \
             --dir "$RUNNER_TEMP/voiceink-cask"
@@ -133,7 +144,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          version="${GITHUB_REF_NAME#v}"
+          version="${RELEASE_TAG#v}"
           release_cask="$RUNNER_TEMP/voiceink-cask/voiceink.rb"
           tap_repo="$GITHUB_WORKSPACE/homebrew-voiceink"
           tap_cask="$tap_repo/Casks/voiceink.rb"

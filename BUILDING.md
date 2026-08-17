@@ -151,3 +151,5 @@ Pushing a `vMAJOR.MINOR.PATCH` tag runs `.github/workflows/release.yml`. The wor
 The repository must define an Actions secret named `HOMEBREW_TAP_TOKEN`. Use a fine-grained personal access token scoped only to `bifrost-proxy/homebrew-voiceink` with repository contents read and write access. The default `GITHUB_TOKEN` cannot update a different repository.
 
 Homebrew tap updates are serialized. Before committing, the workflow compares the published version with the version already in the tap and skips older releases, so overlapping release jobs cannot downgrade the Cask.
+
+To retry or backfill synchronization without rebuilding a release, manually run the `Release VoiceInk` workflow and provide an existing `vMAJOR.MINOR.PATCH` release tag. The release build job is skipped for manual runs; only the Homebrew synchronization job runs.
