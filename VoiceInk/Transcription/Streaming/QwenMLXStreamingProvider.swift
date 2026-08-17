@@ -1,6 +1,44 @@
 import Foundation
 import os
 
+struct QwenMLXAudioBatcher {
+    static let targetByteCount = 3_200  // 100 ms of PCM16 at 16 kHz mono.
+
+    let targetByteCount: Int
+    private var bufferedData = Data()
+
+    init(targetByteCount: Int = Self.targetByteCount) {
+        precondition(targetByteCount > 0)
+        self.targetByteCount = targetByteCount
+        bufferedData.reserveCapacity(targetByteCount)
+    }
+
+    var bufferedByteCount: Int { bufferedData.count }
+
+    mutating func append(_ data: Data) -> [Data] {
+        guard !data.isEmpty else { return [] }
+        bufferedData.append(data)
+
+        var batches: [Data] = []
+        while bufferedData.count >= targetByteCount {
+            batches.append(Data(bufferedData.prefix(targetByteCount)))
+            bufferedData.removeFirst(targetByteCount)
+        }
+        return batches
+    }
+
+    mutating func flush() -> Data? {
+        guard !bufferedData.isEmpty else { return nil }
+        let remainder = bufferedData
+        bufferedData.removeAll(keepingCapacity: true)
+        return remainder
+    }
+
+    mutating func reset() {
+        bufferedData.removeAll(keepingCapacity: true)
+    }
+}
+
 /// Native incremental Qwen3-ASR streaming on the MLX Metal GPU backend.
 ///
 /// Unlike `BufferedOnDeviceStreamingProvider`, this provider sends each new
@@ -13,6 +51,7 @@ final class QwenMLXStreamingProvider: StreamingTranscriptionProvider {
     private var eventsContinuation: AsyncStream<StreamingTranscriptionEvent>.Continuation?
     private var lastText = ""
     private var connected = false
+    private var audioBatcher = QwenMLXAudioBatcher()
 
     private(set) var transcriptionEvents: AsyncStream<StreamingTranscriptionEvent>
 
@@ -47,6 +86,7 @@ final class QwenMLXStreamingProvider: StreamingTranscriptionProvider {
         )
         connected = true
         lastText = ""
+        audioBatcher.reset()
         eventsContinuation?.yield(.sessionStarted)
         logger.notice(
             "Qwen MLX native streaming started backend=\(backend, privacy: .public) model=\(model.displayName, privacy: .public)"
@@ -57,6 +97,12 @@ final class QwenMLXStreamingProvider: StreamingTranscriptionProvider {
         guard connected else { throw StreamingTranscriptionError.notConnected }
         guard !data.isEmpty else { return }
 
+        for batch in audioBatcher.append(data) {
+            try await feedAudioBatch(batch)
+        }
+    }
+
+    private func feedAudioBatch(_ data: Data) async throws {
         let snapshot = try await runtime.feedAudio(data)
         guard snapshot.text != lastText else { return }
         lastText = snapshot.text
@@ -67,6 +113,9 @@ final class QwenMLXStreamingProvider: StreamingTranscriptionProvider {
 
     func commit() async throws {
         guard connected else { throw StreamingTranscriptionError.notConnected }
+        if let remainder = audioBatcher.flush() {
+            try await feedAudioBatch(remainder)
+        }
         let snapshot = try await runtime.finishStreaming()
         connected = false
         let text = snapshot.text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -81,6 +130,7 @@ final class QwenMLXStreamingProvider: StreamingTranscriptionProvider {
             await runtime.cancelStreaming()
         }
         connected = false
+        audioBatcher.reset()
         eventsContinuation?.finish()
         logger.notice("Qwen MLX streaming disconnected; resident model retained")
     }

@@ -2,6 +2,25 @@ import Foundation
 import OSLog
 import SwiftData
 
+enum OrphanAudioCleanupPolicy {
+    // A recording is created before its SwiftData row. Requiring a stale
+    // modification date keeps startup cleanup from unlinking that live file.
+    static let minimumFileAge: TimeInterval = 24 * 60 * 60
+
+    static func shouldDelete(
+        fileURL: URL,
+        contentModificationDate: Date?,
+        now: Date = Date()
+    ) -> Bool {
+        guard fileURL.pathExtension.lowercased() == "wav",
+            let contentModificationDate
+        else {
+            return false
+        }
+        return now.timeIntervalSince(contentModificationDate) >= minimumFileAge
+    }
+}
+
 class TranscriptionAutoCleanupService {
     static let shared = TranscriptionAutoCleanupService()
 
@@ -155,15 +174,31 @@ class TranscriptionAutoCleanupService {
             guard FileManager.default.fileExists(atPath: recordingsDirectory.path) else { return }
             let filesInDirectory = try FileManager.default.contentsOfDirectory(
                 at: recordingsDirectory,
-                includingPropertiesForKeys: nil
+                includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey]
             )
 
             var deletedCount = 0
             for fileURL in filesInDirectory {
                 let fileName = fileURL.lastPathComponent
-                if !referencedFiles.contains(fileName) {
-                    try? FileManager.default.removeItem(at: fileURL)
+                guard !referencedFiles.contains(fileName) else { continue }
+                guard
+                    let resourceValues = try? fileURL.resourceValues(
+                        forKeys: [.contentModificationDateKey, .isRegularFileKey]
+                    ),
+                    resourceValues.isRegularFile == true,
+                    OrphanAudioCleanupPolicy.shouldDelete(
+                        fileURL: fileURL,
+                        contentModificationDate: resourceValues.contentModificationDate
+                    )
+                else { continue }
+
+                do {
+                    try FileManager.default.removeItem(at: fileURL)
                     deletedCount += 1
+                } catch {
+                    logger.warning(
+                        "Failed to remove orphan audio \(fileName, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                    )
                 }
             }
 
