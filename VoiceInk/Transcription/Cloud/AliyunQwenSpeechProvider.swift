@@ -1,5 +1,4 @@
 import Foundation
-import SwiftData
 
 struct AliyunQwenSpeechProvider: CloudProvider {
     static let modelID = "qwen-audio-3.0-asr-flash-streaming"
@@ -35,8 +34,8 @@ struct AliyunQwenSpeechProvider: CloudProvider {
         ]
     }
 
-    func makeStreamingProvider(modelContext: ModelContext) -> (any StreamingTranscriptionProvider)? {
-        AliyunQwenStreamingProvider(modelContext: modelContext)
+    func makeStreamingProvider(customVocabulary: [String]) -> (any StreamingTranscriptionProvider)? {
+        AliyunQwenStreamingProvider(customVocabulary: customVocabulary)
     }
 
     func transcribe(

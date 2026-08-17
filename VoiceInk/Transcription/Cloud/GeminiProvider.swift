@@ -1,6 +1,5 @@
 import Foundation
 import LLMkit
-import SwiftData
 
 struct GeminiProvider: CloudProvider {
     let modelProvider: ModelProvider = .gemini
@@ -33,7 +32,7 @@ struct GeminiProvider: CloudProvider {
         )
     }
 
-    func makeStreamingProvider(modelContext: ModelContext) -> (any StreamingTranscriptionProvider)? { nil }
+    func makeStreamingProvider(customVocabulary: [String]) -> (any StreamingTranscriptionProvider)? { nil }
 
     func verifyAPIKey(_ key: String) async -> (isValid: Bool, errorMessage: String?) {
         return await GeminiTranscriptionClient.verifyAPIKey(key)

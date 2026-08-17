@@ -194,8 +194,8 @@ struct DoubaoStreamingTests {
         context.insert(WordReplacement(originalText: "voice ink", replacementText: "VoiceInk App"))
         try context.save()
 
-        let provider = DoubaoStreamingProvider(modelContext: context)
         let reusableContext = TranscriptionVocabularyContext.entries(from: context)
+        let provider = DoubaoStreamingProvider(customVocabulary: reusableContext.map(\.term))
 
         #expect(Set(provider.customHotwordTerms()) == ["VoiceInk", "另一个词汇", "豆包语音"])
         #expect(Dictionary(uniqueKeysWithValues: reusableContext.map { ($0.term, $0) }) == [

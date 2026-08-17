@@ -1,5 +1,4 @@
 import Foundation
-import SwiftData
 
 enum AliyunQwenStreamingProtocolError: LocalizedError, Equatable {
     case invalidMessage(String)
@@ -187,13 +186,13 @@ enum AliyunQwenStreamingProtocol {
 }
 
 final class AliyunQwenStreamingProvider: StreamingTranscriptionProvider {
-    private let modelContext: ModelContext
+    private let customVocabulary: [String]
     private let session: AliyunQwenWebSocketSession
     private var eventsContinuation: AsyncStream<StreamingTranscriptionEvent>.Continuation?
     private(set) var transcriptionEvents: AsyncStream<StreamingTranscriptionEvent>
 
-    init(modelContext: ModelContext) {
-        self.modelContext = modelContext
+    init(customVocabulary: [String]) {
+        self.customVocabulary = customVocabulary
         var continuation: AsyncStream<StreamingTranscriptionEvent>.Continuation!
         transcriptionEvents = AsyncStream { continuation = $0 }
         eventsContinuation = continuation
@@ -236,7 +235,7 @@ final class AliyunQwenStreamingProvider: StreamingTranscriptionProvider {
     }
 
     func customHotwordTerms() -> [String] {
-        TranscriptionVocabularyContext.uniqueTerms(from: modelContext)
+        customVocabulary
     }
 }
 

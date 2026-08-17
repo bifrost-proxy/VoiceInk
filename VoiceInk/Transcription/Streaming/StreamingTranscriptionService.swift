@@ -91,6 +91,41 @@ private final class StreamingMetrics: @unchecked Sendable {
     }
 }
 
+/// Owns one provider for one recording and serializes all transport work away
+/// from the main actor. A new transport is created for every recording; it is
+/// never pooled or reused across sessions.
+actor StreamingProviderTransport {
+    private let provider: any StreamingTranscriptionProvider
+
+    init(provider: any StreamingTranscriptionProvider) {
+        self.provider = provider
+    }
+
+    var stopDisposition: StreamingStopDisposition {
+        provider.stopDisposition
+    }
+
+    var transcriptionEvents: AsyncStream<StreamingTranscriptionEvent> {
+        provider.transcriptionEvents
+    }
+
+    func connect(model: any TranscriptionModel, language: String?) async throws {
+        try await provider.connect(model: model, language: language)
+    }
+
+    func sendAudioChunk(_ data: Data) async throws {
+        try await provider.sendAudioChunk(data)
+    }
+
+    func commit() async throws {
+        try await provider.commit()
+    }
+
+    func disconnect() async {
+        await provider.disconnect()
+    }
+}
+
 /// Lifecycle states for a streaming transcription session.
 enum StreamingState {
     case idle
@@ -112,13 +147,13 @@ enum StreamingStopResult {
 class StreamingTranscriptionService {
 
     private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "StreamingTranscriptionService")
-    private var provider: StreamingTranscriptionProvider?
+    private var provider: StreamingProviderTransport?
     private var sendTask: Task<Void, Never>?
     private var eventConsumerTask: Task<Void, Never>?
     private let chunkSource = AudioChunkSource()
     private var state: StreamingState = .idle
     private var committedSegments: [String] = []
-    private let modelContext: ModelContext
+    private let customVocabulary: [String]
     private let fluidAudioService: FluidAudioTranscriptionService?
     private let sherpaOnnxService: SherpaOnnxTranscriptionService?
     private var onPartialTranscript: ((String) -> Void)?
@@ -138,7 +173,7 @@ class StreamingTranscriptionService {
         sherpaOnnxService: SherpaOnnxTranscriptionService? = nil,
         onPartialTranscript: ((String) -> Void)? = nil
     ) {
-        self.modelContext = modelContext
+        self.customVocabulary = TranscriptionVocabularyContext.uniqueTerms(from: modelContext)
         self.fluidAudioService = fluidAudioService
         self.sherpaOnnxService = sherpaOnnxService
         self.onPartialTranscript = onPartialTranscript
@@ -200,7 +235,9 @@ class StreamingTranscriptionService {
             prepareForStart()
         }
 
-        let provider = createProvider(for: model, context: context)
+        let provider = StreamingProviderTransport(
+            provider: createProvider(for: model, context: context)
+        )
         self.provider = provider
 
         let selectedLanguage = context.language ?? "auto"
@@ -220,7 +257,7 @@ class StreamingTranscriptionService {
 
         state = .streaming
         startSendLoop()
-        startEventConsumer()
+        await startEventConsumer()
 
         logger.notice(
             "Streaming connected model=\(model.displayName, privacy: .public) elapsed=\(Date().timeIntervalSince(start), format: .fixed(precision: 3), privacy: .public)s"
@@ -241,7 +278,7 @@ class StreamingTranscriptionService {
             throw StreamingTranscriptionError.notConnected
         }
 
-        if provider.stopDisposition == .useBatchFallback {
+        if await provider.stopDisposition == .useBatchFallback {
             logger.notice("Streaming provider requested full batch fallback")
             state = .done
             await cleanupStreaming()
@@ -366,7 +403,7 @@ class StreamingTranscriptionService {
             )
         }
         guard let cloudProvider = CloudProviderRegistry.provider(for: model.provider),
-            let streamingProvider = cloudProvider.makeStreamingProvider(modelContext: modelContext)
+            let streamingProvider = cloudProvider.makeStreamingProvider(customVocabulary: customVocabulary)
         else {
             fatalError(
                 "Unsupported streaming provider: \(model.provider). Check shouldUseRealtimeTranscription() before calling startStreaming()."
@@ -410,9 +447,9 @@ class StreamingTranscriptionService {
     }
 
     /// Consumes transcription events throughout the session, accumulating committed segments.
-    private func startEventConsumer() {
+    private func startEventConsumer() async {
         guard let provider = provider else { return }
-        let events = provider.transcriptionEvents
+        let events = await provider.transcriptionEvents
 
         eventConsumerTask = Task.detached { [weak self] in
             for await event in events {
