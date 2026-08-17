@@ -1,5 +1,4 @@
 <div align="center">
-  <img src="VoiceInk/Assets.xcassets/AppIcon.appiconset/256-mac.png" width="180" height="180" />
   <h1>VoiceInk</h1>
   <p>macOS 原生语音转文字应用，几乎可以即时把你说的话转换为文字</p>
 
