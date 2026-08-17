@@ -125,12 +125,10 @@ struct MenuBarView: View {
             Button("Copy Last Transcription") {
                 LastTranscriptionService.copyLastTranscription(from: engine.modelContext)
             }
-            .keyboardShortcut("c", modifiers: [.command, .shift])
 
             Button("History") {
                 menuBarManager.openHistoryWindow()
             }
-            .keyboardShortcut("h", modifiers: [.command, .shift])
 
             Button(menuBarManager.isMenuBarOnly ? "Show Dock Icon" : "Hide Dock Icon") {
                 let shouldShowMainWindow = menuBarManager.isMenuBarOnly
@@ -140,7 +138,6 @@ struct MenuBarView: View {
                     showMainWindow(reason: "Show Dock Icon")
                 }
             }
-            .keyboardShortcut("d", modifiers: [.command, .shift])
 
             Toggle("Launch at Login", isOn: $launchAtLoginEnabled)
                 .onChange(of: launchAtLoginEnabled) { oldValue, newValue in

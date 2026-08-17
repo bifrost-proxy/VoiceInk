@@ -154,6 +154,8 @@ class ImportExportService {
         let generalSettingsToExport = GeneralBackup(
             primaryRecordingShortcut: ShortcutStore.shortcut(for: .primaryRecording).map(ShortcutBackup.init),
             secondaryRecordingShortcut: ShortcutStore.shortcut(for: .secondaryRecording).map(ShortcutBackup.init),
+            copyLastTranscriptionShortcut: ShortcutStore.shortcut(for: .copyLastTranscription).map(
+                ShortcutBackup.init),
             pasteLastTranscriptionShortcut: ShortcutStore.shortcut(for: .pasteLastTranscription).map(
                 ShortcutBackup.init),
             pasteLastEnhancementShortcut: ShortcutStore.shortcut(for: .pasteLastEnhancement).map(ShortcutBackup.init),
@@ -161,6 +163,7 @@ class ImportExportService {
                 ShortcutBackup.init),
             cancelRecorderShortcut: ShortcutStore.shortcut(for: .cancelRecorder).map(ShortcutBackup.init),
             openHistoryWindowShortcut: ShortcutStore.shortcut(for: .openHistoryWindow).map(ShortcutBackup.init),
+            toggleDockIconShortcut: ShortcutStore.shortcut(for: .toggleDockIcon).map(ShortcutBackup.init),
             quickAddToDictionaryShortcut: ShortcutStore.shortcut(for: .quickAddToDictionary).map(ShortcutBackup.init),
             primaryRecordingShortcutRawValue: recordingShortcutManager.primaryRecordingShortcut.rawValue,
             secondaryRecordingShortcutRawValue: recordingShortcutManager.secondaryRecordingShortcut.rawValue,

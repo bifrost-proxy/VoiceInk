@@ -30,9 +30,31 @@ struct ShortcutBackup: Codable {
 }
 
 enum ShortcutMigration {
+    static let defaultMenuUtilityShortcuts: [ShortcutAction: Shortcut] = [
+        .copyLastTranscription: .key(
+            keyCode: UInt16(kVK_ANSI_C),
+            modifierFlags: [.shift, .command]
+        ),
+        .openHistoryWindow: .key(
+            keyCode: UInt16(kVK_ANSI_H),
+            modifierFlags: [.shift, .command]
+        ),
+        .toggleDockIcon: .key(
+            keyCode: UInt16(kVK_ANSI_D),
+            modifierFlags: [.shift, .command]
+        ),
+    ]
+
     static func migrateLegacyShortcutsIfNeeded() {
         discardLegacyCustomRecordingShortcutsIfNeeded()
         migrateLegacyKeyboardShortcutsIfNeeded()
+        seedDefaultMenuUtilityShortcutsIfNeeded()
+    }
+
+    private static func seedDefaultMenuUtilityShortcutsIfNeeded() {
+        for (action, shortcut) in defaultMenuUtilityShortcuts {
+            ShortcutStore.seedShortcut(shortcut, for: action)
+        }
     }
 
     static func migrateLegacyKeyboardShortcutsIfNeeded() {
@@ -257,6 +279,8 @@ enum ShortcutMigration {
             return ["toggleMiniRecorder"]
         case .secondaryRecording:
             return ["toggleMiniRecorder2"]
+        case .copyLastTranscription, .toggleDockIcon:
+            return []
         case .pasteLastTranscription:
             return ["pasteLastTranscription"]
         case .pasteLastEnhancement:
