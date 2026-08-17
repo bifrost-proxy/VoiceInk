@@ -55,6 +55,7 @@ struct AliyunQwenSpeechSettings: Equatable, Sendable {
         static let useVoiceInkVocabulary = "AliyunQwenUseVoiceInkVocabulary"
         static let vocabularyWeight = "AliyunQwenVocabularyWeight"
         static let contextPrompt = "AliyunQwenContextPrompt"
+        static let keepConnectionReady = "AliyunQwenKeepConnectionReady"
     }
 
     static let sentenceSilenceRange = 200...6_000
@@ -73,7 +74,8 @@ struct AliyunQwenSpeechSettings: Equatable, Sendable {
         speechNoiseThreshold: 0,
         useVoiceInkVocabulary: true,
         vocabularyWeight: 4,
-        contextPrompt: ""
+        contextPrompt: "",
+        keepConnectionReady: false
     )
 
     let region: AliyunQwenRegion
@@ -87,6 +89,7 @@ struct AliyunQwenSpeechSettings: Equatable, Sendable {
     let useVoiceInkVocabulary: Bool
     let vocabularyWeight: Int
     let contextPrompt: String
+    let keepConnectionReady: Bool
 
     init(
         region: AliyunQwenRegion,
@@ -99,7 +102,8 @@ struct AliyunQwenSpeechSettings: Equatable, Sendable {
         speechNoiseThreshold: Double,
         useVoiceInkVocabulary: Bool,
         vocabularyWeight: Int,
-        contextPrompt: String
+        contextPrompt: String,
+        keepConnectionReady: Bool = false
     ) {
         self.region = region
         self.apiHost = apiHost.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -114,6 +118,7 @@ struct AliyunQwenSpeechSettings: Equatable, Sendable {
         self.useVoiceInkVocabulary = useVoiceInkVocabulary
         self.vocabularyWeight = Self.vocabularyWeightRange.clamped(vocabularyWeight)
         self.contextPrompt = String(contextPrompt.prefix(Self.maximumContextLength))
+        self.keepConnectionReady = keepConnectionReady
     }
 
     static func current(in defaults: UserDefaults = .standard) -> AliyunQwenSpeechSettings {
@@ -163,7 +168,12 @@ struct AliyunQwenSpeechSettings: Equatable, Sendable {
                 fallback: Self.defaults.vocabularyWeight,
                 in: defaults
             ),
-            contextPrompt: defaults.string(forKey: Keys.contextPrompt) ?? Self.defaults.contextPrompt
+            contextPrompt: defaults.string(forKey: Keys.contextPrompt) ?? Self.defaults.contextPrompt,
+            keepConnectionReady: bool(
+                forKey: Keys.keepConnectionReady,
+                fallback: Self.defaults.keepConnectionReady,
+                in: defaults
+            )
         )
     }
 

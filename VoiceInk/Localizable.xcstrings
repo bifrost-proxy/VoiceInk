@@ -20539,6 +20539,24 @@
         "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "此专属 API 密钥需要填写阿里云密钥页面上显示的 API Host。" } }
       }
     },
+    "Keep a connection ready" : {
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Verbindung bereithalten" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "保持连接就绪" } }
+      }
+    },
+    "Keeps one authenticated WebSocket ready. After 30 minutes without recognition, preconnection pauses until the next use; no audio is sent while waiting." : {
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Hält einen authentifizierten WebSocket bereit. Nach 30 Minuten ohne Erkennung pausiert die Vorverbindung bis zur nächsten Nutzung; während des Wartens wird kein Audio gesendet." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "保持一个已认证的 WebSocket 连接就绪。连续 30 分钟未识别时将暂停预连接，直至下次使用；等待期间不会发送音频。" } }
+      }
+    },
+    "This device only. May use a small amount of network activity and power." : {
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Nur auf diesem Gerät. Kann geringfügigen Netzwerkverkehr und Stromverbrauch verursachen." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "仅限此设备。可能产生少量网络活动和电量消耗。" } }
+      }
+    },
     "When enabled, VoiceInk checks for a new version at launch and once every hour. Downloaded updates are verified before VoiceInk installs and restarts automatically." : {
       "localizations" : {
         "de" : {

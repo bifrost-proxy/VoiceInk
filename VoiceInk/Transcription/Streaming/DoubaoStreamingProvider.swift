@@ -321,7 +321,7 @@ final class DoubaoStreamingProvider: StreamingTranscriptionProvider {
 }
 
 actor DoubaoWebSocketSession {
-    enum Endpoint {
+    enum Endpoint: Equatable {
         case optimizedStreaming
         case verification
 
@@ -336,11 +336,11 @@ actor DoubaoWebSocketSession {
     }
 
     private let eventsContinuation: AsyncStream<StreamingTranscriptionEvent>.Continuation?
-    private var urlSession: URLSession?
-    private var webSocketTask: URLSessionWebSocketTask?
+    private var connection: (any CloudSpeechWebSocketConnection)?
     private var receiveTask: Task<Void, Never>?
     private var verificationTimedOut = false
     private var audioPacketizer = DoubaoAudioPacketizer()
+    private var preconnectionTarget: CloudSpeechConnectionTarget?
 
     init(eventsContinuation: AsyncStream<StreamingTranscriptionEvent>.Continuation?) {
         self.eventsContinuation = eventsContinuation
@@ -378,33 +378,48 @@ actor DoubaoWebSocketSession {
         endpoint: Endpoint,
         startReceiving: Bool
     ) async throws {
-        guard webSocketTask == nil else { return }
+        guard connection == nil else { return }
         audioPacketizer.reset()
 
-        let delegate = DoubaoWebSocketOpenDelegate()
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = 10
-        configuration.timeoutIntervalForResource = 15
-        let urlSession = URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
-
-        var request = URLRequest(url: endpoint.url)
-        request.timeoutInterval = 10
-        request.setValue(apiKey, forHTTPHeaderField: "X-Api-Key")
-        request.setValue(resourceID, forHTTPHeaderField: "X-Api-Resource-Id")
-        request.setValue(UUID().uuidString, forHTTPHeaderField: "X-Api-Connect-Id")
-
-        let webSocketTask = urlSession.webSocketTask(with: request)
-        self.urlSession = urlSession
-        self.webSocketTask = webSocketTask
-        webSocketTask.resume()
+        let target = CloudSpeechConnectionTarget.doubao(
+            apiKey: apiKey,
+            resourceID: resourceID,
+            endpoint: endpoint.url
+        )
 
         do {
-            try await delegate.waitUntilOpen(timeout: 10)
+            var standbyConnection: (any CloudSpeechWebSocketConnection)?
+            if endpoint == .optimizedStreaming {
+                standbyConnection = await CloudSpeechConnectionPool.shared.lease(for: target)
+                connection = standbyConnection
+            }
+            if connection == nil {
+                connection = try await URLSessionCloudSpeechWebSocketConnector().open(
+                    target: target,
+                    onClosed: nil
+                )
+            }
+            guard let connection else { throw StreamingTranscriptionError.notConnected }
             let initialRequest = try DoubaoStreamingProtocol.makeFullClientRequest(
                 customVocabulary: customVocabulary,
                 settings: settings
             )
-            try await webSocketTask.send(.data(initialRequest))
+            do {
+                try await connection.send(.data(initialRequest))
+            } catch where standbyConnection != nil {
+                connection.close()
+                self.connection = try await URLSessionCloudSpeechWebSocketConnector().open(
+                    target: target,
+                    onClosed: nil
+                )
+                guard let freshConnection = self.connection else {
+                    throw StreamingTranscriptionError.notConnected
+                }
+                try await freshConnection.send(.data(initialRequest))
+            }
+            if endpoint == .optimizedStreaming {
+                preconnectionTarget = target
+            }
         } catch {
             closeSocket()
             throw StreamingTranscriptionError.connectionFailed(error.localizedDescription)
@@ -419,28 +434,33 @@ actor DoubaoWebSocketSession {
     }
 
     func sendAudioChunk(_ data: Data) async throws {
-        guard let webSocketTask else { throw StreamingTranscriptionError.notConnected }
+        guard let connection else { throw StreamingTranscriptionError.notConnected }
         for packet in audioPacketizer.append(data) {
-            try await webSocketTask.send(.data(DoubaoStreamingProtocol.makeAudioRequest(packet, isFinal: false)))
+            try await connection.send(.data(DoubaoStreamingProtocol.makeAudioRequest(packet, isFinal: false)))
         }
     }
 
     func commit() async throws {
-        guard let webSocketTask else { throw StreamingTranscriptionError.notConnected }
+        guard let connection else { throw StreamingTranscriptionError.notConnected }
         if let remainder = audioPacketizer.flush() {
-            try await webSocketTask.send(.data(DoubaoStreamingProtocol.makeAudioRequest(remainder, isFinal: false)))
+            try await connection.send(.data(DoubaoStreamingProtocol.makeAudioRequest(remainder, isFinal: false)))
         }
-        try await webSocketTask.send(.data(DoubaoStreamingProtocol.makeAudioRequest(Data(), isFinal: true)))
+        try await connection.send(.data(DoubaoStreamingProtocol.makeAudioRequest(Data(), isFinal: true)))
     }
 
-    func disconnect() {
+    func disconnect() async {
+        let completedTarget = preconnectionTarget
+        preconnectionTarget = nil
         receiveTask?.cancel()
         receiveTask = nil
         closeSocket()
+        if let completedTarget {
+            await CloudSpeechConnectionPool.shared.recordUseCompleted(for: completedTarget)
+        }
     }
 
     private func receiveVerificationResponse() async throws {
-        guard let webSocketTask else { throw StreamingTranscriptionError.notConnected }
+        guard let connection else { throw StreamingTranscriptionError.notConnected }
         verificationTimedOut = false
         let timeoutTask = Task<Void, Never> { [weak self] in
             try? await Task.sleep(nanoseconds: 10_000_000_000)
@@ -449,7 +469,7 @@ actor DoubaoWebSocketSession {
         defer { timeoutTask.cancel() }
 
         do {
-            let message = try await webSocketTask.receive()
+            let message = try await connection.receive()
             _ = try DoubaoStreamingProtocol.parseServerMessage(message)
         } catch {
             if verificationTimedOut {
@@ -461,15 +481,15 @@ actor DoubaoWebSocketSession {
 
     private func cancelForVerificationTimeout() {
         verificationTimedOut = true
-        webSocketTask?.cancel(with: .goingAway, reason: nil)
+        connection?.close()
     }
 
     private func receiveLoop() async {
-        guard let webSocketTask else { return }
+        guard let connection else { return }
 
         do {
             while !Task.isCancelled {
-                let message = try await webSocketTask.receive()
+                let message = try await connection.receive()
                 guard let response = try DoubaoStreamingProtocol.parseServerMessage(message) else { continue }
                 if response.isFinal {
                     eventsContinuation?.yield(.committed(text: response.text))
@@ -486,63 +506,7 @@ actor DoubaoWebSocketSession {
 
     private func closeSocket() {
         audioPacketizer.reset()
-        webSocketTask?.cancel(with: .goingAway, reason: nil)
-        webSocketTask = nil
-        urlSession?.invalidateAndCancel()
-        urlSession = nil
-    }
-}
-
-private final class DoubaoWebSocketOpenDelegate: NSObject, URLSessionWebSocketDelegate, @unchecked Sendable {
-    private let lock = NSLock()
-    private var continuation: CheckedContinuation<Void, Error>?
-    private var completedResult: Result<Void, Error>?
-
-    func waitUntilOpen(timeout: TimeInterval) async throws {
-        try await withCheckedThrowingContinuation { continuation in
-            lock.lock()
-            if let completedResult {
-                lock.unlock()
-                continuation.resume(with: completedResult)
-                return
-            }
-            self.continuation = continuation
-            lock.unlock()
-
-            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { [weak self] in
-                self?.finish(.failure(StreamingTranscriptionError.timeout))
-            }
-        }
-    }
-
-    func urlSession(
-        _: URLSession,
-        webSocketTask _: URLSessionWebSocketTask,
-        didOpenWithProtocol _: String?
-    ) {
-        finish(.success(()))
-    }
-
-    func urlSession(
-        _: URLSession,
-        task _: URLSessionTask,
-        didCompleteWithError error: Error?
-    ) {
-        if let error {
-            finish(.failure(error))
-        }
-    }
-
-    private func finish(_ result: Result<Void, Error>) {
-        lock.lock()
-        guard completedResult == nil else {
-            lock.unlock()
-            return
-        }
-        completedResult = result
-        let continuation = continuation
-        self.continuation = nil
-        lock.unlock()
-        continuation?.resume(with: result)
+        connection?.close()
+        connection = nil
     }
 }

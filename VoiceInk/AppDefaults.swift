@@ -89,6 +89,8 @@ enum AppDefaults {
                 DoubaoSpeechSettings.defaults.poiCityName,
             DoubaoSpeechSettings.Keys.enableMusicFunctionCall:
                 DoubaoSpeechSettings.defaults.enableMusicFunctionCall,
+            DoubaoSpeechSettings.Keys.keepConnectionReady:
+                DoubaoSpeechSettings.defaults.keepConnectionReady,
             AliyunQwenSpeechSettings.Keys.region: AliyunQwenSpeechSettings.defaults.region.rawValue,
             AliyunQwenSpeechSettings.Keys.apiHost: AliyunQwenSpeechSettings.defaults.apiHost,
             AliyunQwenSpeechSettings.Keys.semanticPunctuationEnabled:
@@ -109,6 +111,8 @@ enum AppDefaults {
                 AliyunQwenSpeechSettings.defaults.vocabularyWeight,
             AliyunQwenSpeechSettings.Keys.contextPrompt:
                 AliyunQwenSpeechSettings.defaults.contextPrompt,
+            AliyunQwenSpeechSettings.Keys.keepConnectionReady:
+                AliyunQwenSpeechSettings.defaults.keepConnectionReady,
 
             // Cleanup
             CleanupSettingsKeys.isTranscriptionCleanupEnabled: false,

@@ -273,6 +273,7 @@ struct AliyunQwenStreamingTests {
         defaults.set(100, forKey: AliyunQwenSpeechSettings.Keys.maxSentenceSilenceMilliseconds)
         defaults.set(99, forKey: AliyunQwenSpeechSettings.Keys.vocabularyWeight)
         defaults.set(4.2, forKey: AliyunQwenSpeechSettings.Keys.speechNoiseThreshold)
+        defaults.set(true, forKey: AliyunQwenSpeechSettings.Keys.keepConnectionReady)
         defaults.set(
             "https://user-workspace.cn-beijing.maas.aliyuncs.com/api/v1",
             forKey: AliyunQwenSpeechSettings.Keys.apiHost
@@ -281,6 +282,7 @@ struct AliyunQwenStreamingTests {
         #expect(clamped.maxSentenceSilenceMilliseconds == 200)
         #expect(clamped.vocabularyWeight == 5)
         #expect(clamped.speechNoiseThreshold == 1)
+        #expect(clamped.keepConnectionReady)
         #expect(try clamped.webSocketURL().absoluteString ==
             "wss://user-workspace.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference")
 
@@ -320,6 +322,7 @@ struct AliyunQwenStreamingTests {
         #expect(syncedKeys.allSatisfy(CloudConfigurationSyncService.isEligiblePreferenceKey))
         #expect(!CloudConfigurationSyncService.isEligiblePreferenceKey(AliyunQwenSpeechSettings.Keys.apiHost))
         #expect(!CloudConfigurationSyncService.isEligiblePreferenceKey(AliyunQwenSpeechSettings.Keys.contextPrompt))
+        #expect(!CloudConfigurationSyncService.isEligiblePreferenceKey(AliyunQwenSpeechSettings.Keys.keepConnectionReady))
     }
 
     @Test func vocabularyBecomesAliyunHotwords() throws {

@@ -126,10 +126,12 @@ struct DoubaoStreamingTests {
         defaults.set(99, forKey: DoubaoSpeechSettings.Keys.firstTextAccelerationLevel)
         defaults.set(100, forKey: DoubaoSpeechSettings.Keys.silenceFinalizationMilliseconds)
         defaults.set("  上海市  ", forKey: DoubaoSpeechSettings.Keys.poiCityName)
+        defaults.set(true, forKey: DoubaoSpeechSettings.Keys.keepConnectionReady)
         let clamped = DoubaoSpeechSettings.current(in: defaults)
         #expect(clamped.firstTextAccelerationLevel == 20)
         #expect(clamped.silenceFinalizationMilliseconds == 300)
         #expect(clamped.poiCityName == "上海市")
+        #expect(clamped.keepConnectionReady)
 
         let keys = [
             DoubaoSpeechSettings.Keys.enableTwoPassRecognition,
@@ -144,6 +146,7 @@ struct DoubaoStreamingTests {
         ]
         #expect(keys.allSatisfy(CloudConfigurationSyncService.isEligiblePreferenceKey))
         #expect(!CloudConfigurationSyncService.isEligiblePreferenceKey(DoubaoSpeechSettings.Keys.poiCityName))
+        #expect(!CloudConfigurationSyncService.isEligiblePreferenceKey(DoubaoSpeechSettings.Keys.keepConnectionReady))
     }
 
     @Test func domainFunctionCallsMergePOICityWithVocabularyContext() throws {

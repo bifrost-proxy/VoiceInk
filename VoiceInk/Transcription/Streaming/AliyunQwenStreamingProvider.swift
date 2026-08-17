@@ -241,8 +241,7 @@ final class AliyunQwenStreamingProvider: StreamingTranscriptionProvider {
 
 actor AliyunQwenWebSocketSession {
     private let eventsContinuation: AsyncStream<StreamingTranscriptionEvent>.Continuation?
-    private var urlSession: URLSession?
-    private var webSocketTask: URLSessionWebSocketTask?
+    private var connection: (any CloudSpeechWebSocketConnection)?
     private var receiveTask: Task<Void, Never>?
     private var taskID: String?
     private var pendingAudio = Data()
@@ -251,6 +250,7 @@ actor AliyunQwenWebSocketSession {
     private var finishContinuation: CheckedContinuation<Void, Error>?
     private var startTimedOut = false
     private var finishTimeoutTask: Task<Void, Never>?
+    private var preconnectionTarget: CloudSpeechConnectionTarget?
 
     init(eventsContinuation: AsyncStream<StreamingTranscriptionEvent>.Continuation?) {
         self.eventsContinuation = eventsContinuation
@@ -282,29 +282,23 @@ actor AliyunQwenWebSocketSession {
         settings: AliyunQwenSpeechSettings,
         format: String
     ) async throws {
-        guard webSocketTask == nil else { return }
+        guard connection == nil else { return }
 
         let endpoint = try settings.webSocketURL()
-        let delegate = AliyunQwenWebSocketOpenDelegate()
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = 10
-        configuration.timeoutIntervalForResource = 30
-        let urlSession = URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
-
-        var request = URLRequest(url: endpoint)
-        request.timeoutInterval = 10
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.setValue("VoiceInk/macOS", forHTTPHeaderField: "User-Agent")
-
-        let webSocketTask = urlSession.webSocketTask(with: request)
-        self.urlSession = urlSession
-        self.webSocketTask = webSocketTask
+        let target = CloudSpeechConnectionTarget.aliyun(apiKey: apiKey, endpoint: endpoint)
         let taskID = UUID().uuidString
         self.taskID = taskID
-        webSocketTask.resume()
 
         do {
-            try await delegate.waitUntilOpen(timeout: 10)
+            let standbyConnection = await CloudSpeechConnectionPool.shared.lease(for: target)
+            connection = standbyConnection
+            if connection == nil {
+                connection = try await URLSessionCloudSpeechWebSocketConnector().open(
+                    target: target,
+                    onClosed: nil
+                )
+            }
+            guard let connection else { throw StreamingTranscriptionError.notConnected }
             let runTask = try AliyunQwenStreamingProtocol.makeRunTask(
                 taskID: taskID,
                 model: model,
@@ -314,8 +308,21 @@ actor AliyunQwenWebSocketSession {
                 customVocabulary: customVocabulary,
                 settings: settings
             )
-            try await webSocketTask.send(.string(runTask))
+            do {
+                try await connection.send(.string(runTask))
+            } catch where standbyConnection != nil {
+                connection.close()
+                self.connection = try await URLSessionCloudSpeechWebSocketConnector().open(
+                    target: target,
+                    onClosed: nil
+                )
+                guard let freshConnection = self.connection else {
+                    throw StreamingTranscriptionError.notConnected
+                }
+                try await freshConnection.send(.string(runTask))
+            }
             try await receiveTaskStarted()
+            preconnectionTarget = target
         } catch {
             closeSocket()
             if error is AliyunQwenStreamingProtocolError || error is AliyunQwenSettingsError {
@@ -331,7 +338,7 @@ actor AliyunQwenWebSocketSession {
     }
 
     func sendAudioChunk(_ data: Data) async throws {
-        guard webSocketTask != nil else { throw StreamingTranscriptionError.notConnected }
+        guard connection != nil else { throw StreamingTranscriptionError.notConnected }
         pendingAudio.append(data)
         while pendingAudio.count >= 3_200 {
             let chunk = pendingAudio.prefix(3_200)
@@ -341,7 +348,7 @@ actor AliyunQwenWebSocketSession {
     }
 
     func commit() async throws {
-        guard let webSocketTask, let taskID else { throw StreamingTranscriptionError.notConnected }
+        guard let connection, let taskID else { throw StreamingTranscriptionError.notConnected }
         if !pendingAudio.isEmpty {
             let remainder = pendingAudio
             pendingAudio.removeAll(keepingCapacity: true)
@@ -349,7 +356,7 @@ actor AliyunQwenWebSocketSession {
         }
 
         let finishTask = try AliyunQwenStreamingProtocol.makeFinishTask(taskID: taskID)
-        try await webSocketTask.send(.string(finishTask))
+        try await connection.send(.string(finishTask))
         try await waitForTaskFinished()
         eventsContinuation?.yield(.committed(text: ""))
     }
@@ -358,7 +365,9 @@ actor AliyunQwenWebSocketSession {
         committedSentences.keys.sorted().compactMap { committedSentences[$0] }.joined(separator: " ")
     }
 
-    func disconnect() {
+    func disconnect() async {
+        let completedTarget = preconnectionTarget
+        preconnectionTarget = nil
         receiveTask?.cancel()
         receiveTask = nil
         finishTimeoutTask?.cancel()
@@ -366,10 +375,13 @@ actor AliyunQwenWebSocketSession {
         finishContinuation?.resume(throwing: StreamingTranscriptionError.notConnected)
         finishContinuation = nil
         closeSocket()
+        if let completedTarget {
+            await CloudSpeechConnectionPool.shared.recordUseCompleted(for: completedTarget)
+        }
     }
 
     private func receiveTaskStarted() async throws {
-        guard let webSocketTask else { throw StreamingTranscriptionError.notConnected }
+        guard let connection else { throw StreamingTranscriptionError.notConnected }
         startTimedOut = false
         let timeoutTask = Task<Void, Never> { [weak self] in
             try? await Task.sleep(for: .seconds(10))
@@ -379,7 +391,7 @@ actor AliyunQwenWebSocketSession {
 
         do {
             while true {
-                let message = try await webSocketTask.receive()
+                let message = try await connection.receive()
                 switch try AliyunQwenStreamingProtocol.parseServerMessage(message) {
                 case .taskStarted:
                     return
@@ -396,10 +408,10 @@ actor AliyunQwenWebSocketSession {
     }
 
     private func receiveLoop() async {
-        guard let webSocketTask else { return }
+        guard let connection else { return }
         do {
             while !Task.isCancelled {
-                let message = try await webSocketTask.receive()
+                let message = try await connection.receive()
                 switch try AliyunQwenStreamingProtocol.parseServerMessage(message) {
                 case .result(let sentence):
                     guard !sentence.isHeartbeat else { continue }
@@ -453,13 +465,13 @@ actor AliyunQwenWebSocketSession {
     }
 
     private func sendBinary(_ data: Data) async throws {
-        guard let webSocketTask else { throw StreamingTranscriptionError.notConnected }
-        try await webSocketTask.send(.data(data))
+        guard let connection else { throw StreamingTranscriptionError.notConnected }
+        try await connection.send(.data(data))
     }
 
     private func cancelForStartTimeout() {
         startTimedOut = true
-        webSocketTask?.cancel(with: .goingAway, reason: nil)
+        connection?.close()
     }
 
     private func failFinishForTimeout() {
@@ -470,58 +482,8 @@ actor AliyunQwenWebSocketSession {
     }
 
     private func closeSocket() {
-        webSocketTask?.cancel(with: .goingAway, reason: nil)
-        webSocketTask = nil
-        urlSession?.invalidateAndCancel()
-        urlSession = nil
+        connection?.close()
+        connection = nil
         taskID = nil
-    }
-}
-
-private final class AliyunQwenWebSocketOpenDelegate: NSObject, URLSessionWebSocketDelegate, @unchecked Sendable {
-    private let lock = NSLock()
-    private var continuation: CheckedContinuation<Void, Error>?
-    private var completedResult: Result<Void, Error>?
-
-    func waitUntilOpen(timeout: TimeInterval) async throws {
-        try await withCheckedThrowingContinuation { continuation in
-            lock.lock()
-            if let completedResult {
-                lock.unlock()
-                continuation.resume(with: completedResult)
-                return
-            }
-            self.continuation = continuation
-            lock.unlock()
-
-            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { [weak self] in
-                self?.finish(.failure(StreamingTranscriptionError.timeout))
-            }
-        }
-    }
-
-    func urlSession(
-        _: URLSession,
-        webSocketTask _: URLSessionWebSocketTask,
-        didOpenWithProtocol _: String?
-    ) {
-        finish(.success(()))
-    }
-
-    func urlSession(_: URLSession, task _: URLSessionTask, didCompleteWithError error: Error?) {
-        if let error { finish(.failure(error)) }
-    }
-
-    private func finish(_ result: Result<Void, Error>) {
-        lock.lock()
-        guard completedResult == nil else {
-            lock.unlock()
-            return
-        }
-        completedResult = result
-        let continuation = continuation
-        self.continuation = nil
-        lock.unlock()
-        continuation?.resume(with: result)
     }
 }

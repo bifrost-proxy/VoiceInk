@@ -33,6 +33,7 @@ struct VoiceInkApp: App {
 
     // Model prewarm service for optimizing model on wake from sleep
     @StateObject private var prewarmService: ModelPrewarmService
+    @StateObject private var cloudSpeechPreconnectionService: CloudSpeechPreconnectionService
 
     init() {
         UpdateInstaller.markUpdateLaunchHealthyIfNeeded()
@@ -162,6 +163,11 @@ struct VoiceInkApp: App {
             serviceRegistry: engine.serviceRegistry
         )
         _prewarmService = StateObject(wrappedValue: prewarmService)
+
+        let cloudSpeechPreconnectionService = CloudSpeechPreconnectionService(
+            transcriptionModelManager: transcriptionModelManager
+        )
+        _cloudSpeechPreconnectionService = StateObject(wrappedValue: cloudSpeechPreconnectionService)
 
         appDelegate.menuBarManager = menuBarManager
 
