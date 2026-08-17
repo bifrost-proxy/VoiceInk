@@ -109,7 +109,7 @@ struct DoubaoStreamingTests {
         #expect(keys.allSatisfy(CloudConfigurationSyncService.isEligiblePreferenceKey))
     }
 
-    @Test func vocabularyAndProperNounsBecomeDoubaoHotwordsButReplacementsDoNot() throws {
+    @Test func vocabularyBecomesDoubaoHotwordsButReplacementsDoNot() throws {
         let configuration = ModelConfiguration(isStoredInMemoryOnly: true)
         let container = try ModelContainer(
             for: VocabularyWord.self,
@@ -118,24 +118,19 @@ struct DoubaoStreamingTests {
         )
         let context = ModelContext(container)
         context.insert(VocabularyWord(word: "VoiceInk"))
-        context.insert(VocabularyWord(word: "豆包语音", kind: .properNoun))
-        context.insert(VocabularyWord(word: "另一个专有词", kind: .properNoun))
+        context.insert(VocabularyWord(word: "豆包语音"))
+        context.insert(VocabularyWord(word: "另一个词汇"))
         context.insert(WordReplacement(originalText: "voice ink", replacementText: "VoiceInk App"))
         try context.save()
 
         let provider = DoubaoStreamingProvider(modelContext: context)
         let reusableContext = TranscriptionVocabularyContext.entries(from: context)
 
-        #expect(Set(provider.customHotwordTerms()) == ["VoiceInk", "另一个专有词", "豆包语音"])
+        #expect(Set(provider.customHotwordTerms()) == ["VoiceInk", "另一个词汇", "豆包语音"])
         #expect(Dictionary(uniqueKeysWithValues: reusableContext.map { ($0.term, $0) }) == [
-            "VoiceInk": TranscriptionVocabularyContextEntry(
-                term: "VoiceInk", kind: .vocabulary),
-            "另一个专有词": TranscriptionVocabularyContextEntry(
-                term: "另一个专有词", kind: .properNoun),
-            "豆包语音": TranscriptionVocabularyContextEntry(
-                term: "豆包语音",
-                kind: .properNoun
-            ),
+            "VoiceInk": TranscriptionVocabularyContextEntry(term: "VoiceInk"),
+            "另一个词汇": TranscriptionVocabularyContextEntry(term: "另一个词汇"),
+            "豆包语音": TranscriptionVocabularyContextEntry(term: "豆包语音"),
         ])
     }
 

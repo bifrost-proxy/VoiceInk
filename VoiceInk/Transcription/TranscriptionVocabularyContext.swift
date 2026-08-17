@@ -3,12 +3,10 @@ import SwiftData
 
 struct TranscriptionVocabularyContextEntry: Equatable, Sendable {
     let term: String
-    let kind: VocabularyEntryKind
 }
 
 /// Provider-neutral access to the user's transcription vocabulary. Providers
-/// can consume `uniqueTerms` for hotword APIs or inspect `entries` when they
-/// need to distinguish ordinary vocabulary from proper nouns.
+/// can consume `uniqueTerms` for hotword APIs or inspect normalized `entries`.
 enum TranscriptionVocabularyContext {
     static func entries(from modelContext: ModelContext) -> [TranscriptionVocabularyContextEntry] {
         let descriptor = FetchDescriptor<VocabularyWord>(sortBy: [SortDescriptor(\.word)])
@@ -18,10 +16,7 @@ enum TranscriptionVocabularyContext {
         return items.compactMap { item in
             let term = item.word.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !term.isEmpty, seen.insert(term.lowercased()).inserted else { return nil }
-            return TranscriptionVocabularyContextEntry(
-                term: term,
-                kind: item.kind
-            )
+            return TranscriptionVocabularyContextEntry(term: term)
         }
     }
 

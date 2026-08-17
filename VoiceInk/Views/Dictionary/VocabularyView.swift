@@ -10,7 +10,6 @@ struct VocabularyView: View {
     @Query private var vocabularyWords: [VocabularyWord]
     @Environment(\.modelContext) private var modelContext
     @State private var newWord = ""
-    @State private var entryKind: VocabularyEntryKind = .vocabulary
     @State private var showAlert = false
     @State private var alertMessage = ""
     @State private var sortMode: VocabularySortMode = .wordAsc
@@ -43,19 +42,11 @@ struct VocabularyView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Picker("Entry Type", selection: $entryKind) {
-                Text("Vocabulary").tag(VocabularyEntryKind.vocabulary)
-                Text("Proper Noun").tag(VocabularyEntryKind.properNoun)
-            }
-            .pickerStyle(.segmented)
-            .frame(maxWidth: 320)
-            .accessibilityIdentifier("dictionary.vocabulary.entryType")
-
             HStack(spacing: 8) {
                 TextField(
                     "",
                     text: $newWord,
-                    prompt: Text(entryKind == .properNoun ? "Add a proper noun" : "Add word to vocabulary")
+                    prompt: Text("Add word to vocabulary")
                 )
                     .textFieldStyle(.roundedBorder)
                     .font(.system(size: 13))
@@ -76,7 +67,7 @@ struct VocabularyView: View {
                 VStack(alignment: .leading, spacing: 12) {
                     Button(action: toggleSort) {
                         HStack(spacing: 4) {
-                            Text(String(localized: "Vocabulary & Proper Nouns (\(vocabularyWords.count))"))
+                            Text(String(localized: "Vocabulary Words (\(vocabularyWords.count))"))
                                 .font(.system(size: 12, weight: .medium))
                                 .foregroundColor(.secondary)
 
@@ -114,8 +105,7 @@ struct VocabularyView: View {
         if let error = DictionaryService.addVocabularyWords(
             input,
             existing: Array(vocabularyWords),
-            context: modelContext,
-            kind: entryKind
+            context: modelContext
         )
         {
             alertMessage = error
@@ -147,12 +137,6 @@ struct VocabularyWordView: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            if item.kind == .properNoun {
-                Image(systemName: "person.text.rectangle")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.tint)
-            }
-
             Text(item.word)
                 .font(.system(size: 13))
                 .lineLimit(1)

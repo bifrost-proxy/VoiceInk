@@ -12,16 +12,10 @@ final class CloudConfigurationSyncService: ObservableObject {
     struct VocabularyItem: Codable, Equatable {
         let word: String
         let dateAdded: Date
-        let kindRawValue: String?
 
-        init(
-            word: String,
-            dateAdded: Date,
-            kindRawValue: String? = nil
-        ) {
+        init(word: String, dateAdded: Date) {
             self.word = word
             self.dateAdded = dateAdded
-            self.kindRawValue = kindRawValue
         }
     }
 
@@ -516,8 +510,7 @@ final class CloudConfigurationSyncService: ObservableObject {
                 modelContext.insert(
                     VocabularyWord(
                         word: item.word,
-                        dateAdded: item.dateAdded,
-                        kind: item.kindRawValue.flatMap(VocabularyEntryKind.init(rawValue:)) ?? .vocabulary
+                        dateAdded: item.dateAdded
                     )
                 )
             }
@@ -562,8 +555,7 @@ final class CloudConfigurationSyncService: ObservableObject {
                 .map {
                     VocabularyItem(
                         word: $0.word,
-                        dateAdded: $0.dateAdded,
-                        kindRawValue: $0.kind.rawValue
+                        dateAdded: $0.dateAdded
                     )
                 }
                 .sorted { lhs, rhs in

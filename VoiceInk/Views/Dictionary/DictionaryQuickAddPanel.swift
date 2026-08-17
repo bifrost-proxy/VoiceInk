@@ -121,12 +121,11 @@ class DictionaryQuickAddPanel: NSPanel {
 
 struct DictionaryQuickAddView: View {
     enum Mode: CaseIterable {
-        case vocabulary, properNoun, replacement
+        case vocabulary, replacement
 
         var label: LocalizedStringKey {
             switch self {
             case .vocabulary: return "Vocabulary"
-            case .properNoun: return "Proper Noun"
             case .replacement: return "Word Replacement"
             }
         }
@@ -134,7 +133,6 @@ struct DictionaryQuickAddView: View {
         var icon: String {
             switch self {
             case .vocabulary: return "character.book.closed.fill"
-            case .properNoun: return "person.text.rectangle"
             case .replacement: return "arrow.2.squarepath"
             }
         }
@@ -142,13 +140,8 @@ struct DictionaryQuickAddView: View {
         var panelHeight: CGFloat {
             switch self {
             case .vocabulary: return 130
-            case .properNoun: return 130
             case .replacement: return 164
             }
-        }
-
-        var isVocabularyEntry: Bool {
-            self == .vocabulary || self == .properNoun
         }
     }
 
@@ -203,7 +196,7 @@ struct DictionaryQuickAddView: View {
             replacementInput = ""
             errorMessage = nil
             DispatchQueue.main.async {
-                focusedField = newMode.isVocabularyEntry ? .word : .original
+                focusedField = newMode == .vocabulary ? .word : .original
             }
             onResize(newMode.panelHeight)
         }
@@ -248,7 +241,7 @@ struct DictionaryQuickAddView: View {
 
     @ViewBuilder
     private var inputArea: some View {
-        if mode.isVocabularyEntry {
+        if mode == .vocabulary {
             vocabularyInput
         } else {
             replacementInputView
@@ -335,8 +328,7 @@ struct DictionaryQuickAddView: View {
         if let error = DictionaryService.addVocabularyWords(
             input,
             existing: Array(vocabularyWords),
-            context: modelContext,
-            kind: mode == .properNoun ? .properNoun : .vocabulary
+            context: modelContext
         )
         {
             errorMessage = error

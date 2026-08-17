@@ -207,7 +207,7 @@ struct AliyunQwenStreamingTests {
         #expect(!CloudConfigurationSyncService.isEligiblePreferenceKey(AliyunQwenSpeechSettings.Keys.contextPrompt))
     }
 
-    @Test func vocabularyAndProperNounsBecomeAliyunHotwords() throws {
+    @Test func vocabularyBecomesAliyunHotwords() throws {
         let container = try ModelContainer(
             for: VocabularyWord.self,
             WordReplacement.self,
@@ -215,7 +215,7 @@ struct AliyunQwenStreamingTests {
         )
         let context = ModelContext(container)
         context.insert(VocabularyWord(word: "VoiceInk"))
-        context.insert(VocabularyWord(word: "通义千问", kind: .properNoun))
+        context.insert(VocabularyWord(word: "通义千问"))
         context.insert(WordReplacement(originalText: "voice ink", replacementText: "VoiceInk App"))
         try context.save()
 
