@@ -11,6 +11,74 @@ private let aliyunQwenIntegrationAPIKeyURL = aliyunQwenIntegrationDirectory.appe
 private let aliyunQwenIntegrationAPIHostURL = aliyunQwenIntegrationDirectory.appendingPathComponent("api-host.pipe")
 
 struct AliyunQwenStreamingTests {
+    @Test func providerSettingsHaveCompleteChineseAndGermanLocalizations() throws {
+        let projectRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let catalogURL = projectRoot
+            .appendingPathComponent("VoiceInk", isDirectory: true)
+            .appendingPathComponent("Localizable.xcstrings")
+        let catalogData = try Data(contentsOf: catalogURL)
+        let catalog = try #require(
+            JSONSerialization.jsonObject(with: catalogData) as? [String: Any]
+        )
+        let strings = try #require(catalog["strings"] as? [String: Any])
+        let keys = [
+            "Connection",
+            "Service region",
+            "The API key and endpoint must belong to the same region.",
+            "China (Beijing)",
+            "International (Singapore)",
+            "API host",
+            "For a dedicated voice-input key, paste API Host from the same key page. Host, OpenAI-compatible, and DashScope URLs are accepted.",
+            "The API host stays on this Mac and does not sync through iCloud.",
+            "Enter a valid Alibaba Cloud Model Studio API host using HTTPS or WSS.",
+            "The API host does not match the selected Alibaba Cloud region.",
+            "Recognition Options",
+            "Semantic sentence segmentation",
+            "Uses semantic boundaries for higher accuracy, with greater final-result latency.",
+            "VAD silence threshold",
+            "Multi-threshold VAD",
+            "Prevents VAD from producing excessively long sentences.",
+            "Keep silent sessions alive",
+            "Keeps the server connection active while VoiceInk sends silent audio.",
+            "Use VoiceInk vocabulary",
+            "Sends vocabulary as per-session inline hotwords.",
+            "Hotword weight",
+            "Higher values make the model more likely to recognize configured terms (1–5).",
+            "Custom noise threshold",
+            "Fine-tunes VAD sensitivity for unusually noisy or quiet environments.",
+            "Speech/noise threshold",
+            "Lower values retain more sound; higher values filter more aggressively (-1.0–1.0).",
+            "Recognition context",
+            "Add domain terms or prior context to improve recognition (up to 400 characters).",
+            "Optional context",
+            "Recognition options sync through iCloud; recognition context stays on this Mac.",
+        ]
+
+        for key in keys {
+            let entry = try #require(strings[key] as? [String: Any], "Missing key: \(key)")
+            let localizations = try #require(
+                entry["localizations"] as? [String: Any],
+                "Missing localizations: \(key)"
+            )
+            for language in ["de", "zh-Hans"] {
+                let localization = try #require(
+                    localizations[language] as? [String: Any],
+                    "Missing \(language) localization: \(key)"
+                )
+                let stringUnit = try #require(
+                    localization["stringUnit"] as? [String: Any],
+                    "Missing \(language) string unit: \(key)"
+                )
+                #expect(stringUnit["state"] as? String == "translated")
+                let value = try #require(stringUnit["value"] as? String)
+                #expect(!value.isEmpty)
+                #expect(value != key)
+            }
+        }
+    }
+
     @Test(
         .enabled(if: FileManager.default.fileExists(atPath: aliyunQwenIntegrationAPIKeyURL.path))
     )
