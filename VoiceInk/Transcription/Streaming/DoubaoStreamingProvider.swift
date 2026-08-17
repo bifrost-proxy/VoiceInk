@@ -30,19 +30,25 @@ struct DoubaoServerResponse: Equatable {
     let isFinal: Bool
 }
 
-/// Aggregates recorder callbacks into the 200 ms PCM packets recommended by
-/// Doubao for bidirectional streaming (16 kHz, mono, signed 16-bit PCM).
+/// Sends the first 100 ms promptly, then aggregates recorder callbacks into
+/// the 200 ms PCM packets recommended by Doubao for bidirectional streaming
+/// (16 kHz, mono, signed 16-bit PCM).
 struct DoubaoAudioPacketizer {
+    static let firstPacketByteCount = 16_000 * MemoryLayout<Int16>.size / 10
     static let packetByteCount = 16_000 * MemoryLayout<Int16>.size / 5
 
     private var pendingAudio = Data()
+    private var sentFirstPacket = false
 
     mutating func append(_ data: Data) -> [Data] {
         pendingAudio.append(data)
         var packets: [Data] = []
-        while pendingAudio.count >= Self.packetByteCount {
-            packets.append(Data(pendingAudio.prefix(Self.packetByteCount)))
-            pendingAudio.removeFirst(Self.packetByteCount)
+        var targetByteCount = sentFirstPacket ? Self.packetByteCount : Self.firstPacketByteCount
+        while pendingAudio.count >= targetByteCount {
+            packets.append(Data(pendingAudio.prefix(targetByteCount)))
+            pendingAudio.removeFirst(targetByteCount)
+            sentFirstPacket = true
+            targetByteCount = Self.packetByteCount
         }
         return packets
     }
@@ -56,6 +62,7 @@ struct DoubaoAudioPacketizer {
 
     mutating func reset() {
         pendingAudio.removeAll(keepingCapacity: true)
+        sentFirstPacket = false
     }
 }
 
