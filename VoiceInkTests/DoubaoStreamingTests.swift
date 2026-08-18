@@ -445,6 +445,108 @@ struct DoubaoStreamingTests {
         #expect(output == source)
     }
 
+    @Test func wavPayloadExtractsRecordedPCMAndRejectsTheWrongFormat() throws {
+        let pcm = Data((0..<12_345).map { UInt8($0 % 251) })
+        let wav = makePCM16WAV(pcm: pcm)
+
+        #expect(try DoubaoWAVPayload(data: wav).pcmData == pcm)
+        #expect(throws: AudioProcessor.AudioProcessingError.self) {
+            _ = try DoubaoWAVPayload(data: makePCM16WAV(pcm: pcm, channels: 2))
+        }
+    }
+
+    @Test func cloudProviderReplaysCompleteAudioInsteadOfReturningUnsupportedProvider() async throws {
+        let replay = DoubaoReplayTranscriberStub(result: "完整回退结果")
+        let provider = DoubaoSpeechProvider(replayTranscriber: replay)
+        let pcm = Data(repeating: 0x2A, count: 6_400)
+
+        let result = try await provider.transcribe(
+            audioData: makePCM16WAV(pcm: pcm),
+            fileName: "recording.wav",
+            apiKey: "test-key",
+            model: DoubaoSpeechProvider.defaultResourceID,
+            language: nil,
+            customVocabulary: ["VoiceInk"],
+            recognitionContext: nil
+        )
+
+        #expect(result == "完整回退结果")
+        let invocation = try #require(await replay.invocation)
+        #expect(invocation.wavByteCount > pcm.count)
+        #expect(invocation.resourceID == DoubaoSpeechProvider.defaultResourceID)
+        #expect(invocation.customVocabulary == ["VoiceInk"])
+    }
+
+    @Test func replayUsesOneFreshDoubaoConnectionAndPreservesEveryPCMByte() async throws {
+        let pcm = Data((0..<15_123).map { UInt8($0 % 251) })
+        let connection = DoubaoReplayTestConnection(finalText: "恢复成功")
+        let connector = DoubaoReplayTestConnector(connection: connection)
+        let pool = CloudSpeechConnectionPool(connector: connector)
+        let transcriber = DoubaoWebSocketReplayTranscriber(
+            connectionPool: pool,
+            connector: connector,
+            paceAudioInRealtime: false
+        )
+
+        let result = try await transcriber.transcribe(
+            wavData: makePCM16WAV(pcm: pcm),
+            apiKey: "doubao-key",
+            resourceID: DoubaoSpeechProvider.defaultResourceID,
+            customVocabulary: [],
+            settings: .defaults,
+            recognitionContext: nil
+        )
+
+        #expect(result == "恢复成功")
+        #expect(connector.openCount == 1)
+        let target = try #require(connector.lastTarget)
+        guard case .doubao(_, let resourceID, let endpoint) = target else {
+            Issue.record("Doubao replay opened a non-Doubao target")
+            return
+        }
+        #expect(resourceID == DoubaoSpeechProvider.defaultResourceID)
+        #expect(endpoint.host == "openspeech.bytedance.com")
+        #expect(connection.audioPayload == pcm)
+        #expect(connection.didSendFinalFrame)
+    }
+
+    @Test func finalFrameEndsReceiveLoopWithoutTurningNormalServerCloseIntoAnError() async throws {
+        let connection = DoubaoReplayTestConnection(finalText: "最终结果")
+        let connector = DoubaoReplayTestConnector(connection: connection)
+        let (events, continuation) = AsyncStream.makeStream(of: StreamingTranscriptionEvent.self)
+        let session = DoubaoWebSocketSession(
+            eventsContinuation: continuation,
+            connectionPool: CloudSpeechConnectionPool(connector: connector),
+            connector: connector
+        )
+
+        try await session.connect(
+            apiKey: "doubao-key",
+            resourceID: DoubaoSpeechProvider.defaultResourceID,
+            customVocabulary: [],
+            settings: .defaults,
+            endpoint: .optimizedStreaming,
+            startReceiving: true,
+            allowPreconnectedConnection: false
+        )
+        try await session.sendAudioChunk(Data(repeating: 0x01, count: 3_200))
+        try await session.commit()
+
+        var committedText: String?
+        for await event in events {
+            if case .committed(let text) = event {
+                committedText = text
+                break
+            }
+        }
+        try await Task.sleep(for: .milliseconds(20))
+
+        #expect(committedText == "最终结果")
+        #expect(connection.receiveCount == 1)
+        await session.disconnect()
+        continuation.finish()
+    }
+
     @Test func finalServerFrameReturnsFullAndStableText() throws {
         let payload = try JSONSerialization.data(withJSONObject: [
             "result": [
@@ -750,6 +852,148 @@ struct DoubaoStreamingTests {
             | UInt32(bytes[offset + 2]) << 8
             | UInt32(bytes[offset + 3])
     }
+
+    private func appendUInt32(_ value: UInt32, to data: inout Data) {
+        data.append(UInt8((value >> 24) & 0xFF))
+        data.append(UInt8((value >> 16) & 0xFF))
+        data.append(UInt8((value >> 8) & 0xFF))
+        data.append(UInt8(value & 0xFF))
+    }
+
+    private func makePCM16WAV(pcm: Data, channels: UInt16 = 1) -> Data {
+        var wav = Data("RIFF".utf8)
+        appendUInt32LE(UInt32(36 + pcm.count), to: &wav)
+        wav.append(Data("WAVEfmt ".utf8))
+        appendUInt32LE(16, to: &wav)
+        appendUInt16LE(1, to: &wav)
+        appendUInt16LE(channels, to: &wav)
+        appendUInt32LE(16_000, to: &wav)
+        appendUInt32LE(UInt32(16_000 * Int(channels) * MemoryLayout<Int16>.size), to: &wav)
+        appendUInt16LE(UInt16(Int(channels) * MemoryLayout<Int16>.size), to: &wav)
+        appendUInt16LE(16, to: &wav)
+        wav.append(Data("data".utf8))
+        appendUInt32LE(UInt32(pcm.count), to: &wav)
+        wav.append(pcm)
+        return wav
+    }
+
+    private func appendUInt16LE(_ value: UInt16, to data: inout Data) {
+        data.append(UInt8(value & 0xFF))
+        data.append(UInt8((value >> 8) & 0xFF))
+    }
+
+    private func appendUInt32LE(_ value: UInt32, to data: inout Data) {
+        data.append(UInt8(value & 0xFF))
+        data.append(UInt8((value >> 8) & 0xFF))
+        data.append(UInt8((value >> 16) & 0xFF))
+        data.append(UInt8((value >> 24) & 0xFF))
+    }
+}
+
+private actor DoubaoReplayTranscriberStub: DoubaoReplayTranscribing {
+    struct Invocation: Sendable {
+        let wavByteCount: Int
+        let resourceID: String
+        let customVocabulary: [String]
+    }
+
+    private let result: String
+    private(set) var invocation: Invocation?
+
+    init(result: String) {
+        self.result = result
+    }
+
+    func transcribe(
+        wavData: Data,
+        apiKey _: String,
+        resourceID: String,
+        customVocabulary: [String],
+        settings _: DoubaoSpeechSettings,
+        recognitionContext _: RecognitionContextEnvelope?
+    ) async throws -> String {
+        invocation = Invocation(
+            wavByteCount: wavData.count,
+            resourceID: resourceID,
+            customVocabulary: customVocabulary
+        )
+        return result
+    }
+}
+
+private final class DoubaoReplayTestConnector: CloudSpeechWebSocketConnecting, @unchecked Sendable {
+    private let lock = NSLock()
+    private let connection: DoubaoReplayTestConnection
+    private var storedOpenCount = 0
+    private var storedLastTarget: CloudSpeechConnectionTarget?
+
+    init(connection: DoubaoReplayTestConnection) {
+        self.connection = connection
+    }
+
+    var openCount: Int { lock.withLock { storedOpenCount } }
+    var lastTarget: CloudSpeechConnectionTarget? { lock.withLock { storedLastTarget } }
+
+    func open(
+        target: CloudSpeechConnectionTarget,
+        onClosed _: (@Sendable (Error?) -> Void)?
+    ) async throws -> any CloudSpeechWebSocketConnection {
+        lock.withLock {
+            storedOpenCount += 1
+            storedLastTarget = target
+        }
+        return connection
+    }
+}
+
+private final class DoubaoReplayTestConnection: CloudSpeechWebSocketConnection, @unchecked Sendable {
+    private let lock = NSLock()
+    private let finalText: String
+    private var storedAudioPayload = Data()
+    private var storedDidSendFinalFrame = false
+    private var storedReceiveCount = 0
+
+    init(finalText: String) {
+        self.finalText = finalText
+    }
+
+    var audioPayload: Data { lock.withLock { storedAudioPayload } }
+    var didSendFinalFrame: Bool { lock.withLock { storedDidSendFinalFrame } }
+    var receiveCount: Int { lock.withLock { storedReceiveCount } }
+
+    func send(_ message: URLSessionWebSocketTask.Message) async throws {
+        guard case .data(let data) = message, data.count >= 8 else { return }
+        let messageTypeAndFlags = data[data.startIndex + 1]
+        if messageTypeAndFlags == 0x20 {
+            lock.withLock {
+                storedAudioPayload.append(contentsOf: data.dropFirst(8))
+            }
+        } else if messageTypeAndFlags == 0x22 {
+            lock.withLock {
+                storedDidSendFinalFrame = true
+            }
+        }
+    }
+
+    func receive() async throws -> URLSessionWebSocketTask.Message {
+        while !didSendFinalFrame {
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        lock.withLock {
+            storedReceiveCount += 1
+        }
+        let payload = try JSONSerialization.data(withJSONObject: [
+            "result": ["text": finalText, "utterances": []] as [String: Any]
+        ])
+        var frame = Data([0x11, 0x93, 0x10, 0x00])
+        appendUInt32(1, to: &frame)
+        appendUInt32(UInt32(payload.count), to: &frame)
+        frame.append(payload)
+        return .data(frame)
+    }
+
+    func ping() async throws {}
+    func close() {}
 
     private func appendUInt32(_ value: UInt32, to data: inout Data) {
         data.append(UInt8((value >> 24) & 0xFF))
