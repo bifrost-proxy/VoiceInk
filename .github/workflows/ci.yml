@@ -14,8 +14,15 @@ concurrency:
 
 jobs:
   tests:
+    name: tests (${{ matrix.architecture }})
     runs-on: macos-26
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        architecture:
+          - arm64
+          - x86_64
 
     steps:
       - name: Check out source
@@ -34,7 +41,7 @@ jobs:
           path: |
             ~/VoiceInk-Dependencies/whisper.cpp/build-apple/whisper.xcframework
             Dependencies/SherpaOnnxMac/Binaries
-          key: native-dependencies-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Makefile', 'scripts/prepare-sherpa-onnx.sh') }}
+          key: native-dependencies-${{ runner.os }}-${{ runner.arch }}-${{ matrix.architecture }}-${{ hashFiles('Makefile', 'scripts/prepare-sherpa-onnx.sh') }}
 
       - name: Prepare native dependencies
         shell: bash
@@ -47,11 +54,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          architecture="${{ matrix.architecture }}"
           xcodebuild test \
             -project VoiceInk.xcodeproj \
             -scheme VoiceInk \
-            -destination 'platform=macOS,arch=arm64' \
+            -destination "platform=macOS,arch=$architecture" \
             -only-testing:VoiceInkTests \
             -parallel-testing-enabled NO \
+            ARCHS="$architecture" \
+            ONLY_ACTIVE_ARCH=YES \
             CODE_SIGNING_ALLOWED=NO \
             ENABLE_TESTABILITY=YES

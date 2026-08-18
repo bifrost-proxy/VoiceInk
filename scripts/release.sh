@@ -9,15 +9,16 @@ LOCAL_CONFIG="$REPO_ROOT/LocalBuild.xcconfig"
 LOCAL_ENTITLEMENTS="$REPO_ROOT/VoiceInk/VoiceInk.local.entitlements"
 EXPECTED_BUNDLE_ID="com.prakashjoshipax.VoiceInk"
 ARCHITECTURES=(arm64 x86_64)
+REQUESTED_ARCHITECTURE="all"
 VERSION=""
 BUILD_NUMBER="${BUILD_NUMBER:-${GITHUB_RUN_NUMBER:-1}}"
 OUTPUT_DIR="${VOICEINK_RELEASE_OUTPUT_DIR:-$REPO_ROOT/build/release}"
 
 usage() {
     printf '%s\n' \
-        "Usage: scripts/release.sh --version <MAJOR.MINOR.PATCH> [--build-number N] [--output-dir DIR]" \
+        "Usage: scripts/release.sh --version <MAJOR.MINOR.PATCH> [--architecture arm64|x86_64|all] [--build-number N] [--output-dir DIR]" \
         "" \
-        "Builds ad-hoc-signed arm64 and x86_64 VoiceInk apps and packages one ZIP per architecture." \
+        "Builds one or both ad-hoc-signed VoiceInk architectures and packages one ZIP per architecture." \
         "No Apple Developer certificate or notarization credentials are required."
 }
 
@@ -38,6 +39,11 @@ while [[ $# -gt 0 ]]; do
             BUILD_NUMBER="$2"
             shift 2
             ;;
+        --architecture)
+            [[ $# -ge 2 ]] || fail "--architecture requires a value"
+            REQUESTED_ARCHITECTURE="$2"
+            shift 2
+            ;;
         --output-dir)
             [[ $# -ge 2 ]] || fail "--output-dir requires a value"
             OUTPUT_DIR="$2"
@@ -55,6 +61,11 @@ done
 
 [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "version must use MAJOR.MINOR.PATCH"
 [[ "$BUILD_NUMBER" =~ ^[0-9]+$ ]] || fail "build number must be numeric"
+case "$REQUESTED_ARCHITECTURE" in
+    all) ARCHITECTURES=(arm64 x86_64) ;;
+    arm64|x86_64) ARCHITECTURES=("$REQUESTED_ARCHITECTURE") ;;
+    *) fail "architecture must be arm64, x86_64, or all" ;;
+esac
 
 for command_name in awk chmod codesign cp curl ditto file find grep lipo make mv plutil sed shasum stat tr unzip xcodebuild; do
     command -v "$command_name" >/dev/null 2>&1 || fail "required command not found: $command_name"
@@ -67,12 +78,6 @@ elif [[ -d "/Applications/Xcode.app/Contents/Developer" && -z "${DEVELOPER_DIR:-
 fi
 
 OUTPUT_DIR="$(mkdir -p "$OUTPUT_DIR" && cd "$OUTPUT_DIR" && pwd)"
-CASK_PATH="$OUTPUT_DIR/voiceink.rb"
-CHECKSUM_PATH="$OUTPUT_DIR/SHA256SUMS"
-ARM64_ZIP_PATH="$OUTPUT_DIR/VoiceInk-arm64.zip"
-X86_64_ZIP_PATH="$OUTPUT_DIR/VoiceInk-x86_64.zip"
-ARM64_SHA256=""
-X86_64_SHA256=""
 # shellcheck disable=SC2016
 SWIFT_BUILD_CONDITIONS='$(inherited) LOCAL_BUILD'
 
@@ -80,7 +85,9 @@ for architecture in "${ARCHITECTURES[@]}"; do
     rm -rf "$OUTPUT_DIR/DerivedData-$architecture"
     rm -f "$OUTPUT_DIR/VoiceInk-$architecture.zip"
 done
-rm -f "$CASK_PATH" "$CHECKSUM_PATH"
+if [[ "$REQUESTED_ARCHITECTURE" == "all" ]]; then
+    rm -f "$OUTPUT_DIR/voiceink.rb" "$OUTPUT_DIR/SHA256SUMS"
+fi
 
 make -C "$REPO_ROOT" whisper
 "$REPO_ROOT/scripts/prepare-sherpa-onnx.sh"
@@ -194,43 +201,19 @@ build_architecture() {
 
     ditto -c -k --sequesterRsrc --keepParent "$app_path" "$zip_path"
     zip_sha256="$(shasum -a 256 "$zip_path" | awk '{print $1}')"
-    case "$architecture" in
-        arm64) ARM64_SHA256="$zip_sha256" ;;
-        x86_64) X86_64_SHA256="$zip_sha256" ;;
-        *) fail "unsupported release architecture: $architecture" ;;
-    esac
+    printf '%s\n' \
+        "Release package created:" \
+        "  architecture: $architecture" \
+        "  zip: $zip_path" \
+        "  sha256: $zip_sha256"
 }
 
 for architecture in "${ARCHITECTURES[@]}"; do
     build_architecture "$architecture"
 done
 
-printf '%s  %s\n%s  %s\n' \
-    "$ARM64_SHA256" "VoiceInk-arm64.zip" \
-    "$X86_64_SHA256" "VoiceInk-x86_64.zip" > "$CHECKSUM_PATH"
-
-sed \
-    -e "s/__VERSION__/$VERSION/g" \
-    -e "s/__ARM64_SHA256__/$ARM64_SHA256/g" \
-    -e "s/__X86_64_SHA256__/$X86_64_SHA256/g" \
-    "$REPO_ROOT/release/voiceink.rb.template" > "$CASK_PATH"
-
-grep -Fq "version \"$VERSION\"" "$CASK_PATH" \
-    || fail "generated cask does not contain release version"
-grep -Fq "arm: \"$ARM64_SHA256\"" "$CASK_PATH" \
-    || fail "generated cask does not contain arm64 checksum"
-grep -Fq "intel: \"$X86_64_SHA256\"" "$CASK_PATH" \
-    || fail "generated cask does not contain x86_64 checksum"
-grep -Fq 'releases/download/v#{version}/VoiceInk-#{arch}.zip' "$CASK_PATH" \
-    || fail "generated cask does not use an architecture-specific release URL"
-grep -Fq 'com.apple.quarantine' "$CASK_PATH" \
-    || fail "generated cask does not remove the quarantine attribute"
-
-printf '%s\n' \
-    "Release packages created:" \
-    "  arm64 zip: $ARM64_ZIP_PATH" \
-    "  arm64 sha256: $ARM64_SHA256" \
-    "  x86_64 zip: $X86_64_ZIP_PATH" \
-    "  x86_64 sha256: $X86_64_SHA256" \
-    "  cask: $CASK_PATH" \
-    "  checksums: $CHECKSUM_PATH"
+if [[ "$REQUESTED_ARCHITECTURE" == "all" ]]; then
+    "$REPO_ROOT/scripts/generate-release-metadata.sh" \
+        --version "$VERSION" \
+        --output-dir "$OUTPUT_DIR"
+fi

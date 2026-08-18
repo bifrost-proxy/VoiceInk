@@ -19,10 +19,10 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  release:
+  validate-release:
     if: github.event_name == 'push'
-    runs-on: macos-26
-    timeout-minutes: 90
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       - name: Check out tagged source
@@ -38,6 +38,22 @@ jobs:
           git fetch origin main
           git merge-base --is-ancestor "$GITHUB_SHA" origin/main
 
+  build-release:
+    name: build release (${{ matrix.architecture }})
+    needs: validate-release
+    runs-on: macos-26
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        architecture:
+          - arm64
+          - x86_64
+
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@v4
+
       - name: Select Xcode 26.5
         shell: bash
         run: |
@@ -45,14 +61,48 @@ jobs:
           sudo xcode-select -s /Applications/Xcode_26.5.app/Contents/Developer
           xcodebuild -version
 
-      - name: Build and verify architecture-specific release packages
+      - name: Build and verify architecture-specific release package
         shell: bash
         run: |
           set -euo pipefail
           version="${GITHUB_REF_NAME#v}"
           scripts/release.sh \
             --version "$version" \
+            --architecture "${{ matrix.architecture }}" \
             --build-number "$GITHUB_RUN_NUMBER" \
+            --output-dir "$RUNNER_TEMP/voiceink-release"
+
+      - name: Upload architecture-specific release package
+        uses: actions/upload-artifact@v4
+        with:
+          name: voiceink-release-${{ matrix.architecture }}
+          path: ${{ runner.temp }}/voiceink-release/VoiceInk-${{ matrix.architecture }}.zip
+          if-no-files-found: error
+          retention-days: 1
+
+  publish-release:
+    needs: build-release
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@v4
+
+      - name: Download both architecture packages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: voiceink-release-*
+          path: ${{ runner.temp }}/voiceink-release
+          merge-multiple: true
+
+      - name: Generate and validate release metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          scripts/generate-release-metadata.sh \
+            --version "$version" \
             --output-dir "$RUNNER_TEMP/voiceink-release"
 
       - name: Validate generated Homebrew Cask
@@ -100,8 +150,8 @@ jobs:
           fi
 
   update-homebrew-tap:
-    needs: release
-    if: ${{ always() && (github.event_name == 'workflow_dispatch' || needs.release.result == 'success') }}
+    needs: publish-release
+    if: ${{ always() && (github.event_name == 'workflow_dispatch' || needs.publish-release.result == 'success') }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
