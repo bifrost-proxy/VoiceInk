@@ -20592,6 +20592,126 @@
         "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "仅限此设备。可能产生少量网络活动和电量消耗。" } }
       }
     },
+    "Active Application" : {
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Aktive Anwendung" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "当前应用" } }
+      }
+    },
+    "Use the active application's display name as context for this mode." : {
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Den Anzeigenamen der aktiven Anwendung als Kontext für diesen Modus verwenden." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "将当前应用的显示名称用作此模式的上下文。" } }
+      }
+    },
+    "Window Title" : {
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Fenstertitel" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "窗口标题" } }
+      }
+    },
+    "Use the active window title as a separate, potentially sensitive context source." : {
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Den Titel des aktiven Fensters als separate, möglicherweise sensible Kontextquelle verwenden." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "将当前窗口标题作为独立且可能敏感的上下文来源。" } }
+      }
+    },
+    "Screen OCR" : {
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Bildschirm-OCR" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "屏幕 OCR" } }
+      }
+    },
+    "Use text extracted locally from the locked active window as context for this mode." : {
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Lokal aus dem fixierten aktiven Fenster extrahierten Text als Kontext verwenden." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "将本地从已锁定当前窗口提取的文本用作此模式的上下文。" } }
+      }
+    },
+    "Cloud speech recognition also requires the matching provider permission. AI enhancement uses these mode settings directly." : {
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Cloud-Spracherkennung benötigt zusätzlich die passende Anbieterberechtigung. Die KI-Verbesserung nutzt diese Moduseinstellungen direkt." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "云端语音识别还需要对应的服务商授权；AI 润色直接使用这些模式设置。" } }
+      }
+    },
+    "Optional business scenario. Dynamic sources below send extracted features, never their full text." : {
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Optionales Geschäftsszenario. Dynamische Quellen senden nur extrahierte Merkmale, niemals den vollständigen Text." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "可选业务场景。下方动态来源仅发送提取后的特征，不发送原始全文。" } }
+      }
+    },
+    "Optional scenario" : {
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Optionales Szenario" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "可选场景" } }
+      }
+    },
+    "Allow selected-text features" : {
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Merkmale aus ausgewähltem Text erlauben" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "允许发送选中文本特征" } }
+      }
+    },
+    "Requires the active mode's Selected Text setting. Full selected text is not sent to speech recognition." : {
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Erfordert die Einstellung „Ausgewählter Text“ des aktiven Modus. Der vollständige Text wird nicht an die Spracherkennung gesendet." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "需同时开启当前模式的“选中文本”。不会向语音识别服务发送选中文本全文。" } }
+      }
+    },
+    "Allow clipboard features" : {
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Zwischenablage-Merkmale erlauben" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "允许发送剪贴板特征" } }
+      }
+    },
+    "Requires the active mode's Clipboard setting. Full clipboard text is not sent to speech recognition." : {
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Erfordert die Zwischenablage-Einstellung des aktiven Modus. Der vollständige Text wird nicht an die Spracherkennung gesendet." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "需同时开启当前模式的“剪贴板”。不会向语音识别服务发送剪贴板全文。" } }
+      }
+    },
+    "Allow application name" : {
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Anwendungsnamen erlauben" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "允许发送应用名称" } }
+      }
+    },
+    "Requires the active mode's Active Application setting. The bundle identifier stays local." : {
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Erfordert die Einstellung „Aktive Anwendung“ des aktiven Modus. Die Bundle-ID bleibt lokal." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "需同时开启当前模式的“当前应用”。Bundle ID 仅保留在本地。" } }
+      }
+    },
+    "Allow window title" : {
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Fenstertitel erlauben" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "允许发送窗口标题" } }
+      }
+    },
+    "Requires the active mode's Window Title setting. Window titles may contain sensitive names." : {
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Erfordert die Einstellung „Fenstertitel“ des aktiven Modus. Fenstertitel können sensible Namen enthalten." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "需同时开启当前模式的“窗口标题”。窗口标题可能包含敏感名称。" } }
+      }
+    },
+    "Allow screen-OCR features" : {
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Bildschirm-OCR-Merkmale erlauben" } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "允许发送屏幕 OCR 特征" } }
+      }
+    },
+    "Requires the active mode's Screen OCR setting. The screenshot and full OCR text are not sent." : {
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Erfordert die Bildschirm-OCR-Einstellung des aktiven Modus. Screenshot und vollständiger OCR-Text werden nicht gesendet." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "需同时开启当前模式的“屏幕 OCR”。不会发送截图或 OCR 全文。" } }
+      }
+    },
+    "Recognition options sync through iCloud; POI and recognition-context settings stay on this Mac." : {
+      "localizations" : {
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Erkennungsoptionen werden über iCloud synchronisiert; POI- und Kontexteinstellungen bleiben auf diesem Mac." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "识别选项会通过 iCloud 同步；POI 和识别上下文设置仅保留在此 Mac。" } }
+      }
+    },
     "When enabled, VoiceInk checks for a new version at launch and once every hour. Downloaded updates are verified before VoiceInk installs and restarts automatically." : {
       "localizations" : {
         "de" : {

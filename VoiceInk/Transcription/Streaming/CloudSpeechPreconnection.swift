@@ -52,7 +52,12 @@ protocol CloudSpeechWebSocketConnection: AnyObject, Sendable {
     func send(_ message: URLSessionWebSocketTask.Message) async throws
     func receive() async throws -> URLSessionWebSocketTask.Message
     func ping() async throws
+    func responseHeader(named name: String) -> String?
     func close()
+}
+
+extension CloudSpeechWebSocketConnection {
+    func responseHeader(named _: String) -> String? { nil }
 }
 
 protocol CloudSpeechWebSocketConnecting: Sendable {
@@ -116,6 +121,11 @@ private final class URLSessionCloudSpeechWebSocketConnection: CloudSpeechWebSock
                 }
             }
         }
+    }
+
+    func responseHeader(named name: String) -> String? {
+        guard let response = task.response as? HTTPURLResponse else { return nil }
+        return response.value(forHTTPHeaderField: name)
     }
 
     func close() {

@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 enum AliyunQwenStreamingProtocolError: LocalizedError, Equatable {
     case invalidMessage(String)
@@ -38,7 +39,7 @@ enum AliyunQwenStreamingProtocol {
         language: String?,
         customVocabulary: [String],
         settings: AliyunQwenSpeechSettings,
-        recognitionContext: String? = nil
+        recognitionContext: RecognitionContextEnvelope? = nil
     ) throws -> String {
         var parameters: [String: Any] = [
             "format": format,
@@ -62,18 +63,18 @@ enum AliyunQwenStreamingProtocol {
         }
 
         var input: [String: Any] = [:]
-        let contextPrompt = combinedContext(
-            staticContext: settings.contextPrompt,
-            recognitionContext: recognitionContext
-        )
-        if !contextPrompt.isEmpty {
+        let contextPrompt = QwenRecognitionContextSerializer.serialize(
+            recognitionContext,
+            fallbackScenario: settings.contextPrompt
+        ).value
+        if let contextPrompt {
             input["context"] = [
                 [
                     "role": "user",
                     "content": [
                         [
                             "type": "input_text",
-                            "text": String(contextPrompt.prefix(AliyunQwenSpeechSettings.maximumContextLength)),
+                            "text": contextPrompt,
                         ]
                     ],
                 ]
@@ -177,16 +178,6 @@ enum AliyunQwenStreamingProtocol {
         return result
     }
 
-    private static func combinedContext(
-        staticContext: String,
-        recognitionContext: String?
-    ) -> String {
-        let parts = [staticContext, recognitionContext ?? ""]
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-        return String(parts.joined(separator: "、").prefix(AliyunQwenSpeechSettings.maximumContextLength))
-    }
-
     private static func encode(_ object: [String: Any]) throws -> String {
         guard JSONSerialization.isValidJSONObject(object) else {
             throw AliyunQwenStreamingProtocolError.invalidMessage("Could not encode request")
@@ -201,12 +192,12 @@ enum AliyunQwenStreamingProtocol {
 
 final class AliyunQwenStreamingProvider: StreamingTranscriptionProvider {
     private let customVocabulary: [String]
-    private let recognitionContext: String?
+    private let recognitionContext: RecognitionContextEnvelope?
     private let session: AliyunQwenWebSocketSession
     private var eventsContinuation: AsyncStream<StreamingTranscriptionEvent>.Continuation?
     private(set) var transcriptionEvents: AsyncStream<StreamingTranscriptionEvent>
 
-    init(customVocabulary: [String], recognitionContext: String? = nil) {
+    init(customVocabulary: [String], recognitionContext: RecognitionContextEnvelope? = nil) {
         self.customVocabulary = customVocabulary
         self.recognitionContext = recognitionContext
         var continuation: AsyncStream<StreamingTranscriptionEvent>.Continuation!
@@ -260,6 +251,10 @@ final class AliyunQwenStreamingProvider: StreamingTranscriptionProvider {
 }
 
 actor AliyunQwenWebSocketSession {
+    private static let logger = Logger(
+        subsystem: "com.prakashjoshipax.voiceink",
+        category: "AliyunQwenWebSocketSession"
+    )
     private let eventsContinuation: AsyncStream<StreamingTranscriptionEvent>.Continuation?
     private let connectionPool: CloudSpeechConnectionPool
     private let connector: any CloudSpeechWebSocketConnecting
@@ -309,7 +304,7 @@ actor AliyunQwenWebSocketSession {
         customVocabulary: [String],
         settings: AliyunQwenSpeechSettings,
         format: String,
-        recognitionContext: String? = nil
+        recognitionContext: RecognitionContextEnvelope? = nil
     ) async throws {
         guard connection == nil else { return }
 
@@ -352,6 +347,7 @@ actor AliyunQwenWebSocketSession {
                 try await freshConnection.send(.string(runTask))
             }
             try await receiveTaskStarted()
+            Self.logger.notice("Alibaba Cloud Qwen recognition session started taskID=\(taskID, privacy: .public)")
             preconnectionTarget = target
         } catch {
             closeSocket()

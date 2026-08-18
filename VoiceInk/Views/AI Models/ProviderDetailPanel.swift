@@ -38,6 +38,18 @@ struct ProviderDetailPanel: View {
     private var doubaoPOICityName = DoubaoSpeechSettings.defaults.poiCityName
     @AppStorage(DoubaoSpeechSettings.Keys.enableMusicFunctionCall)
     private var doubaoEnableMusicFunctionCall = DoubaoSpeechSettings.defaults.enableMusicFunctionCall
+    @AppStorage(DoubaoSpeechSettings.Keys.contextPrompt)
+    private var doubaoContextPrompt = DoubaoSpeechSettings.defaults.contextPrompt
+    @AppStorage(DoubaoSpeechSettings.Keys.useSelectedTextContext)
+    private var doubaoUseSelectedTextContext = DoubaoSpeechSettings.defaults.useSelectedTextContext
+    @AppStorage(DoubaoSpeechSettings.Keys.useClipboardContext)
+    private var doubaoUseClipboardContext = DoubaoSpeechSettings.defaults.useClipboardContext
+    @AppStorage(DoubaoSpeechSettings.Keys.useApplicationContext)
+    private var doubaoUseApplicationContext = DoubaoSpeechSettings.defaults.useApplicationContext
+    @AppStorage(DoubaoSpeechSettings.Keys.useWindowTitleContext)
+    private var doubaoUseWindowTitleContext = DoubaoSpeechSettings.defaults.useWindowTitleContext
+    @AppStorage(DoubaoSpeechSettings.Keys.useScreenContext)
+    private var doubaoUseScreenContext = DoubaoSpeechSettings.defaults.useScreenContext
     @AppStorage(DoubaoSpeechSettings.Keys.keepConnectionReady)
     private var doubaoKeepConnectionReady = DoubaoSpeechSettings.defaults.keepConnectionReady
     @AppStorage(AliyunQwenSpeechSettings.Keys.region)
@@ -70,6 +82,10 @@ struct ProviderDetailPanel: View {
     private var aliyunUseSelectedTextContext = AliyunQwenSpeechSettings.defaults.useSelectedTextContext
     @AppStorage(AliyunQwenSpeechSettings.Keys.useClipboardContext)
     private var aliyunUseClipboardContext = AliyunQwenSpeechSettings.defaults.useClipboardContext
+    @AppStorage(AliyunQwenSpeechSettings.Keys.useApplicationContext)
+    private var aliyunUseApplicationContext = AliyunQwenSpeechSettings.defaults.useApplicationContext
+    @AppStorage(AliyunQwenSpeechSettings.Keys.useWindowTitleContext)
+    private var aliyunUseWindowTitleContext = AliyunQwenSpeechSettings.defaults.useWindowTitleContext
     @AppStorage(AliyunQwenSpeechSettings.Keys.useScreenContext)
     private var aliyunUseScreenContext = AliyunQwenSpeechSettings.defaults.useScreenContext
     @AppStorage(AliyunQwenSpeechSettings.Keys.keepConnectionReady)
@@ -377,13 +393,64 @@ struct ProviderDetailPanel: View {
                     suffix: " ms"
                 )
                 .accessibilityIdentifier("doubao.settings.silenceFinalization")
+                Divider()
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Recognition context")
+                        .font(.system(size: 12, weight: .medium))
+                    Text("Optional business scenario. Dynamic sources below send extracted features, never their full text.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    TextField("Optional scenario", text: $doubaoContextPrompt, axis: .vertical)
+                        .textFieldStyle(.roundedBorder)
+                        .lineLimit(2...4)
+                        .onChange(of: doubaoContextPrompt) { _, value in
+                            if value.count > 400 { doubaoContextPrompt = String(value.prefix(400)) }
+                        }
+                        .accessibilityIdentifier("doubao.settings.contextPrompt")
+                }
+                .padding(.vertical, 10)
+                Divider()
+                optionToggleRow(
+                    title: "Allow selected-text features",
+                    detail: "Requires the active mode's Selected Text setting. Full selected text is not sent to speech recognition.",
+                    isOn: $doubaoUseSelectedTextContext
+                )
+                .accessibilityIdentifier("doubao.settings.selectedTextContext")
+                Divider()
+                optionToggleRow(
+                    title: "Allow clipboard features",
+                    detail: "Requires the active mode's Clipboard setting. Full clipboard text is not sent to speech recognition.",
+                    isOn: $doubaoUseClipboardContext
+                )
+                .accessibilityIdentifier("doubao.settings.clipboardContext")
+                Divider()
+                optionToggleRow(
+                    title: "Allow application name",
+                    detail: "Requires the active mode's Active Application setting. The bundle identifier stays local.",
+                    isOn: $doubaoUseApplicationContext
+                )
+                .accessibilityIdentifier("doubao.settings.applicationContext")
+                Divider()
+                optionToggleRow(
+                    title: "Allow window title",
+                    detail: "Requires the active mode's Window Title setting. Window titles may contain sensitive names.",
+                    isOn: $doubaoUseWindowTitleContext
+                )
+                .accessibilityIdentifier("doubao.settings.windowTitleContext")
+                Divider()
+                optionToggleRow(
+                    title: "Allow screen-OCR features",
+                    detail: "Requires the active mode's Screen OCR setting. The screenshot and full OCR text are not sent.",
+                    isOn: $doubaoUseScreenContext
+                )
+                .accessibilityIdentifier("doubao.settings.screenContext")
             }
             .padding(.horizontal, 12)
             .background(ProviderSurface(cornerRadius: 10))
             .accessibilityIdentifier("doubao.settings.recognitionOptions")
 
             Label(
-                "Recognition options sync through iCloud; the optional POI city stays on this Mac.",
+                "Recognition options sync through iCloud; POI and recognition-context settings stay on this Mac.",
                 systemImage: "icloud"
             )
             .font(.caption)
@@ -488,22 +555,36 @@ struct ProviderDetailPanel: View {
                 .padding(.vertical, 10)
                 Divider()
                 optionToggleRow(
-                    title: "Use selected text for cloud recognition",
-                    detail: "Sends locally extracted terms only when the active mode also allows selected-text context.",
+                    title: "Allow selected-text features",
+                    detail: "Requires the active mode's Selected Text setting. Full selected text is not sent to speech recognition.",
                     isOn: $aliyunUseSelectedTextContext
                 )
                 .accessibilityIdentifier("aliyun.settings.selectedTextContext")
                 Divider()
                 optionToggleRow(
-                    title: "Use clipboard for cloud recognition",
-                    detail: "Off by default. Sends locally extracted terms only when the active mode allows clipboard context.",
+                    title: "Allow clipboard features",
+                    detail: "Requires the active mode's Clipboard setting. Full clipboard text is not sent to speech recognition.",
                     isOn: $aliyunUseClipboardContext
                 )
                 .accessibilityIdentifier("aliyun.settings.clipboardContext")
                 Divider()
                 optionToggleRow(
-                    title: "Use screen text for cloud recognition",
-                    detail: "Off by default. Sends locally extracted terms only when the active mode allows screen context.",
+                    title: "Allow application name",
+                    detail: "Requires the active mode's Active Application setting. The bundle identifier stays local.",
+                    isOn: $aliyunUseApplicationContext
+                )
+                .accessibilityIdentifier("aliyun.settings.applicationContext")
+                Divider()
+                optionToggleRow(
+                    title: "Allow window title",
+                    detail: "Requires the active mode's Window Title setting. Window titles may contain sensitive names.",
+                    isOn: $aliyunUseWindowTitleContext
+                )
+                .accessibilityIdentifier("aliyun.settings.windowTitleContext")
+                Divider()
+                optionToggleRow(
+                    title: "Allow screen-OCR features",
+                    detail: "Requires the active mode's Screen OCR setting. The screenshot and full OCR text are not sent.",
                     isOn: $aliyunUseScreenContext
                 )
                 .accessibilityIdentifier("aliyun.settings.screenContext")
@@ -1024,6 +1105,9 @@ struct ProviderDetailPanel: View {
         }
         if doubaoSilenceFinalizationMilliseconds != settings.silenceFinalizationMilliseconds {
             doubaoSilenceFinalizationMilliseconds = settings.silenceFinalizationMilliseconds
+        }
+        if doubaoContextPrompt != settings.contextPrompt {
+            doubaoContextPrompt = settings.contextPrompt
         }
     }
 

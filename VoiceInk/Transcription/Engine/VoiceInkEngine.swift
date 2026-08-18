@@ -81,6 +81,23 @@ private final class RealtimeAudioChunkGate: @unchecked Sendable {
     }
 }
 
+private actor RecordingContextWaitRace {
+    private var result: Bool?
+    private var waiter: CheckedContinuation<Bool, Never>?
+
+    func wait() async -> Bool {
+        if let result { return result }
+        return await withCheckedContinuation { waiter = $0 }
+    }
+
+    func resolve(_ value: Bool) {
+        guard result == nil else { return }
+        result = value
+        waiter?.resume(returning: value)
+        waiter = nil
+    }
+}
+
 @MainActor
 final class RecordingDurationLimiter {
     static let absoluteMaximumDuration: Duration = .seconds(600)
@@ -295,14 +312,22 @@ class VoiceInkEngine: NSObject, ObservableObject {
 
                         let startID = UUID()
                         self.activeRecordingStartID = startID
+                        let capturePlan = self.recordingContextPlan(modeId: modeId)
+                        let lockedTarget = capturePlan.needsActiveSurface
+                            ? RecordingContextTarget.capture()
+                            : nil
                         let modeApplication = ActiveWindowService.shared.beginApplyingConfiguration(modeId: modeId) {
                             [weak self] in
                             guard let self else { return false }
                             return self.activeRecordingStartID == startID && !self.shouldCancelRecording
                         }
                         let activeModeTask = modeApplication.completion
+                        let shouldPrepareRecognitionContext = self.startRecordingContextCapture(
+                            modeId: modeId,
+                            target: lockedTarget
+                        )
                         let canPrepareStreamingImmediately = !modeApplication.waitsForBrowserURL
-                            && !self.shouldWaitForInitialAliyunContext(modeId: modeId)
+                            && !shouldPrepareRecognitionContext
 
                         do {
                             let fileName = "\(UUID().uuidString).wav"
@@ -366,10 +391,15 @@ class VoiceInkEngine: NSObject, ObservableObject {
                                 return
                             }
 
-                            self.startRecordingContextCapture()
+                            if modeApplication.waitsForBrowserURL {
+                                _ = self.startRecordingContextCapture(
+                                    modeId: ModeManager.shared.currentEffectiveConfiguration?.id,
+                                    target: lockedTarget
+                                )
+                            }
 
                             if !canPrepareStreamingImmediately {
-                                let recognitionContext = await self.initialAliyunRecognitionContext()
+                                let recognitionContext = await self.initialRecognitionContext()
                                 guard self.recordingState == .recording,
                                     self.activeRecordingStartID == startID,
                                     !self.shouldCancelRecording
@@ -478,7 +508,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
     private func prepareTranscriptionSession(
         startID: UUID,
         realtimeAudioGate: RealtimeAudioChunkGate,
-        recognitionContext: String?
+        recognitionContext: RecognitionContextEnvelope?
     ) async throws -> Bool {
         let modelResolution = ModeRuntimeResolver.transcriptionModelResolution(
             transcriptionModelManager: transcriptionModelManager
@@ -634,9 +664,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
     }
 
     private func modeRequiresScreenRecording(_ modeId: UUID?) -> Bool {
-        let mode = modeId.flatMap(ModeManager.shared.getConfiguration(with:))
-            ?? ModeManager.shared.currentEffectiveConfiguration
-        return mode?.useScreenCapture ?? false
+        recordingContextPlan(modeId: modeId).needsScreenOCR
     }
 
     @MainActor
@@ -795,58 +823,129 @@ class VoiceInkEngine: NSObject, ObservableObject {
 
     // MARK: - Recording Context
 
-    private func startRecordingContextCapture() {
-        clearActiveRecordingContext()
-
-        let store = RecordingContextSnapshotStore()
-        activeRecordingContextStore = store
-        let captureTasks = RecordingContextCaptureService.startCapture(into: store)
-        activeRecordingContextTasks = captureTasks
-    }
-
-    private func shouldWaitForInitialAliyunContext(modeId: UUID?) -> Bool {
+    private func recordingContextPlan(modeId: UUID?) -> RecordingContextCapturePlan {
         let mode = modeId.flatMap(ModeManager.shared.getConfiguration(with:))
             ?? ModeManager.shared.currentEffectiveConfiguration
-        guard
-            let configuration = ModeRuntimeResolver.transcriptionConfiguration(
-                mode: mode,
-                transcriptionModelManager: transcriptionModelManager
-            ),
-            configuration.model.provider == .aliyunQwen
-        else { return false }
-
-        let settings = AliyunQwenSpeechSettings.current()
-        return (configuration.mode.useSelectedTextContext && settings.useSelectedTextContext)
-            || (configuration.mode.useClipboardContext && settings.useClipboardContext)
-            || (configuration.mode.useScreenCapture && settings.useScreenContext)
+        guard let mode else { return .none }
+        let configuration = ModeRuntimeResolver.transcriptionConfiguration(
+            mode: mode,
+            transcriptionModelManager: transcriptionModelManager
+        )
+        let providerConfiguration = configuration.flatMap {
+            RecognitionContextProviderConfiguration.current(for: $0.model.provider)
+        }
+        return RecognitionContextPolicy.capturePlan(
+            mode: mode,
+            providerConfiguration: providerConfiguration
+        )
     }
 
-    private func initialAliyunRecognitionContext() async -> String? {
+    @discardableResult
+    private func startRecordingContextCapture(
+        modeId: UUID?,
+        target: RecordingContextTarget?
+    ) -> Bool {
+        clearActiveRecordingContext()
+
+        let mode = modeId.flatMap(ModeManager.shared.getConfiguration(with:))
+            ?? ModeManager.shared.currentEffectiveConfiguration
+        guard let mode else { return false }
+        let configuration = ModeRuntimeResolver.transcriptionConfiguration(
+            mode: mode,
+            transcriptionModelManager: transcriptionModelManager
+        )
+        let providerConfiguration = configuration.flatMap {
+            RecognitionContextProviderConfiguration.current(for: $0.model.provider)
+        }
+        let plan = RecognitionContextPolicy.capturePlan(
+            mode: mode,
+            providerConfiguration: providerConfiguration
+        )
+        guard !plan.sources.isEmpty else { return false }
+        let store = RecordingContextSnapshotStore(target: target)
+        activeRecordingContextStore = store
+        let captureTasks = RecordingContextCaptureService.startCapture(
+            plan: plan,
+            target: target,
+            into: store
+        )
+        activeRecordingContextTasks = captureTasks
+
+        return !RecognitionContextPolicy.asrSources(
+            mode: mode,
+            providerConfiguration: providerConfiguration
+        ).isEmpty
+    }
+
+    private func initialRecognitionContext() async -> RecognitionContextEnvelope? {
         guard
             let store = activeRecordingContextStore,
             let configuration = ModeRuntimeResolver.transcriptionConfiguration(
                 transcriptionModelManager: transcriptionModelManager
             ),
-            configuration.model.provider == .aliyunQwen,
-            shouldWaitForInitialAliyunContext(modeId: configuration.mode.id)
+            let providerConfiguration = RecognitionContextProviderConfiguration.current(
+                for: configuration.model.provider
+            )
         else { return nil }
 
-        let settings = AliyunQwenSpeechSettings.current()
-        if configuration.mode.useSelectedTextContext, settings.useSelectedTextContext {
-            await activeRecordingContextTasks?.selectedText.value
+        let asrSources = RecognitionContextPolicy.asrSources(
+            mode: configuration.mode,
+            providerConfiguration: providerConfiguration
+        )
+        var tasks: [Task<Void, Never>] = []
+        if asrSources.contains(.selectedText), let task = activeRecordingContextTasks?.selectedText {
+            tasks.append(task)
         }
-        if configuration.mode.useClipboardContext, settings.useClipboardContext {
-            await activeRecordingContextTasks?.clipboard.value
+        if asrSources.contains(.clipboard), let task = activeRecordingContextTasks?.clipboard {
+            tasks.append(task)
         }
-        if configuration.mode.useScreenCapture, settings.useScreenContext {
-            await activeRecordingContextTasks?.screenText.value
+        if asrSources.contains(.screenOCR), let task = activeRecordingContextTasks?.screenOCR {
+            tasks.append(task)
         }
+        _ = await waitForInitialContextTasks(tasks, timeout: .seconds(1))
         guard !Task.isCancelled, activeRecordingContextStore === store else { return nil }
-        return SpeechRecognitionContextBuilder.build(
+        let envelope = SpeechRecognitionContextBuilder.build(
             snapshot: store.snapshot,
             mode: configuration.mode,
-            settings: settings
+            providerConfiguration: providerConfiguration
         )
+        logRecognitionContext(envelope, provider: configuration.model.provider)
+        return envelope
+    }
+
+    private func waitForInitialContextTasks(
+        _ tasks: [Task<Void, Never>],
+        timeout: Duration
+    ) async -> Bool {
+        guard !tasks.isEmpty else { return true }
+        let race = RecordingContextWaitRace()
+        let completionWatcher = Task {
+            for task in tasks { await task.value }
+            await race.resolve(true)
+        }
+        let timeoutWatcher = Task {
+            do {
+                try await Task.sleep(for: timeout)
+                await race.resolve(false)
+            } catch {}
+        }
+        let completed = await race.wait()
+        completionWatcher.cancel()
+        timeoutWatcher.cancel()
+        return completed
+    }
+
+    private func logRecognitionContext(_ envelope: RecognitionContextEnvelope?, provider: ModelProvider) {
+        let serialization = provider == .doubaoSpeech
+            ? DoubaoRecognitionContextSerializer.serialize(envelope)
+            : QwenRecognitionContextSerializer.serialize(envelope)
+        let hotwordCount = TranscriptionVocabularyContext.uniqueTerms(from: modelContext).count
+        let summary = RecognitionContextLogSummary.make(
+            provider: provider,
+            serialization: serialization,
+            hotwordCount: hotwordCount
+        )
+        logger.notice("\(summary, privacy: .public)")
     }
 
     private func clearActiveRecordingContext() {

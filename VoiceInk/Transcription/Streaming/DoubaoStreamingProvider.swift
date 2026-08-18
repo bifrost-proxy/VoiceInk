@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 enum DoubaoStreamingProtocolError: LocalizedError, Equatable {
     case invalidFrame(String)
@@ -76,7 +77,8 @@ enum DoubaoStreamingProtocol {
 
     static func makeFullClientRequest(
         customVocabulary: [String] = [],
-        settings: DoubaoSpeechSettings = .defaults
+        settings: DoubaoSpeechSettings = .defaults,
+        recognitionContext: RecognitionContextEnvelope? = nil
     ) throws -> Data {
         // Domain function calls are documented only for the optimized
         // bidirectional stream when second-pass recognition is enabled.
@@ -115,6 +117,15 @@ enum DoubaoStreamingProtocol {
         }
         if enablePOIFunctionCall, !settings.poiCityName.isEmpty {
             context["loc_info"] = ["city_name": settings.poiCityName]
+        }
+        if let dialogContext = DoubaoRecognitionContextSerializer.serialize(
+            recognitionContext,
+            fallbackScenario: settings.contextPrompt
+        ).value,
+            let data = dialogContext.data(using: .utf8),
+            let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        {
+            context.merge(object) { _, dynamicValue in dynamicValue }
         }
         if !context.isEmpty {
             let contextData = try JSONSerialization.data(withJSONObject: context)
@@ -276,12 +287,14 @@ enum DoubaoStreamingProtocol {
 
 final class DoubaoStreamingProvider: StreamingTranscriptionProvider {
     private let customVocabulary: [String]
+    private let recognitionContext: RecognitionContextEnvelope?
     private let session: DoubaoWebSocketSession
     private var eventsContinuation: AsyncStream<StreamingTranscriptionEvent>.Continuation?
     private(set) var transcriptionEvents: AsyncStream<StreamingTranscriptionEvent>
 
-    init(customVocabulary: [String]) {
+    init(customVocabulary: [String], recognitionContext: RecognitionContextEnvelope? = nil) {
         self.customVocabulary = customVocabulary
+        self.recognitionContext = recognitionContext
         var continuation: AsyncStream<StreamingTranscriptionEvent>.Continuation!
         transcriptionEvents = AsyncStream { continuation = $0 }
         eventsContinuation = continuation
@@ -308,6 +321,7 @@ final class DoubaoStreamingProvider: StreamingTranscriptionProvider {
             resourceID: model.name,
             customVocabulary: customHotwordTerms(),
             settings: DoubaoSpeechSettings.current(),
+            recognitionContext: recognitionContext,
             endpoint: .optimizedStreaming,
             startReceiving: true
         )
@@ -334,6 +348,10 @@ final class DoubaoStreamingProvider: StreamingTranscriptionProvider {
 }
 
 actor DoubaoWebSocketSession {
+    private static let logger = Logger(
+        subsystem: "com.prakashjoshipax.voiceink",
+        category: "DoubaoWebSocketSession"
+    )
     enum Endpoint: Equatable {
         case optimizedStreaming
         case verification
@@ -359,13 +377,20 @@ actor DoubaoWebSocketSession {
         self.eventsContinuation = eventsContinuation
     }
 
-    static func verify(apiKey: String, resourceID: String) async throws {
+    static func verify(
+        apiKey: String,
+        resourceID: String,
+        customVocabulary: [String] = [],
+        settings: DoubaoSpeechSettings = .defaults,
+        recognitionContext: RecognitionContextEnvelope? = nil
+    ) async throws {
         let session = DoubaoWebSocketSession(eventsContinuation: nil)
         try await session.connect(
             apiKey: apiKey,
             resourceID: resourceID,
-            customVocabulary: [],
-            settings: .defaults,
+            customVocabulary: customVocabulary,
+            settings: settings,
+            recognitionContext: recognitionContext,
             endpoint: .verification,
             startReceiving: false
         )
@@ -383,11 +408,39 @@ actor DoubaoWebSocketSession {
         }
     }
 
+    static func verifyContextCombination(
+        apiKey: String,
+        resourceID: String,
+        customVocabulary: [String],
+        settings: DoubaoSpeechSettings,
+        recognitionContext: RecognitionContextEnvelope
+    ) async throws {
+        let session = DoubaoWebSocketSession(eventsContinuation: nil)
+        try await session.connect(
+            apiKey: apiKey,
+            resourceID: resourceID,
+            customVocabulary: customVocabulary,
+            settings: settings,
+            recognitionContext: recognitionContext,
+            endpoint: .optimizedStreaming,
+            startReceiving: false
+        )
+        do {
+            try await session.commit()
+            try await session.receiveVerificationResponse()
+            await session.disconnect()
+        } catch {
+            await session.disconnect()
+            throw error
+        }
+    }
+
     func connect(
         apiKey: String,
         resourceID: String,
         customVocabulary: [String],
         settings: DoubaoSpeechSettings,
+        recognitionContext: RecognitionContextEnvelope? = nil,
         endpoint: Endpoint,
         startReceiving: Bool
     ) async throws {
@@ -413,9 +466,13 @@ actor DoubaoWebSocketSession {
                 )
             }
             guard let connection else { throw StreamingTranscriptionError.notConnected }
+            if let logID = connection.responseHeader(named: "X-Tt-Logid"), !logID.isEmpty {
+                Self.logger.notice("Doubao recognition session opened logID=\(logID, privacy: .public)")
+            }
             let initialRequest = try DoubaoStreamingProtocol.makeFullClientRequest(
                 customVocabulary: customVocabulary,
-                settings: settings
+                settings: settings,
+                recognitionContext: recognitionContext
             )
             do {
                 try await connection.send(.data(initialRequest))

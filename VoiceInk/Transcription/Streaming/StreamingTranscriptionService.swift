@@ -545,6 +545,12 @@ class StreamingTranscriptionService {
                 recognitionContext: context.speechRecognitionContext
             )
         }
+        if model.provider == .doubaoSpeech {
+            return DoubaoStreamingProvider(
+                customVocabulary: customVocabulary,
+                recognitionContext: context.speechRecognitionContext
+            )
+        }
 
         if model.provider == .fluidAudio {
             if FluidAudioModelManager.isNemotronModel(named: model.name) {

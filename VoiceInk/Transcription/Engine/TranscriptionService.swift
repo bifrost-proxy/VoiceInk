@@ -3,12 +3,12 @@ import Foundation
 struct TranscriptionRequestContext {
     let language: String?
     let prompt: String?
-    let speechRecognitionContext: String?
+    let speechRecognitionContext: RecognitionContextEnvelope?
 
     init(
         language: String?,
         prompt: String?,
-        speechRecognitionContext: String? = nil
+        speechRecognitionContext: RecognitionContextEnvelope? = nil
     ) {
         self.language = language
         self.prompt = prompt
@@ -28,7 +28,7 @@ struct TranscriptionRequestContext {
             return TranscriptionRequestContext(
                 language: language,
                 prompt: nil,
-                speechRecognitionContext: model.provider == .aliyunQwen
+                speechRecognitionContext: model.provider == .aliyunQwen || model.provider == .doubaoSpeech
                     ? speechRecognitionContext
                     : nil
             )

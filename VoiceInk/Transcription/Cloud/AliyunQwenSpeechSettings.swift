@@ -57,6 +57,8 @@ struct AliyunQwenSpeechSettings: Equatable, Sendable {
         static let contextPrompt = "AliyunQwenContextPrompt"
         static let useSelectedTextContext = "AliyunQwenUseSelectedTextContext"
         static let useClipboardContext = "AliyunQwenUseClipboardContext"
+        static let useApplicationContext = "AliyunQwenUseApplicationContext"
+        static let useWindowTitleContext = "AliyunQwenUseWindowTitleContext"
         static let useScreenContext = "AliyunQwenUseScreenContext"
         static let keepConnectionReady = "AliyunQwenKeepConnectionReady"
     }
@@ -80,6 +82,8 @@ struct AliyunQwenSpeechSettings: Equatable, Sendable {
         contextPrompt: "",
         useSelectedTextContext: false,
         useClipboardContext: false,
+        useApplicationContext: false,
+        useWindowTitleContext: false,
         useScreenContext: false,
         keepConnectionReady: false
     )
@@ -97,6 +101,8 @@ struct AliyunQwenSpeechSettings: Equatable, Sendable {
     let contextPrompt: String
     let useSelectedTextContext: Bool
     let useClipboardContext: Bool
+    let useApplicationContext: Bool
+    let useWindowTitleContext: Bool
     let useScreenContext: Bool
     let keepConnectionReady: Bool
 
@@ -114,6 +120,8 @@ struct AliyunQwenSpeechSettings: Equatable, Sendable {
         contextPrompt: String,
         useSelectedTextContext: Bool = false,
         useClipboardContext: Bool = false,
+        useApplicationContext: Bool = false,
+        useWindowTitleContext: Bool = false,
         useScreenContext: Bool = false,
         keepConnectionReady: Bool = false
     ) {
@@ -132,6 +140,8 @@ struct AliyunQwenSpeechSettings: Equatable, Sendable {
         self.contextPrompt = String(contextPrompt.prefix(Self.maximumContextLength))
         self.useSelectedTextContext = useSelectedTextContext
         self.useClipboardContext = useClipboardContext
+        self.useApplicationContext = useApplicationContext
+        self.useWindowTitleContext = useWindowTitleContext
         self.useScreenContext = useScreenContext
         self.keepConnectionReady = keepConnectionReady
     }
@@ -194,6 +204,16 @@ struct AliyunQwenSpeechSettings: Equatable, Sendable {
                 fallback: Self.defaults.useClipboardContext,
                 in: defaults
             ),
+            useApplicationContext: bool(
+                forKey: Keys.useApplicationContext,
+                fallback: Self.defaults.useApplicationContext,
+                in: defaults
+            ),
+            useWindowTitleContext: bool(
+                forKey: Keys.useWindowTitleContext,
+                fallback: Self.defaults.useWindowTitleContext,
+                in: defaults
+            ),
             useScreenContext: bool(
                 forKey: Keys.useScreenContext,
                 fallback: Self.defaults.useScreenContext,
@@ -204,6 +224,16 @@ struct AliyunQwenSpeechSettings: Equatable, Sendable {
                 fallback: Self.defaults.keepConnectionReady,
                 in: defaults
             )
+        )
+    }
+
+    var recognitionContextPermissions: RecognitionContextPermissions {
+        RecognitionContextPermissions(
+            selectedText: useSelectedTextContext,
+            clipboard: useClipboardContext,
+            application: useApplicationContext,
+            windowTitle: useWindowTitleContext,
+            screenOCR: useScreenContext
         )
     }
 
