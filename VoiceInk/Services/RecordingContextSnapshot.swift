@@ -32,25 +32,40 @@ final class RecordingContextSnapshotStore {
 }
 
 @MainActor
+struct RecordingContextCaptureTasks {
+    let clipboard: Task<Void, Never>
+    let selectedText: Task<Void, Never>
+    let screenText: Task<Void, Never>
+
+    var all: [Task<Void, Never>] {
+        [clipboard, selectedText, screenText]
+    }
+
+    func cancelAll() {
+        all.forEach { $0.cancel() }
+    }
+}
+
+@MainActor
 enum RecordingContextCaptureService {
-    static func startCapture(into store: RecordingContextSnapshotStore) -> [Task<Void, Never>] {
-        [
-            Task { @MainActor in
+    static func startCapture(into store: RecordingContextSnapshotStore) -> RecordingContextCaptureTasks {
+        RecordingContextCaptureTasks(
+            clipboard: Task { @MainActor in
                 store.updateClipboardText(NSPasteboard.general.string(forType: .string))
             },
-            Task { @MainActor in
+            selectedText: Task { @MainActor in
                 guard !Task.isCancelled else { return }
                 let selectedText = await SelectedTextService.fetchSelectedText()
                 guard !Task.isCancelled else { return }
                 store.updateSelectedText(selectedText)
             },
-            Task { @MainActor in
+            screenText: Task { @MainActor in
                 guard CGPreflightScreenCaptureAccess(), !Task.isCancelled else { return }
                 let screenCaptureService = ScreenCaptureService()
                 let screenText = await screenCaptureService.captureAndExtractText()
                 guard !Task.isCancelled else { return }
                 store.updateScreenText(screenText)
-            },
-        ]
+            }
+        )
     }
 }

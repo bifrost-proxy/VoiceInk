@@ -55,6 +55,9 @@ struct AliyunQwenSpeechSettings: Equatable, Sendable {
         static let useVoiceInkVocabulary = "AliyunQwenUseVoiceInkVocabulary"
         static let vocabularyWeight = "AliyunQwenVocabularyWeight"
         static let contextPrompt = "AliyunQwenContextPrompt"
+        static let useSelectedTextContext = "AliyunQwenUseSelectedTextContext"
+        static let useClipboardContext = "AliyunQwenUseClipboardContext"
+        static let useScreenContext = "AliyunQwenUseScreenContext"
         static let keepConnectionReady = "AliyunQwenKeepConnectionReady"
     }
 
@@ -75,6 +78,9 @@ struct AliyunQwenSpeechSettings: Equatable, Sendable {
         useVoiceInkVocabulary: true,
         vocabularyWeight: 4,
         contextPrompt: "",
+        useSelectedTextContext: false,
+        useClipboardContext: false,
+        useScreenContext: false,
         keepConnectionReady: false
     )
 
@@ -89,6 +95,9 @@ struct AliyunQwenSpeechSettings: Equatable, Sendable {
     let useVoiceInkVocabulary: Bool
     let vocabularyWeight: Int
     let contextPrompt: String
+    let useSelectedTextContext: Bool
+    let useClipboardContext: Bool
+    let useScreenContext: Bool
     let keepConnectionReady: Bool
 
     init(
@@ -103,6 +112,9 @@ struct AliyunQwenSpeechSettings: Equatable, Sendable {
         useVoiceInkVocabulary: Bool,
         vocabularyWeight: Int,
         contextPrompt: String,
+        useSelectedTextContext: Bool = false,
+        useClipboardContext: Bool = false,
+        useScreenContext: Bool = false,
         keepConnectionReady: Bool = false
     ) {
         self.region = region
@@ -118,6 +130,9 @@ struct AliyunQwenSpeechSettings: Equatable, Sendable {
         self.useVoiceInkVocabulary = useVoiceInkVocabulary
         self.vocabularyWeight = Self.vocabularyWeightRange.clamped(vocabularyWeight)
         self.contextPrompt = String(contextPrompt.prefix(Self.maximumContextLength))
+        self.useSelectedTextContext = useSelectedTextContext
+        self.useClipboardContext = useClipboardContext
+        self.useScreenContext = useScreenContext
         self.keepConnectionReady = keepConnectionReady
     }
 
@@ -169,6 +184,21 @@ struct AliyunQwenSpeechSettings: Equatable, Sendable {
                 in: defaults
             ),
             contextPrompt: defaults.string(forKey: Keys.contextPrompt) ?? Self.defaults.contextPrompt,
+            useSelectedTextContext: bool(
+                forKey: Keys.useSelectedTextContext,
+                fallback: Self.defaults.useSelectedTextContext,
+                in: defaults
+            ),
+            useClipboardContext: bool(
+                forKey: Keys.useClipboardContext,
+                fallback: Self.defaults.useClipboardContext,
+                in: defaults
+            ),
+            useScreenContext: bool(
+                forKey: Keys.useScreenContext,
+                fallback: Self.defaults.useScreenContext,
+                in: defaults
+            ),
             keepConnectionReady: bool(
                 forKey: Keys.keepConnectionReady,
                 fallback: Self.defaults.keepConnectionReady,
@@ -211,6 +241,18 @@ struct AliyunQwenSpeechSettings: Equatable, Sendable {
         output.scheme = "wss"
         output.host = host
         output.path = "/api-ws/v1/inference"
+        guard let url = output.url else {
+            throw AliyunQwenSettingsError.invalidAPIHost
+        }
+        return url
+    }
+
+    func offlineTranscriptionURL() throws -> URL {
+        let webSocket = try webSocketURL()
+        var output = URLComponents()
+        output.scheme = "https"
+        output.host = webSocket.host
+        output.path = "/api/v1/services/aigc/multimodal-generation/generation"
         guard let url = output.url else {
             throw AliyunQwenSettingsError.invalidAPIHost
         }

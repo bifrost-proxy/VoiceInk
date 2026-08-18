@@ -20,6 +20,8 @@ struct TranscriptionReliabilityTests {
         #expect(
             StreamingAudioIntegrityPolicy.requiresBatchFallback(
                 droppedChunks: droppedChunks,
+                transportSendFailures: 0,
+                hasTerminalReceiveError: false,
                 drainedInTime: drainedInTime
             )
         )
@@ -29,6 +31,26 @@ struct TranscriptionReliabilityTests {
         #expect(
             !StreamingAudioIntegrityPolicy.requiresBatchFallback(
                 droppedChunks: 0,
+                transportSendFailures: 0,
+                hasTerminalReceiveError: false,
+                drainedInTime: true
+            )
+        )
+    }
+
+    @Test(arguments: [
+        (transportSendFailures: 1, hasTerminalReceiveError: false),
+        (transportSendFailures: 0, hasTerminalReceiveError: true),
+    ])
+    func transportFailuresAlwaysRequireBatchFallback(
+        transportSendFailures: Int,
+        hasTerminalReceiveError: Bool
+    ) {
+        #expect(
+            StreamingAudioIntegrityPolicy.requiresBatchFallback(
+                droppedChunks: 0,
+                transportSendFailures: transportSendFailures,
+                hasTerminalReceiveError: hasTerminalReceiveError,
                 drainedInTime: true
             )
         )

@@ -56,6 +56,12 @@ struct AliyunQwenStreamingTests {
             "Recognition context",
             "Add domain terms or prior context to improve recognition (up to 400 characters).",
             "Optional context",
+            "Use selected text for cloud recognition",
+            "Sends locally extracted terms only when the active mode also allows selected-text context.",
+            "Use clipboard for cloud recognition",
+            "Off by default. Sends locally extracted terms only when the active mode allows clipboard context.",
+            "Use screen text for cloud recognition",
+            "Off by default. Sends locally extracted terms only when the active mode allows screen context.",
             "Recognition options sync through iCloud; recognition context stays on this Mac.",
         ]
 
@@ -123,6 +129,201 @@ struct AliyunQwenStreamingTests {
         await session.disconnect()
         #expect(connection.isClosed)
         await pool.shutdown()
+    }
+
+    @Test func taskFinishedCompletesCommitWithoutWaitingForTimeout() async throws {
+        let connection = AliyunQwenFinishTestConnection()
+        let connector = AliyunQwenFinishTestConnector(connection: connection)
+        let pool = CloudSpeechConnectionPool(connector: connector)
+        let session = AliyunQwenWebSocketSession(
+            eventsContinuation: nil,
+            connectionPool: pool,
+            connector: connector
+        )
+        defer { Task { await pool.shutdown() } }
+
+        try await session.connect(
+            apiKey: "test-key",
+            model: AliyunQwenSpeechProvider.modelID,
+            language: "zh",
+            customVocabulary: [],
+            settings: settings(region: .beijing, host: "test.cn-beijing.maas.aliyuncs.com"),
+            format: "pcm"
+        )
+        let clock = ContinuousClock()
+        let elapsed = try await clock.measure {
+            try await session.commit()
+        }
+        #expect(elapsed < .seconds(1))
+        await session.disconnect()
+    }
+
+    @Test func failedFullChunkSendRemainsPendingUntilAConfirmedRetry() async throws {
+        let connection = AliyunQwenSendFailureTestConnection(failingBinarySends: 1)
+        let connector = AliyunQwenSendFailureTestConnector(connection: connection)
+        let pool = CloudSpeechConnectionPool(connector: connector)
+        let session = AliyunQwenWebSocketSession(
+            eventsContinuation: nil,
+            connectionPool: pool,
+            connector: connector
+        )
+        defer { Task { await pool.shutdown() } }
+
+        try await session.connect(
+            apiKey: "test-key",
+            model: AliyunQwenSpeechProvider.modelID,
+            language: "zh",
+            customVocabulary: [],
+            settings: settings(region: .beijing, host: "test.cn-beijing.maas.aliyuncs.com"),
+            format: "pcm"
+        )
+
+        let chunk = Data(repeating: 0x5a, count: 3_200)
+        do {
+            try await session.sendAudioChunk(chunk)
+            Issue.record("The injected binary send should fail")
+        } catch {}
+        #expect(await session.pendingAudioByteCount == 3_200)
+
+        try await session.sendAudioChunk(Data())
+        #expect(await session.pendingAudioByteCount == 0)
+        #expect(connection.successfulBinaryPayloads == [chunk])
+        await session.disconnect()
+    }
+
+    @Test func failedRemainderSendIsNotClearedBeforeCommitRetry() async throws {
+        let connection = AliyunQwenSendFailureTestConnection(failingBinarySends: 1)
+        let connector = AliyunQwenSendFailureTestConnector(connection: connection)
+        let pool = CloudSpeechConnectionPool(connector: connector)
+        let session = AliyunQwenWebSocketSession(
+            eventsContinuation: nil,
+            connectionPool: pool,
+            connector: connector
+        )
+        defer { Task { await pool.shutdown() } }
+
+        try await session.connect(
+            apiKey: "test-key",
+            model: AliyunQwenSpeechProvider.modelID,
+            language: "zh",
+            customVocabulary: [],
+            settings: settings(region: .beijing, host: "test.cn-beijing.maas.aliyuncs.com"),
+            format: "pcm"
+        )
+        try await session.sendAudioChunk(Data(repeating: 0x11, count: 900))
+
+        do {
+            try await session.commit()
+            Issue.record("The injected remainder send should fail")
+        } catch {}
+        #expect(await session.pendingAudioByteCount == 900)
+        await session.disconnect()
+    }
+
+    @Test func fastOfflineFallbackUsesBase64HTTPAndParsesFinalText() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [AliyunQwenOfflineURLProtocol.self]
+        let urlSession = URLSession(configuration: configuration)
+        let transcriber = AliyunQwenOfflineTranscriber(urlSession: urlSession)
+        AliyunQwenOfflineURLProtocol.handler = { request in
+            #expect(request.httpMethod == "POST")
+            #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer secret")
+            #expect(request.value(forHTTPHeaderField: "X-DashScope-SSE") == "disable")
+            #expect(request.url?.path == "/api/v1/services/aigc/multimodal-generation/generation")
+
+            let bodyData = try requestBodyData(from: request)
+            let body = try #require(JSONSerialization.jsonObject(with: bodyData) as? [String: Any])
+            #expect(body["model"] as? String == AliyunQwenOfflineTranscriber.modelID)
+            let input = try #require(body["input"] as? [String: Any])
+            let messages = try #require(input["messages"] as? [[String: Any]])
+            let audioContent = try #require(messages.last?["content"] as? [[String: Any]])
+            let inputAudio = try #require(audioContent.first?["input_audio"] as? [String: Any])
+            #expect((inputAudio["data"] as? String)?.hasPrefix("data:audio/wav;base64,") == true)
+
+            let response = try #require(
+                HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)
+            )
+            let data = try JSONSerialization.data(withJSONObject: ["output": ["text": "快速恢复成功"]])
+            return (response, data)
+        }
+        defer { AliyunQwenOfflineURLProtocol.handler = nil }
+
+        let text = try await transcriber.transcribe(
+            audioData: Data([0x52, 0x49, 0x46, 0x46]),
+            apiKey: "secret",
+            language: "zh",
+            customVocabulary: ["VoiceInk"],
+            settings: settings(region: .beijing, host: "workspace.cn-beijing.maas.aliyuncs.com")
+        )
+        #expect(text == "快速恢复成功")
+    }
+
+    @Test func oversizedOfflineRequestIsRejectedBeforeBase64Allocation() {
+        let transcriber = AliyunQwenOfflineTranscriber()
+        #expect(!transcriber.supportsFastRequest(audioData: Data(count: 7_200_000)))
+    }
+
+    @Test func runTaskCarriesPrivacyFilteredDynamicContext() throws {
+        let request = try AliyunQwenStreamingProtocol.makeRunTask(
+            taskID: "task-1",
+            model: AliyunQwenSpeechProvider.modelID,
+            format: "pcm",
+            sampleRate: 16_000,
+            language: "zh",
+            customVocabulary: [],
+            settings: settings(region: .beijing, host: ""),
+            recognitionContext: "VoiceInk、Bifrost"
+        )
+        let root = try #require(
+            JSONSerialization.jsonObject(with: Data(request.utf8)) as? [String: Any]
+        )
+        let header = try #require(root["header"] as? [String: Any])
+        #expect(header["action"] as? String == "run-task")
+        let payload = try #require(root["payload"] as? [String: Any])
+        let input = try #require(payload["input"] as? [String: Any])
+        let context = try #require(input["context"] as? [[String: Any]])
+        let content = try #require(context.first?["content"] as? [[String: Any]])
+        #expect(content.first?["text"] as? String == "VoiceInk、Bifrost")
+    }
+
+    @Test func dynamicContextRequiresBothModeAndProviderOptIn() throws {
+        let mode = ModeConfig(
+            name: "Test",
+            isAIEnhancementEnabled: false,
+            useClipboardContext: true,
+            useSelectedTextContext: true,
+            useScreenCapture: true
+        )
+        let snapshot = RecordingContextSnapshot(
+            selectedText: "VoiceInk uses Bifrost",
+            clipboardText: "PrivateClipboardTerm",
+            screenText: "PrivateScreenTerm"
+        )
+        let settings = AliyunQwenSpeechSettings(
+            region: .beijing,
+            apiHost: "",
+            semanticPunctuationEnabled: false,
+            maxSentenceSilenceMilliseconds: 1_300,
+            multiThresholdModeEnabled: false,
+            heartbeatEnabled: true,
+            speechNoiseThresholdEnabled: false,
+            speechNoiseThreshold: 0,
+            useVoiceInkVocabulary: true,
+            vocabularyWeight: 4,
+            contextPrompt: "",
+            useSelectedTextContext: true,
+            useClipboardContext: false,
+            useScreenContext: false
+        )
+
+        let context = try #require(
+            SpeechRecognitionContextBuilder.build(snapshot: snapshot, mode: mode, settings: settings)
+        )
+        #expect(context.contains("VoiceInk"))
+        #expect(context.contains("Bifrost"))
+        #expect(!context.contains("PrivateClipboardTerm"))
+        #expect(!context.contains("PrivateScreenTerm"))
+        #expect(context.count <= AliyunQwenSpeechSettings.maximumContextLength)
     }
 
     @Test(
@@ -445,6 +646,56 @@ struct AliyunQwenStreamingTests {
     }
 }
 
+private final class AliyunQwenOfflineURLProtocol: URLProtocol, @unchecked Sendable {
+    static let lock = NSLock()
+    private static var storedHandler: ((URLRequest) throws -> (HTTPURLResponse, Data))?
+
+    static var handler: ((URLRequest) throws -> (HTTPURLResponse, Data))? {
+        get { lock.withLock { storedHandler } }
+        set { lock.withLock { storedHandler = newValue } }
+    }
+
+    override class func canInit(with _: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        do {
+            let handler = try Self.handler.unwrap()
+            let (response, data) = try handler(request)
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: data)
+            client?.urlProtocolDidFinishLoading(self)
+        } catch {
+            client?.urlProtocol(self, didFailWithError: error)
+        }
+    }
+
+    override func stopLoading() {}
+}
+
+private extension Optional {
+    func unwrap() throws -> Wrapped {
+        guard let self else { throw AliyunQwenOfflineError.invalidResponse }
+        return self
+    }
+}
+
+private func requestBodyData(from request: URLRequest) throws -> Data {
+    if let body = request.httpBody { return body }
+    let stream = try request.httpBodyStream.unwrap()
+    stream.open()
+    defer { stream.close() }
+    var data = Data()
+    var buffer = [UInt8](repeating: 0, count: 4_096)
+    while stream.hasBytesAvailable {
+        let count = stream.read(&buffer, maxLength: buffer.count)
+        if count < 0 { throw stream.streamError ?? AliyunQwenOfflineError.invalidResponse }
+        if count == 0 { break }
+        data.append(buffer, count: count)
+    }
+    return data
+}
+
 private struct AliyunQwenLifecycleTestConnector: CloudSpeechWebSocketConnecting {
     let connection: AliyunQwenLifecycleTestConnection
 
@@ -454,6 +705,119 @@ private struct AliyunQwenLifecycleTestConnector: CloudSpeechWebSocketConnecting 
     ) async throws -> any CloudSpeechWebSocketConnection {
         connection
     }
+}
+
+private struct AliyunQwenSendFailureTestConnector: CloudSpeechWebSocketConnecting {
+    let connection: AliyunQwenSendFailureTestConnection
+
+    func open(
+        target _: CloudSpeechConnectionTarget,
+        onClosed _: (@Sendable (Error?) -> Void)?
+    ) async throws -> any CloudSpeechWebSocketConnection {
+        connection
+    }
+}
+
+private struct AliyunQwenFinishTestConnector: CloudSpeechWebSocketConnecting {
+    let connection: AliyunQwenFinishTestConnection
+
+    func open(
+        target _: CloudSpeechConnectionTarget,
+        onClosed _: (@Sendable (Error?) -> Void)?
+    ) async throws -> any CloudSpeechWebSocketConnection {
+        connection
+    }
+}
+
+private final class AliyunQwenFinishTestConnection: CloudSpeechWebSocketConnection, @unchecked Sendable {
+    private let lock = NSLock()
+    private var receiveCount = 0
+    private var finishSent = false
+
+    func send(_ message: URLSessionWebSocketTask.Message) async throws {
+        guard case .string(let text) = message,
+            let data = text.data(using: .utf8),
+            let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let header = root["header"] as? [String: Any],
+            header["action"] as? String == "finish-task"
+        else { return }
+        lock.withLock { finishSent = true }
+    }
+
+    func receive() async throws -> URLSessionWebSocketTask.Message {
+        let current = lock.withLock {
+            receiveCount += 1
+            return receiveCount
+        }
+        if current == 1 {
+            return try event("task-started")
+        }
+        while !lock.withLock({ finishSent }) {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        return try event("task-finished")
+    }
+
+    private func event(_ name: String) throws -> URLSessionWebSocketTask.Message {
+        let data = try JSONSerialization.data(withJSONObject: [
+            "header": ["event": name, "task_id": "task-1"],
+            "payload": [:] as [String: Any],
+        ])
+        return .string(String(decoding: data, as: UTF8.self))
+    }
+
+    func ping() async throws {}
+    func close() {}
+}
+
+private final class AliyunQwenSendFailureTestConnection: CloudSpeechWebSocketConnection, @unchecked Sendable {
+    private enum InjectedError: Error { case sendFailed }
+
+    private let lock = NSLock()
+    private var receiveCount = 0
+    private var remainingFailingBinarySends: Int
+    private var storedSuccessfulBinaryPayloads: [Data] = []
+
+    init(failingBinarySends: Int) {
+        remainingFailingBinarySends = failingBinarySends
+    }
+
+    var successfulBinaryPayloads: [Data] {
+        lock.withLock { storedSuccessfulBinaryPayloads }
+    }
+
+    func send(_ message: URLSessionWebSocketTask.Message) async throws {
+        guard case .data(let data) = message else { return }
+        let shouldFail = lock.withLock {
+            if remainingFailingBinarySends > 0 {
+                remainingFailingBinarySends -= 1
+                return true
+            }
+            storedSuccessfulBinaryPayloads.append(data)
+            return false
+        }
+        if shouldFail { throw InjectedError.sendFailed }
+    }
+
+    func receive() async throws -> URLSessionWebSocketTask.Message {
+        let currentReceiveCount = lock.withLock {
+            receiveCount += 1
+            return receiveCount
+        }
+        if currentReceiveCount == 1 {
+            let payload: [String: Any] = [
+                "header": ["event": "task-started", "task_id": UUID().uuidString],
+                "payload": [:] as [String: Any],
+            ]
+            let data = try JSONSerialization.data(withJSONObject: payload)
+            return .string(String(decoding: data, as: UTF8.self))
+        }
+        try await Task.sleep(for: .seconds(60))
+        throw CancellationError()
+    }
+
+    func ping() async throws {}
+    func close() {}
 }
 
 private final class AliyunQwenLifecycleTestConnection: CloudSpeechWebSocketConnection, @unchecked Sendable {

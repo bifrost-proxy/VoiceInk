@@ -26,9 +26,26 @@ struct TranscriptionPerformanceSnapshot: Codable, Equatable, Sendable {
     var sentBytes: Int?
     var droppedChunks: Int?
     var droppedBytes: Int?
+    var transportSendFailures: Int?
+    var transportFailedBytes: Int?
+    var terminalReceiveError: String?
+    var captureDroppedBuffers: UInt64?
+    var captureDroppedFrames: UInt64?
+    var captureInputFrames: UInt64?
+    var captureOutputFrames: UInt64?
+    var captureInputSampleRate: Double?
 
     init(executionMode: String) {
         self.executionMode = executionMode
+    }
+
+    mutating func recordCaptureIntegrity(_ snapshot: AudioCaptureIntegritySnapshot?) {
+        guard let snapshot else { return }
+        captureDroppedBuffers = snapshot.droppedBuffers
+        captureDroppedFrames = snapshot.droppedFrames
+        captureInputFrames = snapshot.inputFrames
+        captureOutputFrames = snapshot.outputFrames
+        captureInputSampleRate = snapshot.inputSampleRate > 0 ? snapshot.inputSampleRate : nil
     }
 }
 

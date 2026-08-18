@@ -70,7 +70,8 @@ class CloudTranscriptionService: TranscriptionService {
                 apiKey: apiKey,
                 model: model.name,
                 language: language,
-                customVocabulary: getCustomDictionaryTerms()
+                customVocabulary: getCustomDictionaryTerms(),
+                recognitionContext: context.speechRecognitionContext
             )
         } catch let error as CloudTranscriptionError {
             throw error

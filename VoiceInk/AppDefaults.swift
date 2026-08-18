@@ -111,6 +111,12 @@ enum AppDefaults {
                 AliyunQwenSpeechSettings.defaults.vocabularyWeight,
             AliyunQwenSpeechSettings.Keys.contextPrompt:
                 AliyunQwenSpeechSettings.defaults.contextPrompt,
+            AliyunQwenSpeechSettings.Keys.useSelectedTextContext:
+                AliyunQwenSpeechSettings.defaults.useSelectedTextContext,
+            AliyunQwenSpeechSettings.Keys.useClipboardContext:
+                AliyunQwenSpeechSettings.defaults.useClipboardContext,
+            AliyunQwenSpeechSettings.Keys.useScreenContext:
+                AliyunQwenSpeechSettings.defaults.useScreenContext,
             AliyunQwenSpeechSettings.Keys.keepConnectionReady:
                 AliyunQwenSpeechSettings.defaults.keepConnectionReady,
 

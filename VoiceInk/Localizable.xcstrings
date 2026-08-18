@@ -20488,6 +20488,41 @@
         "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "识别上下文" } }
       }
     },
+    "Use selected text for cloud recognition" : {
+      "localizations" : {
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "使用选中文本辅助云端识别" } }
+      }
+    },
+    "Sends locally extracted terms only when the active mode also allows selected-text context." : {
+      "localizations" : {
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "仅在当前模式也允许选中文本上下文时，发送本地提取的术语。" } }
+      }
+    },
+    "Use clipboard for cloud recognition" : {
+      "localizations" : {
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "使用剪贴板辅助云端识别" } }
+      }
+    },
+    "Off by default. Sends locally extracted terms only when the active mode allows clipboard context." : {
+      "localizations" : {
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "默认关闭。仅在当前模式允许剪贴板上下文时发送本地提取的术语。" } }
+      }
+    },
+    "Use screen text for cloud recognition" : {
+      "localizations" : {
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "使用屏幕文本辅助云端识别" } }
+      }
+    },
+    "Off by default. Sends locally extracted terms only when the active mode allows screen context." : {
+      "localizations" : {
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "默认关闭。仅在当前模式允许屏幕上下文时发送本地提取的术语。" } }
+      }
+    },
+    "Some audio frames were dropped; this transcription may be incomplete" : {
+      "localizations" : {
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "部分音频帧已丢失，本次转写可能不完整" } }
+      }
+    },
     "Semantic sentence segmentation" : {
       "localizations" : {
         "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "语义断句" } }

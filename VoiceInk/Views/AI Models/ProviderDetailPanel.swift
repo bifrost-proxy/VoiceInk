@@ -66,6 +66,12 @@ struct ProviderDetailPanel: View {
     private var aliyunVocabularyWeight = AliyunQwenSpeechSettings.defaults.vocabularyWeight
     @AppStorage(AliyunQwenSpeechSettings.Keys.contextPrompt)
     private var aliyunContextPrompt = AliyunQwenSpeechSettings.defaults.contextPrompt
+    @AppStorage(AliyunQwenSpeechSettings.Keys.useSelectedTextContext)
+    private var aliyunUseSelectedTextContext = AliyunQwenSpeechSettings.defaults.useSelectedTextContext
+    @AppStorage(AliyunQwenSpeechSettings.Keys.useClipboardContext)
+    private var aliyunUseClipboardContext = AliyunQwenSpeechSettings.defaults.useClipboardContext
+    @AppStorage(AliyunQwenSpeechSettings.Keys.useScreenContext)
+    private var aliyunUseScreenContext = AliyunQwenSpeechSettings.defaults.useScreenContext
     @AppStorage(AliyunQwenSpeechSettings.Keys.keepConnectionReady)
     private var aliyunKeepConnectionReady = AliyunQwenSpeechSettings.defaults.keepConnectionReady
 
@@ -480,6 +486,27 @@ struct ProviderDetailPanel: View {
                         .accessibilityIdentifier("aliyun.settings.contextPrompt")
                 }
                 .padding(.vertical, 10)
+                Divider()
+                optionToggleRow(
+                    title: "Use selected text for cloud recognition",
+                    detail: "Sends locally extracted terms only when the active mode also allows selected-text context.",
+                    isOn: $aliyunUseSelectedTextContext
+                )
+                .accessibilityIdentifier("aliyun.settings.selectedTextContext")
+                Divider()
+                optionToggleRow(
+                    title: "Use clipboard for cloud recognition",
+                    detail: "Off by default. Sends locally extracted terms only when the active mode allows clipboard context.",
+                    isOn: $aliyunUseClipboardContext
+                )
+                .accessibilityIdentifier("aliyun.settings.clipboardContext")
+                Divider()
+                optionToggleRow(
+                    title: "Use screen text for cloud recognition",
+                    detail: "Off by default. Sends locally extracted terms only when the active mode allows screen context.",
+                    isOn: $aliyunUseScreenContext
+                )
+                .accessibilityIdentifier("aliyun.settings.screenContext")
             }
             .padding(.horizontal, 12)
             .background(ProviderSurface(cornerRadius: 10))

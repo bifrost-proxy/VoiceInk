@@ -12,6 +12,15 @@ protocol CloudProvider: Sendable {
     func transcribe(
         audioData: Data, fileName: String, apiKey: String, model: String, language: String?, customVocabulary: [String]
     ) async throws -> String
+    func transcribe(
+        audioData: Data,
+        fileName: String,
+        apiKey: String,
+        model: String,
+        language: String?,
+        customVocabulary: [String],
+        recognitionContext: String?
+    ) async throws -> String
     func makeStreamingProvider(customVocabulary: [String]) -> (any StreamingTranscriptionProvider)?
     func verifyAPIKey(_ key: String) async -> (isValid: Bool, errorMessage: String?)
 }
@@ -25,6 +34,25 @@ extension CloudProvider {
         audioData: Data, fileName: String, apiKey: String, model: String, language: String?, customVocabulary: [String]
     ) async throws -> String {
         throw CloudTranscriptionError.unsupportedProvider
+    }
+
+    func transcribe(
+        audioData: Data,
+        fileName: String,
+        apiKey: String,
+        model: String,
+        language: String?,
+        customVocabulary: [String],
+        recognitionContext _: String?
+    ) async throws -> String {
+        try await transcribe(
+            audioData: audioData,
+            fileName: fileName,
+            apiKey: apiKey,
+            model: model,
+            language: language,
+            customVocabulary: customVocabulary
+        )
     }
 }
 
