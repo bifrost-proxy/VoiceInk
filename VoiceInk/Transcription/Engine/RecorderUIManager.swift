@@ -166,15 +166,15 @@ class RecorderUIManager: ObservableObject, RecorderPanelPresenting {
     func toggleRecorderPanel(modeId: UUID? = nil) async {
         guard let engine = engine else { return }
 
-        if isRecorderPanelVisible {
-            switch engine.recordingState {
-            case .recording:
-                await engine.toggleRecord(modeId: modeId)
-            case .enhancing:
-                await cancelEnhancementAndPasteOriginal()
-            case .starting, .transcribing:
-                await cancelRecording()
-            case .idle:
+        switch engine.recordingState {
+        case .recording:
+            await engine.toggleRecord(modeId: modeId)
+        case .enhancing:
+            await cancelEnhancementAndPasteOriginal()
+        case .starting, .transcribing:
+            await cancelRecording()
+        case .idle:
+            if isRecorderPanelVisible {
                 if let permissionGuidance = engine.recordingPermissionGuidance {
                     switch permissionGuidance {
                     case .required:
@@ -183,25 +183,37 @@ class RecorderUIManager: ObservableObject, RecorderPanelPresenting {
                         break
                     case .ready:
                         engine.clearRecordingPermissionGuidance()
-                        SoundManager.shared.playStartSound()
-                        await engine.toggleRecord(modeId: modeId)
+                        await startRecording(engine: engine, modeId: modeId)
                     }
                 } else if engine.assistantSession.canSendFollowUp {
-                    SoundManager.shared.playStartSound()
-                    await engine.toggleRecord(
-                        modeId: modeId,
-                        isAssistantFollowUp: true
-                    )
+                    await startRecording(engine: engine, modeId: modeId, isAssistantFollowUp: true)
                 } else {
                     await dismissRecorderPanel()
                 }
-            case .busy:
-                await dismissRecorderPanel()
+            } else {
+                await startRecording(engine: engine, modeId: modeId)
+                if engine.recordingPermissionGuidance != nil && !isRecorderPanelVisible {
+                    isRecorderPanelVisible = true
+                }
             }
-        } else {
-            SoundManager.shared.playStartSound()
-            isRecorderPanelVisible = true
-            await engine.toggleRecord(modeId: modeId)
+        case .busy:
+            await dismissRecorderPanel()
+        }
+    }
+
+    private func startRecording(
+        engine: VoiceInkEngine,
+        modeId: UUID?,
+        isAssistantFollowUp: Bool = false
+    ) async {
+        // Preserve the existing pre-capture cue placement. Playback itself is
+        // dispatched asynchronously and does not wait on panel construction.
+        SoundManager.shared.playStartSound()
+        await engine.toggleRecord(
+            modeId: modeId,
+            isAssistantFollowUp: isAssistantFollowUp
+        ) { [weak self] in
+            self?.isRecorderPanelVisible = true
         }
     }
 

@@ -38,4 +38,66 @@ struct RecordingShortcutModeHandlerTests {
         #expect(toggleCount == 0)
         #expect(cancelCount == 0)
     }
+
+    @Test func pushToTalkReleaseStopsStartupBeforePanelIsVisible() async {
+        var recordingState: RecordingState = .idle
+        var toggleCount = 0
+
+        let handler = RecordingShortcutModeHandler(
+            canHandleShortcutAction: { true },
+            isRecorderVisible: { false },
+            recordingState: { recordingState },
+            toggleRecorderPanel: { _ in
+                toggleCount += 1
+                recordingState = toggleCount == 1 ? .starting : .idle
+            },
+            cancelRecording: {},
+            cancelEnhancementAndPasteOriginal: {}
+        )
+
+        await handler.handleKeyDown(
+            action: .primaryRecording,
+            eventTime: 20,
+            mode: .pushToTalk
+        )
+        await handler.handleKeyUp(
+            action: .primaryRecording,
+            eventTime: 20.1,
+            mode: .pushToTalk
+        )
+
+        #expect(toggleCount == 2)
+        #expect(recordingState == .idle)
+    }
+
+    @Test func longHybridReleaseStopsStartupBeforePanelIsVisible() async {
+        var recordingState: RecordingState = .idle
+        var toggleCount = 0
+
+        let handler = RecordingShortcutModeHandler(
+            canHandleShortcutAction: { true },
+            isRecorderVisible: { false },
+            recordingState: { recordingState },
+            toggleRecorderPanel: { _ in
+                toggleCount += 1
+                recordingState = toggleCount == 1 ? .starting : .idle
+            },
+            cancelRecording: {},
+            cancelEnhancementAndPasteOriginal: {}
+        )
+
+        await handler.handleKeyDown(
+            action: .primaryRecording,
+            eventTime: 30,
+            mode: .hybrid
+        )
+        await handler.handleKeyUp(
+            action: .primaryRecording,
+            eventTime: 30.6,
+            mode: .hybrid
+        )
+
+        #expect(toggleCount == 2)
+        #expect(recordingState == .idle)
+    }
 }

@@ -656,14 +656,16 @@ final class RecordingShortcutModeHandler {
             isHandsFreeRecording = true
 
         case .pushToTalk:
-            if isRecorderVisible() {
+            if recordingState() == .starting || recordingState() == .recording {
                 guard canHandleShortcutAction() else { return }
                 await toggleRecorderPanel(modeId)
             }
 
         case .hybrid:
             let pressDuration = shortcutPressStartTime.map { eventTime - $0 } ?? 0
-            if pressDuration >= hybridPressThreshold && recordingState() == .recording {
+            if pressDuration >= hybridPressThreshold
+                && (recordingState() == .starting || recordingState() == .recording)
+            {
                 guard canHandleShortcutAction() else { return }
                 await toggleRecorderPanel(modeId)
             } else {
