@@ -242,30 +242,21 @@ struct VoiceInkApp: App {
         let transcriptConfig = ModelConfiguration(
             "default",
             schema: transcriptSchema,
-            url: defaultStoreURL,
-            cloudKitDatabase: .none
+            url: defaultStoreURL
         )
 
         let dictionarySchema = Schema([VocabularyWord.self, WordReplacement.self])
-        #if LOCAL_BUILD
-            let dictionaryCloudKit: ModelConfiguration.CloudKitDatabase = .none
-        #else
-            let dictionaryCloudKit: ModelConfiguration.CloudKitDatabase = .private(
-                "iCloud.com.prakashjoshipax.VoiceInk")
-        #endif
         let dictionaryConfig = ModelConfiguration(
             "dictionary",
             schema: dictionarySchema,
-            url: dictionaryStoreURL,
-            cloudKitDatabase: dictionaryCloudKit
+            url: dictionaryStoreURL
         )
 
         let statsSchema = Schema([SessionMetric.self])
         let statsConfig = ModelConfiguration(
             "stats",
             schema: statsSchema,
-            url: statsStoreURL,
-            cloudKitDatabase: .none
+            url: statsStoreURL
         )
 
         do {

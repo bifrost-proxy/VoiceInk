@@ -19994,12 +19994,32 @@
         }
       }
     },
+    "Configuration Conflicts" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "配置冲突"
+          }
+        }
+      }
+    },
     "Configuration sync is on by default. Usage data sync is opt-in and includes transcription history, corrections, reports, and every persisted transcription-stage performance measurement. Source audio requires a separate opt-in. API keys, permissions, device selections, and downloaded model files always stay on this Mac." : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "配置同步默认开启。使用数据同步需要手动开启，包括转录历史、修改记录、报告以及每次转录各阶段保存的性能数据。原始音频需要单独开启同步。API 密钥、权限、设备选择和已下载的模型文件始终仅保留在本机。"
+          }
+        }
+      }
+    },
+    "Dictionary Conflicts" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "词典冲突"
           }
         }
       }
@@ -20034,6 +20054,16 @@
         }
       }
     },
+    "Local-only Removed Records" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "仅本机移除的记录"
+          }
+        }
+      }
+    },
     "Maximum Records" : {
       "localizations" : {
         "zh-Hans" : {
@@ -20064,12 +20094,32 @@
         }
       }
     },
+    "Restore from iCloud" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "从 iCloud 恢复"
+          }
+        }
+      }
+    },
     "Saved Audio" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "已保存音频"
+          }
+        }
+      }
+    },
+    "Show Sync Folder" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "显示同步文件夹"
           }
         }
       }
@@ -20164,12 +20214,32 @@
         }
       }
     },
+    "Usage Conflicts" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "使用数据冲突"
+          }
+        }
+      }
+    },
     "Usage Last Synced" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "使用数据上次同步"
+          }
+        }
+      }
+    },
+    "VoiceInk syncs configuration and dictionary entries as immutable files in iCloud Drive; concurrent device edits are preserved and reported above. Usage data sync is opt-in and includes transcription history and every persisted session metric. Source audio requires a separate opt-in and is verified by SHA-256. Explicit history deletion syncs to other devices, while automatic local cleanup never deletes their cloud archive. API keys, permissions, device selections, databases, and downloaded models always stay on this Mac." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "VoiceInk 通过 iCloud Drive 中的不可变文件同步配置和词典；多设备并发修改会被保留，并在上方显示冲突。使用数据同步需要手动开启，包括转录历史和所有已保存的会话指标。原始音频需要单独开启，并通过 SHA-256 校验。手动删除历史记录会同步到其他设备，而自动本地清理不会删除其他设备的云端归档。API 密钥、权限、设备选择、数据库和已下载模型始终只保留在本机。"
           }
         }
       }

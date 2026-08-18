@@ -346,10 +346,20 @@ struct SettingsView: View {
                         cloudSync.syncNow()
                     }
                     .disabled(!configurationSyncEnabled)
-                    Button("Show Sync File") {
+                    Button("Show Sync Folder") {
                         cloudSync.revealConfigurationFile()
                     }
                     .disabled(cloudSync.configurationFileURL == nil)
+                }
+
+                LabeledContent("Configuration Conflicts") {
+                    Text(cloudSync.configurationConflictCount, format: .number)
+                        .foregroundStyle(cloudSync.configurationConflictCount == 0 ? Color.secondary : Color.orange)
+                }
+
+                LabeledContent("Dictionary Conflicts") {
+                    Text(cloudSync.dictionaryConflictCount, format: .number)
+                        .foregroundStyle(cloudSync.dictionaryConflictCount == 0 ? Color.secondary : Color.orange)
                 }
 
                 Divider()
@@ -386,6 +396,23 @@ struct SettingsView: View {
                             .foregroundStyle(.secondary)
                     }
 
+                    LabeledContent("Usage Conflicts") {
+                        Text(usageSync.conflictCount, format: .number)
+                            .foregroundStyle(usageSync.conflictCount == 0 ? Color.secondary : Color.orange)
+                    }
+
+                    if usageSync.locallySuppressedRecordCount > 0 {
+                        LabeledContent("Local-only Removed Records") {
+                            HStack(spacing: 8) {
+                                Text(usageSync.locallySuppressedRecordCount, format: .number)
+                                    .foregroundStyle(.secondary)
+                                Button("Restore from iCloud") {
+                                    usageSync.restoreLocallySuppressedRecords()
+                                }
+                            }
+                        }
+                    }
+
                     if let lastSyncedAt = usageSync.lastSyncedAt {
                         LabeledContent("Usage Last Synced") {
                             Text(lastSyncedAt, format: .dateTime.year().month().day().hour().minute().second())
@@ -413,7 +440,7 @@ struct SettingsView: View {
                 Text("iCloud")
             } footer: {
                 Text(
-                    "Configuration sync is on by default. Usage data sync is opt-in and includes transcription history, corrections, reports, and every persisted transcription-stage performance measurement. Source audio requires a separate opt-in. API keys, permissions, device selections, and downloaded model files always stay on this Mac."
+                    "VoiceInk syncs configuration and dictionary entries as immutable files in iCloud Drive; concurrent device edits are preserved and reported above. Usage data sync is opt-in and includes transcription history and every persisted session metric. Source audio requires a separate opt-in and is verified by SHA-256. Explicit history deletion syncs to other devices, while automatic local cleanup never deletes their cloud archive. API keys, permissions, device selections, databases, and downloaded models always stay on this Mac."
                 )
             }
 

@@ -92,6 +92,7 @@ final class HistoryStorageManager: ObservableObject {
             var sizes = records.map(Self.managedSize)
             var totalManagedBytes = sizes.reduce(Int64(0), +)
             var result = HistoryStorageCleanupResult()
+            var locallyRemovedRecordIDs = Set<UUID>()
 
             // Keep the newest case even when one recording alone exceeds the
             // configured capacity. The UI reports the remaining overage.
@@ -123,6 +124,7 @@ final class HistoryStorageManager: ObservableObject {
                     modelContext.delete(metric)
                 }
                 modelContext.delete(oldest)
+                locallyRemovedRecordIDs.insert(transcriptionID)
                 totalManagedBytes -= oldestSize
                 result.deletedRecordCount += 1
                 result.deletedAudioBytes += removedAudioBytes
@@ -130,6 +132,7 @@ final class HistoryStorageManager: ObservableObject {
 
             if result.deletedRecordCount > 0 {
                 try modelContext.save()
+                CloudUsageDataSyncService.shared.recordsWereRemovedLocally(locallyRemovedRecordIDs)
                 DashboardStatsCache.shared.markStale()
                 NotificationCenter.default.post(name: .transcriptionDeleted, object: nil)
                 NotificationCenter.default.post(name: .sessionMetricsDidChange, object: nil)

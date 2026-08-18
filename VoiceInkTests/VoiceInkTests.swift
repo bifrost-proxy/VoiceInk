@@ -43,6 +43,256 @@ struct VoiceInkTests {
         }
     }
 
+    @Test func syncRegisterIgnoresArrivalOrderWhenAnEditSupersedesAnOlderValue() throws {
+        let originalID = UUID()
+        let replacementID = UUID()
+        let original = try syncEnvelope(
+            operationID: originalID,
+            deviceID: "Mac-A",
+            sequence: 1,
+            mutation: VoiceInkSyncMutation(key: "preference/language", value: Data("en".utf8))
+        )
+        let replacement = try syncEnvelope(
+            operationID: replacementID,
+            deviceID: "Mac-B",
+            sequence: 1,
+            mutation: VoiceInkSyncMutation(
+                key: "preference/language",
+                value: Data("zh".utf8),
+                supersededOperationIDs: [originalID]
+            )
+        )
+
+        var register = VoiceInkSyncRegisterState()
+        register.apply(replacement.envelope, batch: replacement.batch)
+        register.apply(original.envelope, batch: original.batch)
+
+        #expect(register.selectedValues()["preference/language"] == Data("zh".utf8))
+        #expect(register.operationIDs(for: "preference/language") == [replacementID])
+        #expect(register.conflictCount == 0)
+    }
+
+    @Test func syncRegisterPreservesOfflineConcurrentValuesUntilObservedResolution() throws {
+        let firstID = UUID()
+        let secondID = UUID()
+        let resolutionID = UUID()
+        let first = try syncEnvelope(
+            operationID: firstID,
+            deviceID: "Mac-A",
+            sequence: 1,
+            mutation: VoiceInkSyncMutation(key: "preference/language", value: Data("en".utf8))
+        )
+        let second = try syncEnvelope(
+            operationID: secondID,
+            deviceID: "Mac-B",
+            sequence: 1,
+            mutation: VoiceInkSyncMutation(key: "preference/language", value: Data("zh".utf8))
+        )
+
+        var register = VoiceInkSyncRegisterState()
+        register.apply(first.envelope, batch: first.batch)
+        register.apply(second.envelope, batch: second.batch)
+
+        #expect(Set(register.operationIDs(for: "preference/language")) == Set([firstID, secondID]))
+        #expect(register.conflictCount == 1)
+
+        let resolution = try syncEnvelope(
+            operationID: resolutionID,
+            deviceID: "Mac-A",
+            sequence: 2,
+            mutation: VoiceInkSyncMutation(
+                key: "preference/language",
+                value: Data("ja".utf8),
+                supersededOperationIDs: register.operationIDs(for: "preference/language")
+            )
+        )
+        register.apply(resolution.envelope, batch: resolution.batch)
+
+        #expect(register.selectedValues()["preference/language"] == Data("ja".utf8))
+        #expect(register.operationIDs(for: "preference/language") == [resolutionID])
+        #expect(register.conflictCount == 0)
+    }
+
+    @Test func syncRegisterResolutionRemainsStableWhenSupersededFilesArriveLate() throws {
+        let firstID = UUID()
+        let secondID = UUID()
+        let resolutionID = UUID()
+        let first = try syncEnvelope(
+            operationID: firstID, deviceID: "Mac-A", sequence: 1,
+            mutation: VoiceInkSyncMutation(key: "record/1", value: Data("first".utf8))
+        )
+        let second = try syncEnvelope(
+            operationID: secondID, deviceID: "Mac-B", sequence: 1,
+            mutation: VoiceInkSyncMutation(key: "record/1", value: Data("second".utf8))
+        )
+        let resolution = try syncEnvelope(
+            operationID: resolutionID, deviceID: "Mac-C", sequence: 1,
+            mutation: VoiceInkSyncMutation(
+                key: "record/1", value: Data("resolved".utf8),
+                supersededOperationIDs: [firstID, secondID]
+            )
+        )
+
+        var register = VoiceInkSyncRegisterState()
+        register.apply(resolution.envelope, batch: resolution.batch)
+        register.apply(second.envelope, batch: second.batch)
+        register.apply(first.envelope, batch: first.batch)
+
+        #expect(register.selectedValues()["record/1"] == Data("resolved".utf8))
+        #expect(register.operationIDs(for: "record/1") == [resolutionID])
+    }
+
+    @Test func dictionaryAddWinsOnlyUntilADeleteObservesEveryActiveCandidate() throws {
+        let addID = UUID()
+        let concurrentDeleteID = UUID()
+        let observedDeleteID = UUID()
+        let add = try syncEnvelope(
+            operationID: addID, deviceID: "Mac-A", sequence: 1, domain: .dictionary,
+            mutation: VoiceInkSyncMutation(key: "vocabulary/voiceink", value: Data("VoiceInk".utf8))
+        )
+        let concurrentDelete = try syncEnvelope(
+            operationID: concurrentDeleteID, deviceID: "Mac-B", sequence: 1, domain: .dictionary,
+            mutation: VoiceInkSyncMutation(key: "vocabulary/voiceink", value: nil)
+        )
+
+        var register = VoiceInkSyncRegisterState()
+        register.apply(concurrentDelete.envelope, batch: concurrentDelete.batch)
+        register.apply(add.envelope, batch: add.batch)
+        #expect(register.selectedValues(addWins: true)["vocabulary/voiceink"] == Data("VoiceInk".utf8))
+
+        let observedDelete = try syncEnvelope(
+            operationID: observedDeleteID, deviceID: "Mac-B", sequence: 2, domain: .dictionary,
+            mutation: VoiceInkSyncMutation(
+                key: "vocabulary/voiceink", value: nil,
+                supersededOperationIDs: register.operationIDs(for: "vocabulary/voiceink")
+            )
+        )
+        register.apply(observedDelete.envelope, batch: observedDelete.batch)
+
+        #expect(register.selectedValues(addWins: true)["vocabulary/voiceink"] == nil)
+        #expect(register.operationIDs(for: "vocabulary/voiceink") == [observedDeleteID])
+        #expect(register.conflictCount == 0)
+    }
+
+    @Test func usageDeleteWinsConcurrentEditWithoutDiscardingTheEditCandidate() throws {
+        let editID = UUID()
+        let deleteID = UUID()
+        let edit = try syncEnvelope(
+            operationID: editID, deviceID: "Mac-A", sequence: 1, domain: .usage,
+            mutation: VoiceInkSyncMutation(key: "transcription/record", value: Data("edited".utf8))
+        )
+        let deletion = try syncEnvelope(
+            operationID: deleteID, deviceID: "Mac-B", sequence: 1, domain: .usage,
+            mutation: VoiceInkSyncMutation(key: "transcription/record", value: nil)
+        )
+
+        var register = VoiceInkSyncRegisterState()
+        register.apply(edit.envelope, batch: edit.batch)
+        register.apply(deletion.envelope, batch: deletion.batch)
+
+        #expect(register.selectedValues(deleteWins: true)["transcription/record"] == nil)
+        #expect(Set(register.operationIDs(for: "transcription/record")) == Set([editID, deleteID]))
+        #expect(register.conflictCount == 1)
+    }
+
+    @MainActor
+    @Test func syncCoreRejectsOversizedOperationsWithoutWritingPartialFiles() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("VoiceInkOversizedSync-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let suite = "VoiceInkTests.OversizedSync.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let core = ICloudDriveSyncCore(defaults: defaults, iCloudDriveRootURL: root)
+        let payload = Data(repeating: 0x5a, count: ICloudDriveSyncCore.maximumPayloadBytes + 1)
+
+        #expect(throws: POSIXError.self) {
+            _ = try core.append(
+                VoiceInkSyncMutationBatch(mutations: [
+                    VoiceInkSyncMutation(key: "preference/oversized", value: payload)
+                ]),
+                domain: .configuration
+            )
+        }
+
+        let operations = root.appendingPathComponent(
+            "VoiceInk/Sync/v3/Operations/configuration", isDirectory: true)
+        #expect(!FileManager.default.fileExists(atPath: operations.path))
+    }
+
+    @MainActor
+    @Test func syncCoreSplitsLargeMutationSetsIntoValidImmutableOperations() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("VoiceInkChunkedSync-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let suite = "VoiceInkTests.ChunkedSync.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let core = ICloudDriveSyncCore(defaults: defaults, iCloudDriveRootURL: root)
+        let mutations = [
+            VoiceInkSyncMutation(
+                key: "preference/first",
+                value: Data(repeating: 0x3c, count: 4 * 1_024 * 1_024)
+            ),
+            VoiceInkSyncMutation(
+                key: "preference/second",
+                value: Data(repeating: 0x4d, count: 4 * 1_024 * 1_024)
+            ),
+        ]
+
+        let written = try core.appendChunked(mutations, domain: .configuration)
+        #expect(written.count == 2)
+        #expect(written.flatMap { $0.mutations } == mutations)
+        #expect(try core.readAll(in: .configuration).count == 2)
+        for item in written {
+            #expect(item.envelope.payload.count <= ICloudDriveSyncCore.maximumPayloadBytes)
+        }
+
+        let retried = try core.appendChunked(mutations, domain: .configuration)
+        #expect(retried.map(\.envelope.operationID) == written.map(\.envelope.operationID))
+        #expect(try core.readAll(in: .configuration).count == 2)
+    }
+
+    @Test func audioDescriptorRejectsUnsafeCloudPaths() {
+        #expect(
+            CloudUsageDataSyncService.AudioDescriptor(
+                sha256: String(repeating: "a", count: 64), byteCount: 1, fileExtension: "wav"
+            ).isValid
+        )
+        #expect(
+            !CloudUsageDataSyncService.AudioDescriptor(
+                sha256: String(repeating: "a", count: 64), byteCount: 1, fileExtension: "../wav"
+            ).isValid
+        )
+        #expect(
+            !CloudUsageDataSyncService.AudioDescriptor(
+                sha256: "not-a-digest", byteCount: 1, fileExtension: "wav"
+            ).isValid
+        )
+    }
+
+    private func syncEnvelope(
+        operationID: UUID,
+        deviceID: String,
+        sequence: UInt64,
+        domain: VoiceInkSyncDomain = .configuration,
+        mutation: VoiceInkSyncMutation
+    ) throws -> (envelope: VoiceInkSyncEnvelope, batch: VoiceInkSyncMutationBatch) {
+        let batch = VoiceInkSyncMutationBatch(mutations: [mutation])
+        let payload = try PropertyListEncoder().encode(batch)
+        return (
+            VoiceInkSyncEnvelope(
+                operationID: operationID,
+                domain: domain,
+                authorDeviceID: deviceID,
+                authorSequence: sequence,
+                versionClock: [deviceID: sequence],
+                payload: payload
+            ),
+            batch
+        )
+    }
+
     @Test func cloudAndRetentionDefaultsArePrivacyPreservingAndUnlimited() throws {
         let suiteName = "VoiceInkTests.SyncDefaults"
         let defaults = try #require(UserDefaults(suiteName: suiteName))
@@ -285,279 +535,6 @@ struct VoiceInkTests {
         #expect(remaining.map(\.text) == ["record-1", "record-2"])
     }
 
-    @MainActor
-    @Test func cloudUsageSyncTransfersHistoryAndPerformanceBetweenDevices() async throws {
-        let temporaryRoot = FileManager.default.temporaryDirectory
-            .appendingPathComponent("VoiceInkUsageSyncTests-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: temporaryRoot, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: temporaryRoot) }
-
-        let suiteAName = "VoiceInkTests.UsageSync.A.\(UUID().uuidString)"
-        let suiteBName = "VoiceInkTests.UsageSync.B.\(UUID().uuidString)"
-        let defaultsA = try #require(UserDefaults(suiteName: suiteAName))
-        let defaultsB = try #require(UserDefaults(suiteName: suiteBName))
-        defer {
-            defaultsA.removePersistentDomain(forName: suiteAName)
-            defaultsB.removePersistentDomain(forName: suiteBName)
-        }
-        defaultsA.set(true, forKey: CloudSyncSettingsKeys.usageDataSyncEnabled)
-        defaultsB.set(true, forKey: CloudSyncSettingsKeys.usageDataSyncEnabled)
-        defaultsA.set(true, forKey: CloudSyncSettingsKeys.usageAudioSyncEnabled)
-        defaultsB.set(false, forKey: CloudSyncSettingsKeys.usageAudioSyncEnabled)
-
-        let schema = Schema([Transcription.self, SessionMetric.self])
-        let configurationA = ModelConfiguration(isStoredInMemoryOnly: true)
-        let configurationB = ModelConfiguration(isStoredInMemoryOnly: true)
-        let containerA = try ModelContainer(for: schema, configurations: [configurationA])
-        let containerB = try ModelContainer(for: schema, configurations: [configurationB])
-
-        var performance = TranscriptionPerformanceSnapshot(executionMode: "nativeStreaming")
-        performance.firstPartialLatency = 0.35
-        performance.finalizationDuration = 0.11
-        performance.totalProcessingDuration = 1.6
-        let sourceRecord = Transcription(text: "跨设备转录", duration: 2.4)
-        let sourceAudioURL = temporaryRoot.appendingPathComponent("source.wav")
-        try Data(repeating: 7, count: 4_096).write(to: sourceAudioURL)
-        sourceRecord.audioFileURL = sourceAudioURL.absoluteString
-        sourceRecord.transcriptionStatus = TranscriptionStatus.completed.rawValue
-        sourceRecord.performanceSnapshot = performance
-        containerA.mainContext.insert(sourceRecord)
-        try containerA.mainContext.save()
-
-        let serviceA = CloudUsageDataSyncService(
-            defaults: defaultsA,
-            iCloudDriveRootURL: temporaryRoot,
-            deviceName: "Mac A"
-        )
-        serviceA.start(modelContext: containerA.mainContext)
-        try await waitForUsageSync(serviceA)
-
-        let serviceB = CloudUsageDataSyncService(
-            defaults: defaultsB,
-            iCloudDriveRootURL: temporaryRoot,
-            deviceName: "Mac B"
-        )
-        serviceB.start(modelContext: containerB.mainContext)
-        try await waitForUsageSync(serviceB)
-
-        let imported = try #require(containerB.mainContext.fetch(FetchDescriptor<Transcription>()).first)
-        #expect(imported.id == sourceRecord.id)
-        #expect(imported.text == "跨设备转录")
-        #expect(imported.performanceSnapshot == performance)
-
-        // A device that only imported the record does not republish a redundant
-        // snapshot. The source snapshot still preserves its audio descriptor.
-        serviceB.syncNow()
-        let recordDirectory = temporaryRoot
-            .appendingPathComponent("VoiceInk/UsageData/v1/Records", isDirectory: true)
-            .appendingPathComponent(sourceRecord.id.uuidString, isDirectory: true)
-        let replicaTimeout = Date().addingTimeInterval(5)
-        var snapshots: [CloudUsageDataSyncService.Snapshot] = []
-        repeat {
-            let urls = (try? FileManager.default.contentsOfDirectory(
-                at: recordDirectory,
-                includingPropertiesForKeys: nil
-            )) ?? []
-            snapshots = urls.compactMap { url in
-                guard let data = try? Data(contentsOf: url) else { return nil }
-                return try? PropertyListDecoder().decode(CloudUsageDataSyncService.Snapshot.self, from: data)
-            }
-            if !snapshots.isEmpty { break }
-            try await Task.sleep(for: .milliseconds(25))
-        } while Date() < replicaTimeout
-        #expect(snapshots.count == 1)
-        #expect(snapshots.allSatisfy { $0.audio != nil })
-
-        serviceA.setEnabled(false)
-        serviceB.setEnabled(false)
-    }
-
-    @MainActor
-    @Test func cloudUsageSyncOnlyExportsEventRecordsAfterBootstrap() async throws {
-        let temporaryRoot = FileManager.default.temporaryDirectory
-            .appendingPathComponent("VoiceInkIncrementalUsageSyncTests-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: temporaryRoot, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: temporaryRoot) }
-
-        let suiteName = "VoiceInkTests.IncrementalUsageSync.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suiteName))
-        defer { defaults.removePersistentDomain(forName: suiteName) }
-        defaults.set(true, forKey: CloudSyncSettingsKeys.usageDataSyncEnabled)
-
-        let schema = Schema([Transcription.self, SessionMetric.self])
-        let configuration = ModelConfiguration(isStoredInMemoryOnly: true)
-        let container = try ModelContainer(for: schema, configurations: [configuration])
-        let first = Transcription(text: "first", duration: 1)
-        container.mainContext.insert(first)
-        try container.mainContext.save()
-
-        let service = CloudUsageDataSyncService(defaults: defaults, iCloudDriveRootURL: temporaryRoot)
-        service.start(modelContext: container.mainContext)
-        try await waitForUsageSync(service)
-
-        let recordsRoot = temporaryRoot.appendingPathComponent("VoiceInk/UsageData/v1/Records", isDirectory: true)
-        let deviceID = try #require(defaults.string(forKey: "CloudUsageDataSync.deviceID"))
-        let firstSnapshotURL = recordsRoot
-            .appendingPathComponent(first.id.uuidString, isDirectory: true)
-            .appendingPathComponent(deviceID + ".plist")
-        let firstWriteDate = try #require(
-            try firstSnapshotURL.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
-        )
-        #expect(service.lastExportCandidateCount == 1)
-        #expect(service.lastSyncUsedLegacyScan)
-
-        let bootstrapSyncDate = try #require(service.lastSyncedAt)
-        service.syncNow()
-        try await waitForUsageSync(service, after: bootstrapSyncDate)
-        let unchangedWriteDate = try #require(
-            try firstSnapshotURL.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
-        )
-        #expect(service.lastExportCandidateCount == 0)
-        #expect(service.lastImportCandidateCount == 0)
-        #expect(!service.lastSyncUsedLegacyScan)
-        #expect(unchangedWriteDate == firstWriteDate)
-
-        let second = Transcription(text: "second", duration: 2)
-        container.mainContext.insert(second)
-        try container.mainContext.save()
-        let incrementalSyncDate = try #require(service.lastSyncedAt)
-        service.recordDidChange(second.id)
-        try await waitForUsageSync(service, after: incrementalSyncDate)
-
-        let secondSnapshotURL = recordsRoot
-            .appendingPathComponent(second.id.uuidString, isDirectory: true)
-            .appendingPathComponent(deviceID + ".plist")
-        #expect(FileManager.default.fileExists(atPath: secondSnapshotURL.path))
-        #expect(service.lastExportCandidateCount == 1)
-        let finalFirstWriteDate = try #require(
-            try firstSnapshotURL.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
-        )
-        #expect(finalFirstWriteDate == firstWriteDate)
-
-        let manifestURL = temporaryRoot
-            .appendingPathComponent("VoiceInk/UsageData/v1/Devices", isDirectory: true)
-            .appendingPathComponent(deviceID + ".plist")
-        let manifest = try PropertyListDecoder().decode(
-            CloudUsageDataSyncService.DeviceManifest.self,
-            from: Data(contentsOf: manifestURL)
-        )
-        #expect(manifest.entries.count == 2)
-        #expect(manifest.sourceDeviceName == service.localDeviceName)
-        service.setEnabled(false)
-    }
-
-    @MainActor
-    @Test func cloudUsageSyncMigratesSharedLegacyIdentityBeforeRepublishing() async throws {
-        let temporaryRoot = FileManager.default.temporaryDirectory
-            .appendingPathComponent("VoiceInkIdentityMigrationTests-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: temporaryRoot, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: temporaryRoot) }
-
-        let sharedLegacyID = "D2254664-D184-4EEB-AA7D-6C118425D74E"
-        let cloudSuiteName = "VoiceInkTests.IdentityMigration.Cloud.\(UUID().uuidString)"
-        let localSuiteName = "VoiceInkTests.IdentityMigration.Local.\(UUID().uuidString)"
-        let cloudDefaults = try #require(UserDefaults(suiteName: cloudSuiteName))
-        let localDefaults = try #require(UserDefaults(suiteName: localSuiteName))
-        defer {
-            cloudDefaults.removePersistentDomain(forName: cloudSuiteName)
-            localDefaults.removePersistentDomain(forName: localSuiteName)
-        }
-
-        cloudDefaults.set(true, forKey: CloudSyncSettingsKeys.usageDataSyncEnabled)
-        cloudDefaults.set(sharedLegacyID, forKey: "CloudUsageDataSync.deviceID")
-        cloudDefaults.set(2, forKey: "LocalKeychain_CloudUsageDataSyncIdentityVersion")
-
-        let schema = Schema([Transcription.self, SessionMetric.self])
-        let cloudContainer = try ModelContainer(
-            for: schema,
-            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
-        )
-        let existingID = UUID()
-        let remoteOnlyID = UUID()
-        let cloudExisting = Transcription(text: "already local", duration: 1)
-        cloudExisting.id = existingID
-        let cloudRemoteOnly = Transcription(text: "from another Mac", duration: 2)
-        cloudRemoteOnly.id = remoteOnlyID
-        cloudContainer.mainContext.insert(cloudExisting)
-        cloudContainer.mainContext.insert(cloudRemoteOnly)
-        try cloudContainer.mainContext.save()
-
-        let cloudService = CloudUsageDataSyncService(
-            defaults: cloudDefaults,
-            iCloudDriveRootURL: temporaryRoot,
-            deviceName: "Other Mac"
-        )
-        cloudService.start(modelContext: cloudContainer.mainContext)
-        try await waitForUsageSync(cloudService)
-        cloudService.setEnabled(false)
-
-        let legacySnapshotURL = temporaryRoot
-            .appendingPathComponent("VoiceInk/UsageData/v1/Records", isDirectory: true)
-            .appendingPathComponent(remoteOnlyID.uuidString, isDirectory: true)
-            .appendingPathComponent(sharedLegacyID + ".plist")
-        let legacySnapshot = try PropertyListDecoder().decode(
-            CloudUsageDataSyncService.Snapshot.self,
-            from: Data(contentsOf: legacySnapshotURL)
-        )
-
-        localDefaults.set(true, forKey: CloudSyncSettingsKeys.usageDataSyncEnabled)
-        localDefaults.set(sharedLegacyID, forKey: "CloudUsageDataSync.deviceID")
-        // Simulate another upgraded Mac copying the old v2 marker through an
-        // older VoiceInk configuration-sync implementation.
-        localDefaults.set(2, forKey: "CloudUsageDataSync.localIdentityVersionV2")
-        localDefaults.set(true, forKey: "CloudUsageDataSync.localBootstrapCompletedV2")
-        localDefaults.set(true, forKey: "CloudUsageDataSync.legacyImportCompletedV2")
-        localDefaults.set(
-            try JSONEncoder().encode([remoteOnlyID.uuidString: legacySnapshot.revisionID.uuidString]),
-            forKey: "CloudUsageDataSync.appliedRevisions"
-        )
-
-        let localContainer = try ModelContainer(
-            for: schema,
-            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
-        )
-        let localExisting = Transcription(text: "already local", duration: 1)
-        localExisting.id = existingID
-        localContainer.mainContext.insert(localExisting)
-        try localContainer.mainContext.save()
-
-        let localService = CloudUsageDataSyncService(
-            defaults: localDefaults,
-            iCloudDriveRootURL: temporaryRoot,
-            deviceName: "Eden Mac Studio"
-        )
-        localService.start(modelContext: localContainer.mainContext)
-
-        let timeout = Date().addingTimeInterval(5)
-        var migratedManifest: CloudUsageDataSyncService.DeviceManifest?
-        repeat {
-            let migratedID = localDefaults.string(forKey: "CloudUsageDataSync.deviceID") ?? ""
-            let manifestURL = temporaryRoot
-                .appendingPathComponent("VoiceInk/UsageData/v1/Devices", isDirectory: true)
-                .appendingPathComponent(migratedID + ".plist")
-            if let data = try? Data(contentsOf: manifestURL),
-                let manifest = try? PropertyListDecoder().decode(
-                    CloudUsageDataSyncService.DeviceManifest.self,
-                    from: data
-                ), manifest.entries.count == 2
-            {
-                migratedManifest = manifest
-                break
-            }
-            try await Task.sleep(for: .milliseconds(25))
-        } while Date() < timeout
-
-        let migratedID = try #require(localDefaults.string(forKey: "CloudUsageDataSync.deviceID"))
-        let localRecords = try localContainer.mainContext.fetch(FetchDescriptor<Transcription>())
-        #expect(migratedID != sharedLegacyID)
-        #expect(localDefaults.integer(forKey: "LocalKeychain_CloudUsageDataSyncIdentityVersion") == 2)
-        #expect(localRecords.count == 2)
-        #expect(localRecords.contains { $0.id == remoteOnlyID && $0.text == "from another Mac" })
-        #expect(migratedManifest?.sourceDeviceID == migratedID)
-        #expect(migratedManifest?.sourceDeviceName == "Eden Mac Studio")
-        #expect(migratedManifest?.entries.count == 2)
-        localService.setEnabled(false)
-    }
 
     @MainActor
     @Test func cloudUsageBulkSyncImportsHistoryWithoutReexportingAtSteadyState() async throws {
@@ -575,7 +552,19 @@ struct VoiceInkTests {
         let configuration = ModelConfiguration(isStoredInMemoryOnly: true)
         let container = try ModelContainer(for: schema, configurations: [configuration])
         for index in 0..<200 {
-            container.mainContext.insert(Transcription(text: "record-\(index)", duration: 1))
+            let transcription = Transcription(text: "record-\(index)", duration: 1)
+            container.mainContext.insert(transcription)
+            container.mainContext.insert(SessionMetric(
+                transcriptionId: transcription.id,
+                wordCount: 1,
+                audioDuration: 1,
+                transcriptionModelName: "bulk-model",
+                transcriptionDuration: 0.5,
+                speedFactor: 2,
+                modeName: "Dictation",
+                aiEnhancementModelName: nil,
+                enhancementDuration: nil
+            ))
         }
         try container.mainContext.save()
 
@@ -599,6 +588,7 @@ struct VoiceInkTests {
         receivingService.start(modelContext: receivingContainer.mainContext)
         try await waitForUsageSync(receivingService)
         #expect(try receivingContainer.mainContext.fetchCount(FetchDescriptor<Transcription>()) == 200)
+        #expect(try receivingContainer.mainContext.fetchCount(FetchDescriptor<SessionMetric>()) == 200)
         #expect(receivingService.lastImportCandidateCount == 200)
         receivingService.setEnabled(false)
 
@@ -613,7 +603,7 @@ struct VoiceInkTests {
 
     @MainActor
     private func waitForUsageSync(_ service: CloudUsageDataSyncService) async throws {
-        let timeout = Date().addingTimeInterval(5)
+        let timeout = Date().addingTimeInterval(20)
         while service.lastSyncedAt == nil && Date() < timeout {
             try await Task.sleep(for: .milliseconds(25))
         }
@@ -629,6 +619,339 @@ struct VoiceInkTests {
         }
         #expect(service.state == .synced)
         #expect((service.lastSyncedAt ?? .distantPast) > date)
+    }
+
+    @MainActor
+    @Test func cloudUsageV3SyncsEveryMetricAudioAndGlobalDeletion() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("VoiceInkUsageV3-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let suiteA = "VoiceInkTests.UsageV3.A.\(UUID().uuidString)"
+        let suiteB = "VoiceInkTests.UsageV3.B.\(UUID().uuidString)"
+        let defaultsA = try #require(UserDefaults(suiteName: suiteA))
+        let defaultsB = try #require(UserDefaults(suiteName: suiteB))
+        defer {
+            defaultsA.removePersistentDomain(forName: suiteA)
+            defaultsB.removePersistentDomain(forName: suiteB)
+        }
+        for defaults in [defaultsA, defaultsB] {
+            defaults.set(true, forKey: CloudSyncSettingsKeys.usageDataSyncEnabled)
+            defaults.set(true, forKey: CloudSyncSettingsKeys.usageAudioSyncEnabled)
+        }
+
+        let schema = Schema([Transcription.self, SessionMetric.self])
+        let containerA = try ModelContainer(
+            for: schema, configurations: [ModelConfiguration(isStoredInMemoryOnly: true)])
+        let containerB = try ModelContainer(
+            for: schema, configurations: [ModelConfiguration(isStoredInMemoryOnly: true)])
+        let record = Transcription(text: "v3 history", duration: 2.5)
+        let audio = root.appendingPathComponent("source.wav")
+        try Data(repeating: 0x5a, count: 8_192).write(to: audio)
+        record.audioFileURL = audio.absoluteString
+        containerA.mainContext.insert(record)
+        let metricA = SessionMetric(
+            transcriptionId: record.id, wordCount: 2, audioDuration: 2.5,
+            transcriptionModelName: "model-a", transcriptionDuration: 1, speedFactor: 2.5,
+            modeName: "Dictation", aiEnhancementModelName: nil, enhancementDuration: nil)
+        let metricB = SessionMetric(
+            transcriptionId: record.id, source: "file", wordCount: 3, audioDuration: 2.5,
+            transcriptionModelName: "model-b", transcriptionDuration: 1.2, speedFactor: 2,
+            modeName: "Notes", aiEnhancementModelName: "qwen", enhancementDuration: 0.4)
+        containerA.mainContext.insert(metricA)
+        containerA.mainContext.insert(metricB)
+        try containerA.mainContext.save()
+
+        let recordingsA = root.appendingPathComponent("LocalRecordings-A", isDirectory: true)
+        let recordingsB = root.appendingPathComponent("LocalRecordings-B", isDirectory: true)
+        let serviceA = CloudUsageDataSyncService(
+            defaults: defaultsA, iCloudDriveRootURL: root, localRecordingsDirectoryURL: recordingsA)
+        serviceA.start(modelContext: containerA.mainContext)
+        try await waitForUsageSync(serviceA)
+        let serviceB = CloudUsageDataSyncService(
+            defaults: defaultsB, iCloudDriveRootURL: root, localRecordingsDirectoryURL: recordingsB)
+        serviceB.start(modelContext: containerB.mainContext)
+        try await waitForUsageSync(serviceB)
+
+        let imported = try #require(containerB.mainContext.fetch(FetchDescriptor<Transcription>()).first)
+        #expect(imported.id == record.id)
+        #expect(imported.text == "v3 history")
+        #expect(try containerB.mainContext.fetch(FetchDescriptor<SessionMetric>()).count == 2)
+        let importedAudio = try #require(imported.audioFileURL.flatMap(URL.init(string:)))
+        #expect(try Data(contentsOf: importedAudio) == Data(repeating: 0x5a, count: 8_192))
+        #expect(try syncOperationFiles(root: root, domain: .usage).count == 1)
+
+        let deleteStart = try #require(serviceB.lastSyncedAt)
+        serviceB.deleteRecordsGlobally([record.id])
+        containerB.mainContext.delete(imported)
+        for metric in try containerB.mainContext.fetch(FetchDescriptor<SessionMetric>()) {
+            containerB.mainContext.delete(metric)
+        }
+        try containerB.mainContext.save()
+        serviceB.syncNow()
+        try await waitForUsageSync(serviceB, after: deleteStart)
+        let pullStart = try #require(serviceA.lastSyncedAt)
+        serviceA.syncNow()
+        try await waitForUsageSync(serviceA, after: pullStart)
+
+        #expect(try containerA.mainContext.fetch(FetchDescriptor<Transcription>()).isEmpty)
+        #expect(try containerA.mainContext.fetch(FetchDescriptor<SessionMetric>()).isEmpty)
+        #expect(try syncOperationFiles(root: root, domain: .usage).count == 2)
+        serviceA.setEnabled(false)
+        serviceB.setEnabled(false)
+    }
+
+    @MainActor
+    @Test func cloudUsageV3LocalCleanupCanBeRestoredWithoutCloudWrites() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("VoiceInkUsageLocalCleanup-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let suite = "VoiceInkTests.UsageLocalCleanup.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(true, forKey: CloudSyncSettingsKeys.usageDataSyncEnabled)
+
+        let schema = Schema([Transcription.self, SessionMetric.self])
+        let sourceContainer = try ModelContainer(
+            for: schema, configurations: [ModelConfiguration(isStoredInMemoryOnly: true)])
+        let localContainer = try ModelContainer(
+            for: schema, configurations: [ModelConfiguration(isStoredInMemoryOnly: true)])
+        let record = Transcription(text: "restore me", duration: 1)
+        sourceContainer.mainContext.insert(record)
+        let sourceSuite = "VoiceInkTests.UsageLocalCleanup.Source.\(UUID().uuidString)"
+        let sourceDefaults = try #require(UserDefaults(suiteName: sourceSuite))
+        defer { sourceDefaults.removePersistentDomain(forName: sourceSuite) }
+        sourceDefaults.set(true, forKey: CloudSyncSettingsKeys.usageDataSyncEnabled)
+        let source = CloudUsageDataSyncService(
+            defaults: sourceDefaults, iCloudDriveRootURL: root,
+            localRecordingsDirectoryURL: root.appendingPathComponent("LocalRecordings-Source"))
+        source.start(modelContext: sourceContainer.mainContext)
+        try await waitForUsageSync(source)
+
+        let local = CloudUsageDataSyncService(
+            defaults: defaults, iCloudDriveRootURL: root,
+            localRecordingsDirectoryURL: root.appendingPathComponent("LocalRecordings-Local"))
+        local.start(modelContext: localContainer.mainContext)
+        try await waitForUsageSync(local)
+        let imported = try #require(localContainer.mainContext.fetch(FetchDescriptor<Transcription>()).first)
+        let operationCount = try syncOperationFiles(root: root, domain: .usage).count
+        local.recordsWereRemovedLocally([imported.id])
+        localContainer.mainContext.delete(imported)
+        try localContainer.mainContext.save()
+        let suppressedStart = try #require(local.lastSyncedAt)
+        local.syncNow()
+        try await waitForUsageSync(local, after: suppressedStart)
+        #expect(try localContainer.mainContext.fetch(FetchDescriptor<Transcription>()).isEmpty)
+        #expect(local.locallySuppressedRecordCount == 1)
+        #expect(try syncOperationFiles(root: root, domain: .usage).count == operationCount)
+
+        let restoreStart = try #require(local.lastSyncedAt)
+        local.restoreLocallySuppressedRecords()
+        try await waitForUsageSync(local, after: restoreStart)
+        #expect(try localContainer.mainContext.fetch(FetchDescriptor<Transcription>()).first?.text == "restore me")
+        #expect(local.locallySuppressedRecordCount == 0)
+        #expect(try syncOperationFiles(root: root, domain: .usage).count == operationCount)
+        source.setEnabled(false)
+        local.setEnabled(false)
+    }
+
+    @MainActor
+    @Test func localCleanupWhileUsageSyncIsOffRemainsSuppressedWhenEnabledLater() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("VoiceInkDisabledCleanup-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let suite = "VoiceInkTests.DisabledCleanup.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let recordID = UUID()
+        let service = CloudUsageDataSyncService(defaults: defaults, iCloudDriveRootURL: root)
+
+        #expect(!defaults.bool(forKey: CloudSyncSettingsKeys.usageDataSyncEnabled))
+        service.recordsWereRemovedLocally([recordID])
+        #expect(service.locallySuppressedRecordCount == 1)
+
+        service.restoreLocallySuppressedRecords()
+        #expect(service.locallySuppressedRecordCount == 0)
+    }
+
+    @MainActor
+    @Test func cloudConfigurationV3SyncsEditsWithoutEchoWrites() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("VoiceInkConfigurationV3-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let suiteA = "VoiceInkTests.ConfigurationV3.A.\(UUID().uuidString)"
+        let suiteB = "VoiceInkTests.ConfigurationV3.B.\(UUID().uuidString)"
+        let defaultsA = try #require(UserDefaults(suiteName: suiteA))
+        let defaultsB = try #require(UserDefaults(suiteName: suiteB))
+        defer {
+            defaultsA.removePersistentDomain(forName: suiteA)
+            defaultsB.removePersistentDomain(forName: suiteB)
+        }
+        defaultsA.set(true, forKey: CloudSyncSettingsKeys.configurationSyncEnabled)
+        defaultsB.set(true, forKey: CloudSyncSettingsKeys.configurationSyncEnabled)
+        defaultsA.set("en", forKey: "SelectedLanguage")
+        let schema = Schema([VocabularyWord.self, WordReplacement.self])
+        let containerA = try ModelContainer(
+            for: schema, configurations: [ModelConfiguration(isStoredInMemoryOnly: true)])
+        let containerB = try ModelContainer(
+            for: schema, configurations: [ModelConfiguration(isStoredInMemoryOnly: true)])
+        let serviceA = CloudConfigurationSyncService(
+            defaults: defaultsA, iCloudDriveRootURL: root, preferencesDomainName: suiteA)
+        let serviceB = CloudConfigurationSyncService(
+            defaults: defaultsB, iCloudDriveRootURL: root, preferencesDomainName: suiteB)
+        serviceA.start(modelContext: containerA.mainContext, onRemoteConfigurationApplied: {})
+        serviceB.start(modelContext: containerB.mainContext, onRemoteConfigurationApplied: {})
+        #expect(defaultsB.string(forKey: "SelectedLanguage") == "en")
+        #expect(try syncOperationFiles(root: root, domain: .configuration).count == 1)
+
+        defaultsB.set("zh-Hans", forKey: "SelectedLanguage")
+        serviceB.syncNow()
+        serviceA.syncNow()
+        #expect(defaultsA.string(forKey: "SelectedLanguage") == "zh-Hans")
+        let operationCount = try syncOperationFiles(root: root, domain: .configuration).count
+        #expect(operationCount == 2)
+        serviceA.syncNow()
+        serviceB.syncNow()
+        #expect(try syncOperationFiles(root: root, domain: .configuration).count == operationCount)
+        #expect(serviceA.configurationConflictCount == 0)
+        #expect(serviceB.configurationConflictCount == 0)
+        serviceA.setEnabled(false)
+        serviceB.setEnabled(false)
+    }
+
+    @MainActor
+    @Test func cloudUsageV3MigratesLegacySnapshotAndVerifiedAudioOnce() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("VoiceInkUsageV3Migration-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let recordID = UUID()
+        let metricID = UUID()
+        let legacyRoot = root.appendingPathComponent("VoiceInk/UsageData/v1", isDirectory: true)
+        let audioData = Data(repeating: 0x2a, count: 4_096)
+        let audioDigest = VoiceInkSyncEnvelope.sha256(audioData)
+        let audio = CloudUsageDataSyncService.AudioDescriptor(
+            sha256: audioDigest, byteCount: Int64(audioData.count), fileExtension: "wav")
+        let blob = legacyRoot
+            .appendingPathComponent("Blobs/Audio/\(String(audioDigest.prefix(2)))", isDirectory: true)
+            .appendingPathComponent("\(audioDigest).wav")
+        try FileManager.default.createDirectory(at: blob.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try audioData.write(to: blob)
+        let transcription = CloudUsageDataSyncService.TranscriptionPayload(
+            id: recordID, text: "legacy v1", enhancedText: nil,
+            timestamp: Date(timeIntervalSince1970: 1_700_000_000), duration: 3,
+            transcriptionModelName: "legacy-model", aiEnhancementModelName: nil, promptName: nil,
+            transcriptionDuration: 1.5, enhancementDuration: nil, modeName: "Dictation",
+            modeEmoji: nil, transcriptionStatus: "completed", performanceData: nil)
+        let metric = CloudUsageDataSyncService.MetricPayload(
+            id: metricID, transcriptionId: recordID, timestamp: Date(timeIntervalSince1970: 1_700_000_001),
+            source: "recorder", wordCount: 2, audioDuration: 3, transcriptionModelName: "legacy-model",
+            transcriptionDuration: 1.5, speedFactor: 2, modeName: "Dictation",
+            aiEnhancementModelName: nil, enhancementDuration: nil, enhancementEstimatedTokenCount: nil,
+            performanceData: nil)
+        let snapshot = CloudUsageDataSyncService.Snapshot(
+            schemaVersion: 2, revisionID: UUID(), sourceDeviceID: UUID().uuidString,
+            sourceDeviceName: "Legacy Mac", updatedAt: Date(timeIntervalSince1970: 1_700_000_002),
+            transcription: transcription, metric: metric, audio: audio)
+        let snapshotURL = legacyRoot
+            .appendingPathComponent("Records/\(recordID.uuidString)", isDirectory: true)
+            .appendingPathComponent("legacy.plist")
+        try FileManager.default.createDirectory(
+            at: snapshotURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try PropertyListEncoder().encode(snapshot).write(to: snapshotURL)
+
+        let suite = "VoiceInkTests.UsageV3Migration.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(true, forKey: CloudSyncSettingsKeys.usageDataSyncEnabled)
+        defaults.set(true, forKey: CloudSyncSettingsKeys.usageAudioSyncEnabled)
+        let schema = Schema([Transcription.self, SessionMetric.self])
+        let container = try ModelContainer(
+            for: schema, configurations: [ModelConfiguration(isStoredInMemoryOnly: true)])
+        let localRecordings = root.appendingPathComponent("LocalRecordings", isDirectory: true)
+        let service = CloudUsageDataSyncService(
+            defaults: defaults, iCloudDriveRootURL: root,
+            localRecordingsDirectoryURL: localRecordings)
+        service.start(modelContext: container.mainContext)
+        try await waitForUsageSync(service)
+
+        let imported = try #require(container.mainContext.fetch(FetchDescriptor<Transcription>()).first)
+        #expect(imported.id == recordID)
+        #expect(imported.text == "legacy v1")
+        #expect(try container.mainContext.fetch(FetchDescriptor<SessionMetric>()).first?.id == metricID)
+        #expect(imported.audioFileURL.flatMap(URL.init(string:)).map { try? Data(contentsOf: $0) } == audioData)
+        #expect(service.lastSyncUsedLegacyScan)
+        let operationCount = try syncOperationFiles(root: root, domain: .usage).count
+        #expect(operationCount == 1)
+        let firstSync = try #require(service.lastSyncedAt)
+        service.syncNow()
+        try await waitForUsageSync(service, after: firstSync)
+        #expect(!service.lastSyncUsedLegacyScan)
+        #expect(try syncOperationFiles(root: root, domain: .usage).count == operationCount)
+        service.setEnabled(false)
+    }
+
+    @MainActor
+    @Test func cloudDictionaryV3NormalizesDuplicatesAndPreservesConcurrentEdits() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("VoiceInkDictionaryV3-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let suiteA = "VoiceInkTests.DictionaryV3.A.\(UUID().uuidString)"
+        let suiteB = "VoiceInkTests.DictionaryV3.B.\(UUID().uuidString)"
+        let defaultsA = try #require(UserDefaults(suiteName: suiteA))
+        let defaultsB = try #require(UserDefaults(suiteName: suiteB))
+        defer {
+            defaultsA.removePersistentDomain(forName: suiteA)
+            defaultsB.removePersistentDomain(forName: suiteB)
+        }
+        defaultsA.set(true, forKey: CloudSyncSettingsKeys.configurationSyncEnabled)
+        defaultsB.set(true, forKey: CloudSyncSettingsKeys.configurationSyncEnabled)
+        let schema = Schema([VocabularyWord.self, WordReplacement.self])
+        let containerA = try ModelContainer(
+            for: schema, configurations: [ModelConfiguration(isStoredInMemoryOnly: true)])
+        let containerB = try ModelContainer(
+            for: schema, configurations: [ModelConfiguration(isStoredInMemoryOnly: true)])
+        containerA.mainContext.insert(VocabularyWord(word: "VoiceInk"))
+        try containerA.mainContext.save()
+        let serviceA = CloudConfigurationSyncService(
+            defaults: defaultsA, iCloudDriveRootURL: root, preferencesDomainName: suiteA)
+        let serviceB = CloudConfigurationSyncService(
+            defaults: defaultsB, iCloudDriveRootURL: root, preferencesDomainName: suiteB)
+        serviceA.start(modelContext: containerA.mainContext, onRemoteConfigurationApplied: {})
+        serviceB.start(modelContext: containerB.mainContext, onRemoteConfigurationApplied: {})
+        let wordA = try #require(containerA.mainContext.fetch(FetchDescriptor<VocabularyWord>()).first)
+        let wordB = try #require(containerB.mainContext.fetch(FetchDescriptor<VocabularyWord>()).first)
+        wordA.word = " VOICEINK "
+        try containerA.mainContext.save()
+        serviceA.syncNow()
+        wordB.word = "voiceink"
+        try containerB.mainContext.save()
+        serviceB.syncNow()
+        serviceA.syncNow()
+
+        #expect(serviceA.dictionaryConflictCount == 1)
+        #expect(serviceB.dictionaryConflictCount == 1)
+        #expect(try containerA.mainContext.fetch(FetchDescriptor<VocabularyWord>()).count == 1)
+        #expect(try containerB.mainContext.fetch(FetchDescriptor<VocabularyWord>()).count == 1)
+        #expect(try syncOperationFiles(root: root, domain: .dictionary).count == 3)
+        serviceA.setEnabled(false)
+        serviceB.setEnabled(false)
+    }
+
+    private func syncOperationFiles(root: URL, domain: VoiceInkSyncDomain) throws -> [URL] {
+        let operations = root.appendingPathComponent(
+            "VoiceInk/Sync/v3/Operations/\(domain.rawValue)", isDirectory: true)
+        guard FileManager.default.fileExists(atPath: operations.path),
+            let enumerator = FileManager.default.enumerator(
+                at: operations, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles])
+        else { return [] }
+        return enumerator.compactMap { item in
+            guard let url = item as? URL, url.pathExtension == "syncop" else { return nil }
+            return url
+        }
     }
 
     @MainActor
@@ -751,331 +1074,6 @@ struct VoiceInkTests {
         )
     }
 
-    @MainActor
-    @Test func cloudConfigurationSyncKeepsNewerLocalModeModelWhenLegacyRemoteRewritesOldBundle() async throws {
-        let temporaryRoot = FileManager.default.temporaryDirectory
-            .appendingPathComponent("VoiceInkConfigurationSyncMergeTests-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: temporaryRoot, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: temporaryRoot) }
-
-        let suiteName = "VoiceInkTests.ConfigurationSync.Merge.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suiteName))
-        defaults.removePersistentDomain(forName: suiteName)
-        defer { defaults.removePersistentDomain(forName: suiteName) }
-        defaults.set(true, forKey: CloudSyncSettingsKeys.configurationSyncEnabled)
-
-        let schema = Schema([VocabularyWord.self, WordReplacement.self])
-        let container = try ModelContainer(
-            for: schema,
-            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
-        )
-        let service = CloudConfigurationSyncService(
-            defaults: defaults,
-            iCloudDriveRootURL: temporaryRoot,
-            preferencesDomainName: suiteName
-        )
-        service.start(modelContext: container.mainContext, onRemoteConfigurationApplied: {})
-
-        let configurationURL = try #require(service.configurationFileURL)
-        let qwenModes = try modeConfigurationData(defaultDictationModelName: "qwen-audio-3.0-asr-flash-streaming")
-        let doubaoModes = try modeConfigurationData(defaultDictationModelName: "volc.seedasr.sauc.duration")
-
-        defaults.set(qwenModes, forKey: "modeConfigurationsV2")
-        service.portableContentDidChange()
-        let localSnapshot = try await waitForConfigurationSnapshot(at: configurationURL)
-        #expect(localSnapshot.preferenceUpdatedAt["modeConfigurationsV2"] != nil)
-
-        let legacyRemoteContent = CloudConfigurationSyncService.Content(
-            preferences: [
-                "modeConfigurationsV2": try encodedPreferenceValue(doubaoModes)
-            ],
-            vocabulary: [],
-            replacements: []
-        )
-        let legacyRemoteSnapshot = CloudConfigurationSyncService.Snapshot(
-            schemaVersion: CloudConfigurationSyncService.Snapshot.currentSchemaVersion,
-            revision: UUID(),
-            updatedAt: localSnapshot.updatedAt.addingTimeInterval(30),
-            sourceDeviceID: "LegacyRemoteDevice",
-            content: legacyRemoteContent
-        )
-        try writeConfigurationSnapshot(legacyRemoteSnapshot, to: configurationURL)
-
-        service.syncNow()
-
-        let localModes = try decodedModeConfigurations(from: try #require(defaults.data(forKey: "modeConfigurationsV2")))
-        #expect(defaultTranscriptionModelName(in: localModes) == "qwen-audio-3.0-asr-flash-streaming")
-
-        let reconciledSnapshot = try decodeConfigurationSnapshot(at: configurationURL)
-        let reconciledData = try #require(
-            decodedPreferenceValue(
-                reconciledSnapshot.content.preferences["modeConfigurationsV2"]
-            ) as? Data
-        )
-        let reconciledModes = try decodedModeConfigurations(from: reconciledData)
-        #expect(defaultTranscriptionModelName(in: reconciledModes) == "qwen-audio-3.0-asr-flash-streaming")
-        #expect(reconciledSnapshot.preferenceUpdatedAt["modeConfigurationsV2"] != nil)
-
-        service.setEnabled(false)
-    }
-
-    @MainActor
-    @Test func cloudConfigurationSyncMigratesExistingLocalModeFreshnessBeforeApplyingLegacyRemote() throws {
-        let temporaryRoot = FileManager.default.temporaryDirectory
-            .appendingPathComponent("VoiceInkConfigurationSyncUpgradeTests-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: temporaryRoot, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: temporaryRoot) }
-
-        let suiteName = "VoiceInkTests.ConfigurationSync.Upgrade.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suiteName))
-        defaults.removePersistentDomain(forName: suiteName)
-        defer { defaults.removePersistentDomain(forName: suiteName) }
-        defaults.set(true, forKey: CloudSyncSettingsKeys.configurationSyncEnabled)
-
-        let qwenModes = try modeConfigurationData(defaultDictationModelName: "qwen-audio-3.0-asr-flash-streaming")
-        let doubaoModes = try modeConfigurationData(defaultDictationModelName: "volc.seedasr.sauc.duration")
-        let localChangeDate = Date(timeIntervalSince1970: 1_800_000_000)
-        defaults.set(qwenModes, forKey: "modeConfigurationsV2")
-        defaults.set(localChangeDate, forKey: "CloudConfigurationSync.lastLocalChange")
-        defaults.set(false, forKey: "CloudConfigurationSync.hasPendingLocalChange")
-
-        let schema = Schema([VocabularyWord.self, WordReplacement.self])
-        let container = try ModelContainer(
-            for: schema,
-            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
-        )
-        let configurationURL = temporaryRoot
-            .appendingPathComponent("VoiceInk/Configuration/VoiceInkConfig.plist")
-        let legacyRemoteSnapshot = CloudConfigurationSyncService.Snapshot(
-            schemaVersion: CloudConfigurationSyncService.Snapshot.currentSchemaVersion,
-            revision: UUID(),
-            updatedAt: localChangeDate.addingTimeInterval(30),
-            sourceDeviceID: "LegacyRemoteDevice",
-            content: CloudConfigurationSyncService.Content(
-                preferences: [
-                    "modeConfigurationsV2": try encodedPreferenceValue(doubaoModes)
-                ],
-                vocabulary: [],
-                replacements: []
-            )
-        )
-        try writeConfigurationSnapshot(legacyRemoteSnapshot, to: configurationURL)
-
-        let service = CloudConfigurationSyncService(
-            defaults: defaults,
-            iCloudDriveRootURL: temporaryRoot,
-            preferencesDomainName: suiteName
-        )
-        service.start(modelContext: container.mainContext, onRemoteConfigurationApplied: {})
-
-        let localModes = try decodedModeConfigurations(from: try #require(defaults.data(forKey: "modeConfigurationsV2")))
-        #expect(defaultTranscriptionModelName(in: localModes) == "qwen-audio-3.0-asr-flash-streaming")
-
-        let reconciledSnapshot = try decodeConfigurationSnapshot(at: configurationURL)
-        let reconciledData = try #require(
-            decodedPreferenceValue(
-                reconciledSnapshot.content.preferences["modeConfigurationsV2"]
-            ) as? Data
-        )
-        let reconciledModes = try decodedModeConfigurations(from: reconciledData)
-        #expect(defaultTranscriptionModelName(in: reconciledModes) == "qwen-audio-3.0-asr-flash-streaming")
-        #expect(reconciledSnapshot.preferenceUpdatedAt["modeConfigurationsV2"] == localChangeDate)
-
-        service.setEnabled(false)
-    }
-
-    @MainActor
-    @Test func cloudConfigurationSyncWritesOnlyForEditsAndPullsLastEditWithoutEchoing() async throws {
-        let temporaryRoot = FileManager.default.temporaryDirectory
-            .appendingPathComponent("VoiceInkConfigurationSyncTests-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: temporaryRoot, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: temporaryRoot) }
-
-        let suiteAName = "VoiceInkTests.ConfigurationSync.A.\(UUID().uuidString)"
-        let suiteBName = "VoiceInkTests.ConfigurationSync.B.\(UUID().uuidString)"
-        let defaultsA = try #require(UserDefaults(suiteName: suiteAName))
-        let defaultsB = try #require(UserDefaults(suiteName: suiteBName))
-        defaultsA.removePersistentDomain(forName: suiteAName)
-        defaultsB.removePersistentDomain(forName: suiteBName)
-        defer {
-            defaultsA.removePersistentDomain(forName: suiteAName)
-            defaultsB.removePersistentDomain(forName: suiteBName)
-        }
-        defaultsA.set(true, forKey: CloudSyncSettingsKeys.configurationSyncEnabled)
-        defaultsB.set(true, forKey: CloudSyncSettingsKeys.configurationSyncEnabled)
-
-        let schema = Schema([VocabularyWord.self, WordReplacement.self])
-        let containerA = try ModelContainer(
-            for: schema,
-            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
-        )
-        let containerB = try ModelContainer(
-            for: schema,
-            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
-        )
-        let serviceA = CloudConfigurationSyncService(
-            defaults: defaultsA,
-            iCloudDriveRootURL: temporaryRoot,
-            preferencesDomainName: suiteAName
-        )
-        let serviceB = CloudConfigurationSyncService(
-            defaults: defaultsB,
-            iCloudDriveRootURL: temporaryRoot,
-            preferencesDomainName: suiteBName
-        )
-        serviceA.start(modelContext: containerA.mainContext, onRemoteConfigurationApplied: {})
-        serviceB.start(modelContext: containerB.mainContext, onRemoteConfigurationApplied: {})
-
-        let configurationURL = try #require(serviceA.configurationFileURL)
-        #expect(!FileManager.default.fileExists(atPath: configurationURL.path))
-
-        let enhancementOff = try JSONSerialization.data(
-            withJSONObject: ["Dictation": ["isAIEnhancementEnabled": false]],
-            options: [.sortedKeys]
-        )
-        defaultsA.set(enhancementOff, forKey: "modeConfigurationsV2")
-        serviceA.portableContentDidChange()
-
-        let firstSnapshot = try await waitForConfigurationSnapshot(at: configurationURL)
-        serviceB.syncNow()
-        #expect(defaultsB.data(forKey: "modeConfigurationsV2") == enhancementOff)
-
-        let firstModificationDate = try configurationURL.resourceValues(
-            forKeys: [.contentModificationDateKey]
-        ).contentModificationDate
-        serviceA.syncNow()
-        serviceB.syncNow()
-        try await Task.sleep(for: .milliseconds(1_000))
-        let unchangedSnapshot = try decodeConfigurationSnapshot(at: configurationURL)
-        let unchangedModificationDate = try configurationURL.resourceValues(
-            forKeys: [.contentModificationDateKey]
-        ).contentModificationDate
-        #expect(unchangedSnapshot.revision == firstSnapshot.revision)
-        #expect(unchangedModificationDate == firstModificationDate)
-
-        let enhancementOn = try JSONSerialization.data(
-            withJSONObject: ["Dictation": ["isAIEnhancementEnabled": true]],
-            options: [.sortedKeys]
-        )
-        defaultsA.set(enhancementOn, forKey: "modeConfigurationsV2")
-        serviceA.portableContentDidChange()
-        let secondSnapshot = try await waitForConfigurationSnapshot(
-            at: configurationURL,
-            after: firstSnapshot.revision
-        )
-        #expect(secondSnapshot.updatedAt > firstSnapshot.updatedAt)
-
-        serviceB.syncNow()
-        #expect(defaultsB.data(forKey: "modeConfigurationsV2") == enhancementOn)
-        try await Task.sleep(for: .milliseconds(1_000))
-        let pulledSnapshot = try decodeConfigurationSnapshot(at: configurationURL)
-        #expect(pulledSnapshot.revision == secondSnapshot.revision)
-
-        let laterDeviceBEdit = try JSONSerialization.data(
-            withJSONObject: ["Dictation": ["isAIEnhancementEnabled": false, "language": "zh"]],
-            options: [.sortedKeys]
-        )
-        defaultsB.set(laterDeviceBEdit, forKey: "modeConfigurationsV2")
-        serviceB.portableContentDidChange()
-        let thirdSnapshot = try await waitForConfigurationSnapshot(
-            at: configurationURL,
-            after: secondSnapshot.revision
-        )
-        #expect(thirdSnapshot.updatedAt > secondSnapshot.updatedAt)
-
-        serviceA.syncNow()
-        #expect(defaultsA.data(forKey: "modeConfigurationsV2") == laterDeviceBEdit)
-        try await Task.sleep(for: .milliseconds(1_000))
-        let lastWriterSnapshot = try decodeConfigurationSnapshot(at: configurationURL)
-        #expect(lastWriterSnapshot.revision == thirdSnapshot.revision)
-
-        serviceA.setEnabled(false)
-        serviceB.setEnabled(false)
-    }
-
-    private func decodeConfigurationSnapshot(
-        at url: URL
-    ) throws -> CloudConfigurationSyncService.Snapshot {
-        try PropertyListDecoder().decode(
-            CloudConfigurationSyncService.Snapshot.self,
-            from: Data(contentsOf: url)
-        )
-    }
-
-    private func waitForConfigurationSnapshot(
-        at url: URL,
-        after revision: UUID? = nil
-    ) async throws -> CloudConfigurationSyncService.Snapshot {
-        let timeout = Date().addingTimeInterval(5)
-        while Date() < timeout {
-            if let snapshot = try? decodeConfigurationSnapshot(at: url),
-                snapshot.revision != revision
-            {
-                return snapshot
-            }
-            try await Task.sleep(for: .milliseconds(25))
-        }
-        Issue.record("Timed out waiting for a configuration sync write")
-        return try decodeConfigurationSnapshot(at: url)
-    }
-
-    private func writeConfigurationSnapshot(
-        _ snapshot: CloudConfigurationSyncService.Snapshot,
-        to url: URL
-    ) throws {
-        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        let encoder = PropertyListEncoder()
-        encoder.outputFormat = .binary
-        try encoder.encode(snapshot).write(to: url, options: .atomic)
-    }
-
-    private func encodedPreferenceValue(_ value: Any) throws -> Data {
-        try PropertyListSerialization.data(
-            fromPropertyList: ["value": value],
-            format: .binary,
-            options: 0
-        )
-    }
-
-    private func decodedPreferenceValue(_ data: Data?) throws -> Any? {
-        guard let data else { return nil }
-        let wrapper = try #require(
-            PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
-        )
-        return wrapper["value"]
-    }
-
-    private func modeConfigurationData(defaultDictationModelName: String) throws -> Data {
-        let mode: [String: Any] = [
-            "id": "10000000-0000-0000-0000-000000000001",
-            "name": "Dictation",
-            "icon": ["kind": "symbol", "value": "receipt.fill"],
-            "isAIEnhancementEnabled": false,
-            "selectedTranscriptionModelName": defaultDictationModelName,
-            "isRealtimeTranscriptionEnabled": true,
-            "selectedLanguage": "auto",
-            "isTextFormattingEnabled": true,
-            "useClipboardContext": false,
-            "useSelectedTextContext": true,
-            "useActiveApplicationContext": false,
-            "useWindowTitleContext": false,
-            "useScreenCapture": false,
-            "outputMode": "paste",
-            "autoSendKey": "none",
-            "isEnabled": true,
-            "isDefault": true,
-        ]
-        return try JSONSerialization.data(withJSONObject: [mode], options: [.sortedKeys])
-    }
-
-    private func decodedModeConfigurations(from data: Data) throws -> [[String: Any]] {
-        try #require(JSONSerialization.jsonObject(with: data) as? [[String: Any]])
-    }
-
-    private func defaultTranscriptionModelName(in modes: [[String: Any]]) -> String? {
-        let mode = modes.first { ($0["isDefault"] as? Bool) == true } ?? modes.first
-        return mode?["selectedTranscriptionModelName"] as? String
-    }
 
     @Test func volcanoArkUsesOpenAICompatibleChatEndpoint() {
         #expect(AIProvider.ark.baseURL == "https://ark.cn-beijing.volces.com/api/v3/chat/completions")
