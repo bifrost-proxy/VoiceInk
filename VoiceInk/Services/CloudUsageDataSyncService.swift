@@ -144,6 +144,8 @@ final class CloudUsageDataSyncService: ObservableObject {
     private static let identityMigrationRepublishPendingKey = metadataPrefix + "identityMigrationRepublishPendingV2"
     private static let currentLocalIdentityVersion = 2
     private static let reconciliationInterval: TimeInterval = 5 * 60
+    private static let bulkFetchThreshold = 16
+    private static let bulkFetchChunkSize = 500
     private let defaults: UserDefaults
     private let fileManager: FileManager
     private let iCloudDriveRootOverride: URL?
@@ -473,20 +475,35 @@ final class CloudUsageDataSyncService: ObservableObject {
     ) throws -> [ExportItem] {
         var didChangeOrigin = false
         var result: [ExportItem] = []
+        let records: [(transcription: Transcription, metric: SessionMetric?)]
 
-        for transcriptionID in recordIDs {
-            var transcriptionDescriptor = FetchDescriptor<Transcription>(
-                predicate: #Predicate<Transcription> { transcription in transcription.id == transcriptionID }
+        if recordIDs.count >= Self.bulkFetchThreshold {
+            let transcriptions = try fetchTranscriptions(ids: recordIDs, modelContext: modelContext)
+            let metricsByTranscriptionID = Dictionary(
+                try fetchSessionMetrics(transcriptionIDs: recordIDs, modelContext: modelContext)
+                    .map { ($0.transcriptionId, $0) },
+                uniquingKeysWith: { first, _ in first }
             )
-            transcriptionDescriptor.fetchLimit = 1
-            guard let transcription = try modelContext.fetch(transcriptionDescriptor).first else { continue }
+            records = transcriptions.map { ($0, metricsByTranscriptionID[$0.id]) }
+        } else {
+            records = try recordIDs.compactMap { transcriptionID in
+                var transcriptionDescriptor = FetchDescriptor<Transcription>(
+                    predicate: #Predicate<Transcription> { transcription in transcription.id == transcriptionID }
+                )
+                transcriptionDescriptor.fetchLimit = 1
+                guard let transcription = try modelContext.fetch(transcriptionDescriptor).first else {
+                    return nil
+                }
 
-            var metricDescriptor = FetchDescriptor<SessionMetric>(
-                predicate: #Predicate<SessionMetric> { metric in metric.transcriptionId == transcriptionID }
-            )
-            metricDescriptor.fetchLimit = 1
-            let metric = try modelContext.fetch(metricDescriptor).first
+                var metricDescriptor = FetchDescriptor<SessionMetric>(
+                    predicate: #Predicate<SessionMetric> { metric in metric.transcriptionId == transcriptionID }
+                )
+                metricDescriptor.fetchLimit = 1
+                return (transcription, try modelContext.fetch(metricDescriptor).first)
+            }
+        }
 
+        for (transcription, metric) in records {
             if transcription.syncOriginDeviceID != deviceID {
                 transcription.syncOriginDeviceID = deviceID
                 transcription.syncModifiedAt = transcription.syncModifiedAt ?? transcription.timestamp
@@ -512,16 +529,40 @@ final class CloudUsageDataSyncService: ObservableObject {
     ) throws {
         var changed = false
         var appliedRevisions = loadAppliedRevisions()
-        for item in imports where item.snapshot.sourceDeviceID != localDeviceID {
+        let applicableImports = imports.filter { $0.snapshot.sourceDeviceID != localDeviceID }
+        let importedIDs = Set(applicableImports.map { $0.snapshot.transcription.id })
+        var existingTranscriptionsByID: [UUID: Transcription] = [:]
+        var existingMetricsByTranscriptionID: [UUID: SessionMetric] = [:]
+
+        let usesBulkFetch = importedIDs.count >= Self.bulkFetchThreshold
+        if usesBulkFetch {
+            existingTranscriptionsByID = Dictionary(
+                try fetchTranscriptions(ids: importedIDs, modelContext: modelContext)
+                    .map { ($0.id, $0) },
+                uniquingKeysWith: { first, _ in first }
+            )
+            existingMetricsByTranscriptionID = Dictionary(
+                try fetchSessionMetrics(transcriptionIDs: importedIDs, modelContext: modelContext)
+                    .map { ($0.transcriptionId, $0) },
+                uniquingKeysWith: { first, _ in first }
+            )
+        }
+
+        for item in applicableImports {
             let payload = item.snapshot.transcription
             let recordKey = payload.id.uuidString
             let revisionValue = item.snapshot.revisionID.uuidString
             guard appliedRevisions[recordKey] != revisionValue else { continue }
-            var descriptor = FetchDescriptor<Transcription>(
-                predicate: #Predicate<Transcription> { transcription in transcription.id == payload.id }
-            )
-            descriptor.fetchLimit = 1
-            let existing = try modelContext.fetch(descriptor).first
+            let existing: Transcription?
+            if usesBulkFetch {
+                existing = existingTranscriptionsByID[payload.id]
+            } else {
+                var descriptor = FetchDescriptor<Transcription>(
+                    predicate: #Predicate<Transcription> { transcription in transcription.id == payload.id }
+                )
+                descriptor.fetchLimit = 1
+                existing = try modelContext.fetch(descriptor).first
+            }
 
             if existing?.syncRevisionID == item.snapshot.revisionID {
                 appliedRevisions[recordKey] = revisionValue
@@ -535,6 +576,7 @@ final class CloudUsageDataSyncService: ObservableObject {
             if existing == nil {
                 transcription.id = payload.id
                 modelContext.insert(transcription)
+                existingTranscriptionsByID[payload.id] = transcription
             }
             Self.apply(payload, to: transcription)
             transcription.syncOriginDeviceID = item.snapshot.sourceDeviceID
@@ -545,11 +587,16 @@ final class CloudUsageDataSyncService: ObservableObject {
             }
 
             if let metricPayload = item.snapshot.metric {
-                var metricDescriptor = FetchDescriptor<SessionMetric>(
-                    predicate: #Predicate<SessionMetric> { metric in metric.transcriptionId == payload.id }
-                )
-                metricDescriptor.fetchLimit = 1
-                let existingMetric = try modelContext.fetch(metricDescriptor).first
+                let existingMetric: SessionMetric?
+                if usesBulkFetch {
+                    existingMetric = existingMetricsByTranscriptionID[payload.id]
+                } else {
+                    var metricDescriptor = FetchDescriptor<SessionMetric>(
+                        predicate: #Predicate<SessionMetric> { metric in metric.transcriptionId == payload.id }
+                    )
+                    metricDescriptor.fetchLimit = 1
+                    existingMetric = try modelContext.fetch(metricDescriptor).first
+                }
                 let metric = existingMetric
                     ?? SessionMetric(
                         transcriptionId: payload.id,
@@ -562,7 +609,10 @@ final class CloudUsageDataSyncService: ObservableObject {
                         aiEnhancementModelName: metricPayload.aiEnhancementModelName,
                         enhancementDuration: metricPayload.enhancementDuration
                     )
-                if existingMetric == nil { modelContext.insert(metric) }
+                if existingMetric == nil {
+                    modelContext.insert(metric)
+                    existingMetricsByTranscriptionID[payload.id] = metric
+                }
                 Self.apply(metricPayload, to: metric)
             }
             appliedRevisions[recordKey] = revisionValue
@@ -577,6 +627,45 @@ final class CloudUsageDataSyncService: ObservableObject {
             NotificationCenter.default.post(name: .transcriptionCompleted, object: nil)
             NotificationCenter.default.post(name: .sessionMetricsDidChange, object: nil)
         }
+    }
+
+    private func fetchTranscriptions(ids: Set<UUID>, modelContext: ModelContext) throws -> [Transcription] {
+        try fetchInChunks(ids) { chunk in
+            let descriptor = FetchDescriptor<Transcription>(
+                predicate: #Predicate<Transcription> { transcription in
+                    chunk.contains(transcription.id)
+                }
+            )
+            return try modelContext.fetch(descriptor)
+        }
+    }
+
+    private func fetchSessionMetrics(
+        transcriptionIDs: Set<UUID>,
+        modelContext: ModelContext
+    ) throws -> [SessionMetric] {
+        try fetchInChunks(transcriptionIDs) { chunk in
+            let descriptor = FetchDescriptor<SessionMetric>(
+                predicate: #Predicate<SessionMetric> { metric in
+                    chunk.contains(metric.transcriptionId)
+                }
+            )
+            return try modelContext.fetch(descriptor)
+        }
+    }
+
+    private func fetchInChunks<Value>(
+        _ ids: Set<UUID>,
+        fetch: (Set<UUID>) throws -> [Value]
+    ) throws -> [Value] {
+        let ids = Array(ids)
+        var values: [Value] = []
+        values.reserveCapacity(ids.count)
+        for startIndex in stride(from: 0, to: ids.count, by: Self.bulkFetchChunkSize) {
+            let endIndex = min(startIndex + Self.bulkFetchChunkSize, ids.count)
+            values.append(contentsOf: try fetch(Set(ids[startIndex..<endIndex])))
+        }
+        return values
     }
 
     private func loadAppliedRevisions() -> [String: String] {

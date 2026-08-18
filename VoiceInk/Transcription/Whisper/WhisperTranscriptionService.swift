@@ -54,8 +54,11 @@ class WhisperTranscriptionService: TranscriptionService {
             throw VoiceInkEngineError.modelLoadFailed
         }
 
-        // Read audio data
-        let data = try readAudioSamples(audioURL)
+        // File I/O and PCM conversion can be substantial for long recordings.
+        // Keep that work away from the caller's executor (normally MainActor).
+        let data = try await Task.detached(priority: .userInitiated) {
+            try Self.readAudioSamples(audioURL)
+        }.value
 
         // Set prompt
         await whisperContext.setLanguage(context.language)
@@ -82,14 +85,23 @@ class WhisperTranscriptionService: TranscriptionService {
         return text
     }
 
-    private func readAudioSamples(_ url: URL) throws -> [Float] {
+    static func readAudioSamples(_ url: URL) throws -> [Float] {
         let data = try Data(contentsOf: url)
-        let floats = stride(from: 44, to: data.count, by: 2).map {
-            return data[$0..<$0 + 2].withUnsafeBytes {
-                let short = Int16(littleEndian: $0.load(as: Int16.self))
-                return max(-1.0, min(Float(short) / 32767.0, 1.0))
-            }
+        guard data.count >= 44 else {
+            throw CocoaError(.fileReadCorruptFile)
         }
-        return floats
+
+        let sampleCount = (data.count - 44) / MemoryLayout<Int16>.size
+        return data.withUnsafeBytes { rawBuffer in
+            let bytes = rawBuffer.bindMemory(to: UInt8.self)
+            var samples = [Float](repeating: 0, count: sampleCount)
+            for sampleIndex in 0..<sampleCount {
+                let byteIndex = 44 + sampleIndex * 2
+                let rawSample = UInt16(bytes[byteIndex]) | (UInt16(bytes[byteIndex + 1]) << 8)
+                let sample = Int16(bitPattern: rawSample)
+                samples[sampleIndex] = max(-1.0, min(Float(sample) / 32767.0, 1.0))
+            }
+            return samples
+        }
     }
 }

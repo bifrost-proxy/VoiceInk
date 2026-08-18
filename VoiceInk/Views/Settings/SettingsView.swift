@@ -511,11 +511,11 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
-        .onAppear {
-            cloudSync.syncNow()
-        }
         .task {
-            guard !updater.isBusy else { return }
+            guard updater.activity == .idle,
+                updater.availableRelease == nil,
+                updater.lastCheckMessage == nil
+            else { return }
             _ = await updater.checkForUpdates()
         }
         .alert("Reset Onboarding", isPresented: $showResetOnboardingAlert) {
