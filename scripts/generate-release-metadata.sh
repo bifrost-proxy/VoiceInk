@@ -10,8 +10,7 @@ usage() {
     printf '%s\n' \
         "Usage: scripts/generate-release-metadata.sh --version <MAJOR.MINOR.PATCH> [--output-dir DIR]" \
         "" \
-        "Requires VoiceInk-arm64.zip and VoiceInk-x86_64.zip, then creates SHA256SUMS and voiceink.rb." \
-        "If VoiceInk.zip is present, its checksum is included for a legacy updater bridge release."
+        "Requires VoiceInk-arm64.zip and VoiceInk-x86_64.zip, then creates SHA256SUMS and voiceink.rb."
 }
 
 fail() {
@@ -49,7 +48,6 @@ done
 OUTPUT_DIR="$(mkdir -p "$OUTPUT_DIR" && cd "$OUTPUT_DIR" && pwd)"
 ARM64_ZIP_PATH="$OUTPUT_DIR/VoiceInk-arm64.zip"
 X86_64_ZIP_PATH="$OUTPUT_DIR/VoiceInk-x86_64.zip"
-LEGACY_ZIP_PATH="$OUTPUT_DIR/VoiceInk.zip"
 CHECKSUM_PATH="$OUTPUT_DIR/SHA256SUMS"
 CASK_PATH="$OUTPUT_DIR/voiceink.rb"
 
@@ -58,17 +56,9 @@ CASK_PATH="$OUTPUT_DIR/voiceink.rb"
 
 ARM64_SHA256="$(shasum -a 256 "$ARM64_ZIP_PATH" | awk '{print $1}')"
 X86_64_SHA256="$(shasum -a 256 "$X86_64_ZIP_PATH" | awk '{print $1}')"
-if [[ -f "$LEGACY_ZIP_PATH" ]]; then
-    LEGACY_SHA256="$(shasum -a 256 "$LEGACY_ZIP_PATH" | awk '{print $1}')"
-    printf '%s  %s\n%s  %s\n%s  %s\n' \
-        "$LEGACY_SHA256" "VoiceInk.zip" \
-        "$ARM64_SHA256" "VoiceInk-arm64.zip" \
-        "$X86_64_SHA256" "VoiceInk-x86_64.zip" > "$CHECKSUM_PATH"
-else
-    printf '%s  %s\n%s  %s\n' \
-        "$ARM64_SHA256" "VoiceInk-arm64.zip" \
-        "$X86_64_SHA256" "VoiceInk-x86_64.zip" > "$CHECKSUM_PATH"
-fi
+printf '%s  %s\n%s  %s\n' \
+    "$ARM64_SHA256" "VoiceInk-arm64.zip" \
+    "$X86_64_SHA256" "VoiceInk-x86_64.zip" > "$CHECKSUM_PATH"
 
 sed \
     -e "s/__VERSION__/$VERSION/g" \

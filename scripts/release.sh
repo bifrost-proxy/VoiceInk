@@ -4,7 +4,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROJECT="$REPO_ROOT/VoiceInk.xcodeproj"
-SCHEME="VoiceInk"
+SCHEME="VoiceInkRelease"
 LOCAL_CONFIG="$REPO_ROOT/LocalBuild.xcconfig"
 LOCAL_ENTITLEMENTS="$REPO_ROOT/VoiceInk/VoiceInk.local.entitlements"
 EXPECTED_BUNDLE_ID="com.prakashjoshipax.VoiceInk"
@@ -67,7 +67,7 @@ case "$REQUESTED_ARCHITECTURE" in
     *) fail "architecture must be arm64, x86_64, or all" ;;
 esac
 
-for command_name in awk chmod codesign cp curl ditto file find grep lipo make mv plutil sed shasum stat tr unzip xcodebuild; do
+for command_name in awk chmod codesign cp curl ditto file find grep lipo make mv otool plutil sed shasum stat strip tr unzip xcodebuild; do
     command -v "$command_name" >/dev/null 2>&1 || fail "required command not found: $command_name"
 done
 
@@ -119,6 +119,17 @@ verify_app_architecture() {
                 ;;
         esac
     done < <(find "$app_path" -type f -print0)
+}
+
+strip_and_verify_executable() {
+    local executable="$1"
+    local load_commands
+
+    strip -S -x "$executable"
+    load_commands="$(otool -l "$executable")"
+    if grep -Eq 'segname __LLVM_COV|sectname __llvm_prf_(cnts|data|names)' <<<"$load_commands"; then
+        fail "release executable still contains LLVM coverage or profiling data: $executable"
+    fi
 }
 
 thin_app_architecture() {
@@ -173,6 +184,7 @@ build_architecture() {
         DEVELOPMENT_TEAM="" \
         CODE_SIGN_ENTITLEMENTS="$LOCAL_ENTITLEMENTS" \
         SWIFT_ACTIVE_COMPILATION_CONDITIONS="$SWIFT_BUILD_CONDITIONS" \
+        ENABLE_CODE_COVERAGE=NO \
         ARCHS="$architecture" \
         ONLY_ACTIVE_ARCH=NO \
         MARKETING_VERSION="$VERSION" \
@@ -184,6 +196,7 @@ build_architecture() {
     [[ -x "$executable" ]] || fail "app executable not found: $executable"
 
     thin_app_architecture "$app_path" "$architecture"
+    strip_and_verify_executable "$executable"
     codesign --force --deep --sign - --entitlements "$LOCAL_ENTITLEMENTS" "$app_path"
     codesign --verify --deep --strict --verbose=2 "$app_path"
     verify_ad_hoc_signature "$app_path"
