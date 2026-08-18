@@ -101,6 +101,31 @@ struct URLSessionCloudSpeechWebSocketConnector: CloudSpeechWebSocketConnecting {
     }
 }
 
+final class CloudSpeechPingCompletion: @unchecked Sendable {
+    private let lock = NSLock()
+    private var completion: ((Result<Void, Error>) -> Void)?
+
+    init(completion: @escaping (Result<Void, Error>) -> Void) {
+        self.completion = completion
+    }
+
+    func resolve(error: Error?) {
+        lock.lock()
+        guard let completion else {
+            lock.unlock()
+            return
+        }
+        self.completion = nil
+        lock.unlock()
+
+        if let error {
+            completion(.failure(error))
+        } else {
+            completion(.success(()))
+        }
+    }
+}
+
 private final class URLSessionCloudSpeechWebSocketConnection: CloudSpeechWebSocketConnection,
     @unchecked Sendable
 {
@@ -124,12 +149,11 @@ private final class URLSessionCloudSpeechWebSocketConnection: CloudSpeechWebSock
 
     func ping() async throws {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            let completion = CloudSpeechPingCompletion { result in
+                continuation.resume(with: result)
+            }
             task.sendPing { error in
-                if let error {
-                    continuation.resume(throwing: error)
-                } else {
-                    continuation.resume()
-                }
+                completion.resolve(error: error)
             }
         }
     }

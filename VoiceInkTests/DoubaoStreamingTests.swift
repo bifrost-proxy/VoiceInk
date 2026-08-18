@@ -547,6 +547,70 @@ struct DoubaoStreamingTests {
         continuation.finish()
     }
 
+    @Test func stalePreconnectionRecoversBeforeRecordingEndsAndReplaysBufferedAudio() async throws {
+        let staleConnector = DoubaoStalePreconnectionConnector()
+        let freshConnection = DoubaoEarlyRecoveryConnection(finalText: "即时恢复成功")
+        let freshConnector = DoubaoBlockingRecoveryConnector(connection: freshConnection)
+        let pool = CloudSpeechConnectionPool(connector: staleConnector)
+        let target = CloudSpeechConnectionTarget.doubao(
+            apiKey: "doubao-key",
+            resourceID: DoubaoSpeechProvider.defaultResourceID,
+            endpoint: DoubaoWebSocketSession.Endpoint.optimizedStreaming.url
+        )
+        await pool.reconcile(targets: [target])
+        for _ in 0..<100 {
+            if await pool.snapshot().readyKeys.contains(target.key) { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(await pool.snapshot().readyKeys.contains(target.key))
+
+        let (events, continuation) = AsyncStream.makeStream(of: StreamingTranscriptionEvent.self)
+        let eventProbe = DoubaoEarlyRecoveryEventProbe()
+        let eventTask = Task {
+            for await event in events {
+                eventProbe.record(event)
+            }
+        }
+        let session = DoubaoWebSocketSession(
+            eventsContinuation: continuation,
+            connectionPool: pool,
+            connector: freshConnector
+        )
+
+        try await session.connect(
+            apiKey: "doubao-key",
+            resourceID: DoubaoSpeechProvider.defaultResourceID,
+            customVocabulary: [],
+            settings: .defaults,
+            endpoint: .optimizedStreaming,
+            startReceiving: true
+        )
+        try await freshConnector.waitUntilOpenStarted()
+
+        let firstChunk = Data((0..<3_200).map { UInt8($0 % 251) })
+        let secondChunk = Data((0..<7_913).map { UInt8(($0 + 17) % 251) })
+        try await session.sendAudioChunk(firstChunk)
+        try await session.sendAudioChunk(secondChunk)
+        try await session.commit()
+        await freshConnector.releaseOpen()
+
+        for _ in 0..<200 {
+            if eventProbe.committedText != nil { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+
+        #expect(eventProbe.committedText == "即时恢复成功")
+        #expect(eventProbe.errors.isEmpty)
+        #expect(await freshConnector.openCount == 1)
+        #expect(freshConnection.audioPayload == firstChunk + secondChunk)
+        #expect(freshConnection.didSendFinalFrame)
+
+        await session.disconnect()
+        continuation.finish()
+        eventTask.cancel()
+        await pool.shutdown()
+    }
+
     @Test func finalServerFrameReturnsFullAndStableText() throws {
         let payload = try JSONSerialization.data(withJSONObject: [
             "result": [
@@ -887,6 +951,145 @@ struct DoubaoStreamingTests {
         data.append(UInt8((value >> 8) & 0xFF))
         data.append(UInt8((value >> 16) & 0xFF))
         data.append(UInt8((value >> 24) & 0xFF))
+    }
+}
+
+private final class DoubaoEarlyRecoveryEventProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedCommittedText: String?
+    private var storedErrors: [Error] = []
+
+    var committedText: String? { lock.withLock { storedCommittedText } }
+    var errors: [Error] { lock.withLock { storedErrors } }
+
+    func record(_ event: StreamingTranscriptionEvent) {
+        lock.withLock {
+            switch event {
+            case .committed(let text):
+                storedCommittedText = text
+            case .error(let error):
+                storedErrors.append(error)
+            default:
+                break
+            }
+        }
+    }
+}
+
+private final class DoubaoStalePreconnectionConnector: CloudSpeechWebSocketConnecting,
+    @unchecked Sendable
+{
+    func open(
+        target _: CloudSpeechConnectionTarget,
+        onClosed _: (@Sendable (Error?) -> Void)?
+    ) async throws -> any CloudSpeechWebSocketConnection {
+        DoubaoStalePreconnection()
+    }
+}
+
+private final class DoubaoStalePreconnection: CloudSpeechWebSocketConnection, @unchecked Sendable {
+    func send(_: URLSessionWebSocketTask.Message) async throws {}
+
+    func receive() async throws -> URLSessionWebSocketTask.Message {
+        throw NSError(
+            domain: NSPOSIXErrorDomain,
+            code: 54,
+            userInfo: [NSLocalizedDescriptionKey: "Connection reset by peer"]
+        )
+    }
+
+    func ping() async throws {}
+    func close() {}
+}
+
+private actor DoubaoBlockingRecoveryConnector: CloudSpeechWebSocketConnecting {
+    private let connection: DoubaoEarlyRecoveryConnection
+    private var openContinuation: CheckedContinuation<Void, Never>?
+    private(set) var openCount = 0
+    private var didStartOpening = false
+
+    init(connection: DoubaoEarlyRecoveryConnection) {
+        self.connection = connection
+    }
+
+    func open(
+        target _: CloudSpeechConnectionTarget,
+        onClosed _: (@Sendable (Error?) -> Void)?
+    ) async throws -> any CloudSpeechWebSocketConnection {
+        openCount += 1
+        didStartOpening = true
+        await withCheckedContinuation { continuation in
+            openContinuation = continuation
+        }
+        return connection
+    }
+
+    func waitUntilOpenStarted() async throws {
+        for _ in 0..<100 {
+            if didStartOpening { return }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        throw StreamingTranscriptionError.timeout
+    }
+
+    func releaseOpen() {
+        let continuation = openContinuation
+        openContinuation = nil
+        continuation?.resume()
+    }
+}
+
+private final class DoubaoEarlyRecoveryConnection: CloudSpeechWebSocketConnection, @unchecked Sendable {
+    private let lock = NSLock()
+    private let finalText: String
+    private var storedAudioPayload = Data()
+    private var storedDidSendFinalFrame = false
+
+    init(finalText: String) {
+        self.finalText = finalText
+    }
+
+    var audioPayload: Data { lock.withLock { storedAudioPayload } }
+    var didSendFinalFrame: Bool { lock.withLock { storedDidSendFinalFrame } }
+
+    func send(_ message: URLSessionWebSocketTask.Message) async throws {
+        guard case .data(let data) = message, data.count >= 8 else { return }
+        switch data[data.startIndex + 1] {
+        case 0x20:
+            lock.withLock {
+                storedAudioPayload.append(contentsOf: data.dropFirst(8))
+            }
+        case 0x22:
+            lock.withLock {
+                storedDidSendFinalFrame = true
+            }
+        default:
+            break
+        }
+    }
+
+    func receive() async throws -> URLSessionWebSocketTask.Message {
+        while !didSendFinalFrame {
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        let payload = try JSONSerialization.data(withJSONObject: [
+            "result": ["text": finalText, "utterances": []] as [String: Any]
+        ])
+        var frame = Data([0x11, 0x93, 0x10, 0x00])
+        appendUInt32(1, to: &frame)
+        appendUInt32(UInt32(payload.count), to: &frame)
+        frame.append(payload)
+        return .data(frame)
+    }
+
+    func ping() async throws {}
+    func close() {}
+
+    private func appendUInt32(_ value: UInt32, to data: inout Data) {
+        data.append(UInt8((value >> 24) & 0xFF))
+        data.append(UInt8((value >> 16) & 0xFF))
+        data.append(UInt8((value >> 8) & 0xFF))
+        data.append(UInt8(value & 0xFF))
     }
 }
 

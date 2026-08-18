@@ -78,6 +78,25 @@ struct CloudSpeechPreconnectionTests {
         #expect(await connector.allConnectionsClosed)
     }
 
+    @Test func pingCompletionIgnoresDuplicateURLSessionCallbacks() {
+        let probe = CloudSpeechPingCompletionProbe()
+        let completion = CloudSpeechPingCompletion { result in
+            probe.record(result)
+        }
+
+        completion.resolve(error: nil)
+        completion.resolve(
+            error: NSError(
+                domain: NSPOSIXErrorDomain,
+                code: 53,
+                userInfo: [NSLocalizedDescriptionKey: "Software caused connection abort"]
+            )
+        )
+
+        #expect(probe.completionCount == 1)
+        #expect(probe.firstCompletionSucceeded)
+    }
+
     @Test func standbyHandshakeDoesNotSendBusinessFrames() async throws {
         let connector = FakeCloudSpeechConnector()
         let pool = CloudSpeechConnectionPool(connector: connector)
@@ -172,6 +191,26 @@ struct CloudSpeechPreconnectionTests {
             try await Task.sleep(for: .milliseconds(10))
         }
         Issue.record("Timed out waiting for standby connection to become dormant")
+    }
+}
+
+private final class CloudSpeechPingCompletionProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var results: [Result<Void, Error>] = []
+
+    var completionCount: Int { lock.withLock { results.count } }
+    var firstCompletionSucceeded: Bool {
+        lock.withLock {
+            guard let result = results.first else { return false }
+            if case .success = result { return true }
+            return false
+        }
+    }
+
+    func record(_ result: Result<Void, Error>) {
+        lock.withLock {
+            results.append(result)
+        }
     }
 }
 
