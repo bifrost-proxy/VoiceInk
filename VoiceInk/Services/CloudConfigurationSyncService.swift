@@ -40,7 +40,39 @@ final class CloudConfigurationSyncService: ObservableObject {
         let revision: UUID
         let updatedAt: Date
         let sourceDeviceID: String
+        let preferenceUpdatedAt: [String: Date]
         let content: Content
+
+        init(
+            schemaVersion: Int,
+            revision: UUID,
+            updatedAt: Date,
+            sourceDeviceID: String,
+            preferenceUpdatedAt: [String: Date] = [:],
+            content: Content
+        ) {
+            self.schemaVersion = schemaVersion
+            self.revision = revision
+            self.updatedAt = updatedAt
+            self.sourceDeviceID = sourceDeviceID
+            self.preferenceUpdatedAt = preferenceUpdatedAt
+            self.content = content
+        }
+
+        enum CodingKeys: String, CodingKey {
+            case schemaVersion, revision, updatedAt, sourceDeviceID, preferenceUpdatedAt, content
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            schemaVersion = try container.decode(Int.self, forKey: .schemaVersion)
+            revision = try container.decode(UUID.self, forKey: .revision)
+            updatedAt = try container.decode(Date.self, forKey: .updatedAt)
+            sourceDeviceID = try container.decode(String.self, forKey: .sourceDeviceID)
+            preferenceUpdatedAt =
+                try container.decodeIfPresent([String: Date].self, forKey: .preferenceUpdatedAt) ?? [:]
+            content = try container.decode(Content.self, forKey: .content)
+        }
     }
 
     enum SyncState: Equatable {
@@ -88,6 +120,7 @@ final class CloudConfigurationSyncService: ObservableObject {
     private static let lastAppliedRevisionKey = metadataPrefix + "lastAppliedRevision"
     private static let deviceIDKey = metadataPrefix + "deviceID"
     private static let hasPendingLocalChangeKey = metadataPrefix + "hasPendingLocalChange"
+    private static let preferenceUpdatedAtKey = metadataPrefix + "preferenceUpdatedAt"
 
     private static let excludedExactKeys: Set<String> = [
         // Onboarding and permissions must be completed independently on each Mac.
@@ -311,9 +344,14 @@ final class CloudConfigurationSyncService: ObservableObject {
             Self.shouldQueueLocalChange(current: content, lastKnown: lastKnownContent, pending: pendingLocalContent)
         else { return }
 
+        let baseline = pendingLocalContent ?? lastKnownContent
         pendingLocalContent = content
         let changedAt = Date()
         pendingLocalChangeAt = changedAt
+        recordLocalPreferenceChanges(
+            Self.changedPreferenceKeys(current: content.preferences, baseline: baseline?.preferences),
+            changedAt: changedAt
+        )
         setMetadata(changedAt, forKey: Self.lastLocalChangeKey)
         setMetadata(true, forKey: Self.hasPendingLocalChangeKey)
         scheduleWrite()
@@ -361,52 +399,70 @@ final class CloudConfigurationSyncService: ObservableObject {
 
         case .available(let remote, let hasConflicts):
             let normalizedRemote = normalizedSnapshot(remote)
-            var conflictWinner = normalizedRemote
+            guard let reconciliation = reconcileRemoteSnapshot(normalizedRemote) else { return }
+            var snapshotToApply = reconciliation.snapshot
+            var conflictWinner = snapshotToApply
             if hasPendingLocalChange,
                 let localChangeAt = effectiveLocalChangeDate,
                 localChangeWins(
                     changedAt: localChangeAt,
                     deviceID: deviceID,
-                    over: normalizedRemote
+                    over: snapshotToApply
                 )
             {
                 guard applyDictionaryImmediately else {
-                    lastKnownContent = normalizedRemote.content
-                    lastSeenRevision = normalizedRemote.revision
-                    lastSyncedAt = normalizedRemote.updatedAt
+                    if reconciliation.shouldWrite {
+                        snapshotToApply =
+                            writeReconciledSnapshot(snapshotToApply, clearPendingLocalChange: false) ?? snapshotToApply
+                        conflictWinner = snapshotToApply
+                    }
+                    lastKnownContent = snapshotToApply.content
+                    lastSeenRevision = snapshotToApply.revision
+                    lastSyncedAt = snapshotToApply.updatedAt
                     state = .synced
                     return
                 }
-                if makeLocalContent() == normalizedRemote.content {
+                if makeLocalContent() == snapshotToApply.content {
                     clearPendingLocalChange()
-                    recordAppliedSnapshot(normalizedRemote)
+                    if reconciliation.shouldWrite {
+                        snapshotToApply = writeReconciledSnapshot(snapshotToApply) ?? snapshotToApply
+                        conflictWinner = snapshotToApply
+                    }
+                    recordAppliedSnapshot(snapshotToApply)
                 } else {
-                    lastKnownContent = normalizedRemote.content
+                    lastKnownContent = snapshotToApply.content
                     if let localSnapshot = writePendingLocalSnapshot() {
                         conflictWinner = localSnapshot
+                        snapshotToApply = localSnapshot
                     }
                 }
             } else {
                 let appliedRevision = defaults.string(forKey: Self.lastAppliedRevisionKey)
-                let isUnseenRemote = normalizedRemote.revision != lastSeenRevision
-                    && appliedRevision != normalizedRemote.revision.uuidString
+                let isUnseenRemote = snapshotToApply.revision != lastSeenRevision
+                    && appliedRevision != snapshotToApply.revision.uuidString
 
-                if isUnseenRemote || makeLocalContent() != normalizedRemote.content {
+                if reconciliation.shouldWrite {
+                    snapshotToApply = writeReconciledSnapshot(snapshotToApply) ?? snapshotToApply
+                    conflictWinner = snapshotToApply
+                }
+
+                if isUnseenRemote || makeLocalContent() != snapshotToApply.content {
                     if applyDictionaryImmediately {
-                        applyRemoteSnapshot(normalizedRemote)
+                        applyRemoteSnapshot(snapshotToApply)
                     } else {
                         isApplyingRemoteSnapshot = true
-                        applyPreferences(normalizedRemote.content.preferences)
-                        pendingLaunchSnapshot = normalizedRemote
-                        lastKnownContent = normalizedRemote.content
-                        lastSeenRevision = normalizedRemote.revision
-                        lastSyncedAt = normalizedRemote.updatedAt
+                        applyPreferences(snapshotToApply.content.preferences)
+                        pendingLaunchSnapshot = snapshotToApply
+                        lastKnownContent = snapshotToApply.content
+                        lastSeenRevision = snapshotToApply.revision
+                        lastSyncedAt = snapshotToApply.updatedAt
+                        savePreferenceModificationDates(snapshotToApply.preferenceUpdatedAt)
                         clearPendingLocalChange()
                         state = .synced
                         isApplyingRemoteSnapshot = false
                     }
                 } else {
-                    recordAppliedSnapshot(normalizedRemote)
+                    recordAppliedSnapshot(snapshotToApply)
                 }
             }
 
@@ -433,6 +489,7 @@ final class CloudConfigurationSyncService: ObservableObject {
             revision: UUID(),
             updatedAt: changedAt,
             sourceDeviceID: deviceID,
+            preferenceUpdatedAt: preferenceModificationDates(for: content, defaultDate: changedAt),
             content: content
         )
 
@@ -441,6 +498,7 @@ final class CloudConfigurationSyncService: ObservableObject {
             lastKnownContent = content
             lastSeenRevision = snapshot.revision
             lastSyncedAt = snapshot.updatedAt
+            savePreferenceModificationDates(snapshot.preferenceUpdatedAt)
             setMetadata(snapshot.revision.uuidString, forKey: Self.lastAppliedRevisionKey)
             clearPendingLocalChange()
             state = .synced
@@ -487,6 +545,7 @@ final class CloudConfigurationSyncService: ObservableObject {
         clearPendingLocalChange()
         lastSeenRevision = snapshot.revision
         lastSyncedAt = snapshot.updatedAt
+        savePreferenceModificationDates(snapshot.preferenceUpdatedAt)
         setMetadata(snapshot.revision.uuidString, forKey: Self.lastAppliedRevisionKey)
         state = .synced
     }
@@ -596,6 +655,200 @@ final class CloudConfigurationSyncService: ObservableObject {
         }
     }
 
+    private struct SnapshotReconciliation {
+        let snapshot: Snapshot
+        let shouldWrite: Bool
+    }
+
+    private func reconcileRemoteSnapshot(_ remote: Snapshot) -> SnapshotReconciliation? {
+        guard let localContent = makeLocalContent() else {
+            state = .failed(String(localized: "Unable to collect local configuration"))
+            return nil
+        }
+
+        let localDates = preferenceModificationDates(
+            for: localContent,
+            defaultDate: localPreferenceFallbackDate
+        )
+        let merged = Self.mergePreferencesByModificationDate(
+            localPreferences: localContent.preferences,
+            localUpdatedAt: localDates,
+            localDeviceID: deviceID,
+            remotePreferences: remote.content.preferences,
+            remoteUpdatedAt: remote.preferenceUpdatedAt,
+            remoteSnapshotDate: remote.updatedAt,
+            remoteDeviceID: remote.sourceDeviceID
+        )
+        let mergedContent = Content(
+            preferences: merged.preferences,
+            vocabulary: remote.content.vocabulary,
+            replacements: remote.content.replacements
+        )
+        let mergedSnapshot = Snapshot(
+            schemaVersion: Snapshot.currentSchemaVersion,
+            revision: remote.revision,
+            updatedAt: remote.updatedAt,
+            sourceDeviceID: remote.sourceDeviceID,
+            preferenceUpdatedAt: merged.preferenceUpdatedAt,
+            content: mergedContent
+        )
+        let shouldWrite = mergedContent != remote.content
+            || merged.preferenceUpdatedAt != remote.preferenceUpdatedAt
+            || remote.schemaVersion != Snapshot.currentSchemaVersion
+        return SnapshotReconciliation(snapshot: mergedSnapshot, shouldWrite: shouldWrite)
+    }
+
+    private var localPreferenceFallbackDate: Date {
+        effectiveLocalChangeDate
+            ?? defaults.object(forKey: Self.lastLocalChangeKey) as? Date
+            ?? .distantPast
+    }
+
+    static func changedPreferenceKeys(current: [String: Data], baseline: [String: Data]?) -> Set<String> {
+        guard let baseline else {
+            return Set(current.keys)
+        }
+        let keys = Set(current.keys).union(baseline.keys)
+        return Set(keys.filter { current[$0] != baseline[$0] })
+    }
+
+    private func recordLocalPreferenceChanges(_ keys: Set<String>, changedAt: Date) {
+        guard !keys.isEmpty else { return }
+        var dates = loadPreferenceModificationDates()
+        for key in keys where Self.isEligiblePreferenceKey(key) {
+            dates[key] = changedAt
+        }
+        savePreferenceModificationDates(dates)
+    }
+
+    private func preferenceModificationDates(for content: Content, defaultDate: Date) -> [String: Date] {
+        var dates = loadPreferenceModificationDates()
+        if defaultDate > Date.distantPast {
+            for key in content.preferences.keys where dates[key] == nil {
+                dates[key] = defaultDate
+            }
+        }
+        return dates.filter { key, _ in
+            Self.isEligiblePreferenceKey(key)
+        }
+    }
+
+    private func loadPreferenceModificationDates() -> [String: Date] {
+        guard let data = defaults.data(forKey: Self.preferenceUpdatedAtKey),
+            let decoded = try? PropertyListDecoder().decode([String: Date].self, from: data)
+        else {
+            return [:]
+        }
+        return decoded.filter { key, _ in
+            Self.isEligiblePreferenceKey(key)
+        }
+    }
+
+    private func savePreferenceModificationDates(_ dates: [String: Date]) {
+        let filtered = dates.filter { key, _ in
+            Self.isEligiblePreferenceKey(key)
+        }
+        guard let data = try? PropertyListEncoder().encode(filtered) else { return }
+        setMetadata(data, forKey: Self.preferenceUpdatedAtKey)
+    }
+
+    private static func mergePreferencesByModificationDate(
+        localPreferences: [String: Data],
+        localUpdatedAt: [String: Date],
+        localDeviceID: String,
+        remotePreferences: [String: Data],
+        remoteUpdatedAt: [String: Date],
+        remoteSnapshotDate: Date,
+        remoteDeviceID: String
+    ) -> (preferences: [String: Data], preferenceUpdatedAt: [String: Date]) {
+        let allKeys = Set(localPreferences.keys)
+            .union(remotePreferences.keys)
+            .union(localUpdatedAt.keys)
+            .union(remoteUpdatedAt.keys)
+
+        var mergedPreferences: [String: Data] = [:]
+        var mergedDates: [String: Date] = [:]
+        for key in allKeys where isEligiblePreferenceKey(key) {
+            let localValue = localPreferences[key]
+            let remoteValue = remotePreferences[key]
+            let localDate = localUpdatedAt[key]
+            let remoteDate = remoteUpdatedAt[key]
+                ?? (localDate == nil ? remoteSnapshotDate : .distantPast)
+
+            if localValue == remoteValue {
+                if let value = localValue ?? remoteValue {
+                    mergedPreferences[key] = value
+                }
+                let latestDate = max(localDate ?? .distantPast, remoteDate)
+                if latestDate > Date.distantPast {
+                    mergedDates[key] = latestDate
+                }
+                continue
+            }
+
+            let resolvedLocalDate = localDate ?? .distantPast
+            let localWins: Bool
+            if resolvedLocalDate != remoteDate {
+                localWins = resolvedLocalDate > remoteDate
+            } else {
+                localWins = localDeviceID > remoteDeviceID
+            }
+
+            if localWins {
+                if let localValue {
+                    mergedPreferences[key] = localValue
+                }
+                if resolvedLocalDate > Date.distantPast {
+                    mergedDates[key] = resolvedLocalDate
+                }
+            } else {
+                if let remoteValue {
+                    mergedPreferences[key] = remoteValue
+                }
+                if remoteDate > Date.distantPast {
+                    mergedDates[key] = remoteDate
+                }
+            }
+        }
+
+        return (mergedPreferences, mergedDates)
+    }
+
+    @discardableResult
+    private func writeReconciledSnapshot(
+        _ snapshot: Snapshot,
+        clearPendingLocalChange shouldClearPendingLocalChange: Bool = true
+    ) -> Snapshot? {
+        let latestPreferenceDate = snapshot.preferenceUpdatedAt.values.max() ?? snapshot.updatedAt
+        let reconciledSnapshot = Snapshot(
+            schemaVersion: Snapshot.currentSchemaVersion,
+            revision: UUID(),
+            updatedAt: max(snapshot.updatedAt, max(Date(), latestPreferenceDate)),
+            sourceDeviceID: deviceID,
+            preferenceUpdatedAt: snapshot.preferenceUpdatedAt,
+            content: snapshot.content
+        )
+
+        do {
+            try writeSnapshot(reconciledSnapshot)
+            lastKnownContent = reconciledSnapshot.content
+            lastSeenRevision = reconciledSnapshot.revision
+            lastSyncedAt = reconciledSnapshot.updatedAt
+            savePreferenceModificationDates(reconciledSnapshot.preferenceUpdatedAt)
+            setMetadata(reconciledSnapshot.revision.uuidString, forKey: Self.lastAppliedRevisionKey)
+            if shouldClearPendingLocalChange {
+                clearPendingLocalChange()
+            }
+            state = .synced
+            logger.info("Saved reconciled portable configuration to iCloud Drive.")
+            return reconciledSnapshot
+        } catch {
+            state = .failed(error.localizedDescription)
+            logger.error("Failed to write reconciled iCloud Drive configuration: \(error.localizedDescription, privacy: .public)")
+            return nil
+        }
+    }
+
     private enum SnapshotReadResult {
         case missing
         case available(Snapshot, hasConflicts: Bool)
@@ -642,6 +895,9 @@ final class CloudConfigurationSyncService: ObservableObject {
             revision: snapshot.revision,
             updatedAt: snapshot.updatedAt,
             sourceDeviceID: snapshot.sourceDeviceID,
+            preferenceUpdatedAt: snapshot.preferenceUpdatedAt.filter { key, _ in
+                Self.isEligiblePreferenceKey(key)
+            },
             content: Self.normalizedContent(snapshot.content)
         )
     }
