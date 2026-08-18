@@ -8,6 +8,11 @@ struct DoubaoSpeechProvider: CloudProvider {
     let isStreamingOnly = true
     let languageCodes: [String]? = ["auto"]
     let includesAutoDetect = true
+    private let replayTranscriber: any DoubaoReplayTranscribing
+
+    init(replayTranscriber: any DoubaoReplayTranscribing = DoubaoWebSocketReplayTranscriber()) {
+        self.replayTranscriber = replayTranscriber
+    }
 
     var models: [CloudModel] {
         [
@@ -44,6 +49,44 @@ struct DoubaoSpeechProvider: CloudProvider {
 
     func makeStreamingProvider(customVocabulary: [String]) -> (any StreamingTranscriptionProvider)? {
         DoubaoStreamingProvider(customVocabulary: customVocabulary)
+    }
+
+    func transcribe(
+        audioData: Data,
+        fileName: String,
+        apiKey: String,
+        model: String,
+        language: String?,
+        customVocabulary: [String]
+    ) async throws -> String {
+        try await transcribe(
+            audioData: audioData,
+            fileName: fileName,
+            apiKey: apiKey,
+            model: model,
+            language: language,
+            customVocabulary: customVocabulary,
+            recognitionContext: nil
+        )
+    }
+
+    func transcribe(
+        audioData: Data,
+        fileName _: String,
+        apiKey: String,
+        model: String,
+        language _: String?,
+        customVocabulary: [String],
+        recognitionContext: RecognitionContextEnvelope?
+    ) async throws -> String {
+        try await replayTranscriber.transcribe(
+            wavData: audioData,
+            apiKey: apiKey,
+            resourceID: model,
+            customVocabulary: customVocabulary,
+            settings: .current(),
+            recognitionContext: recognitionContext
+        )
     }
 
     func verifyAPIKey(_ key: String) async -> (isValid: Bool, errorMessage: String?) {

@@ -367,14 +367,23 @@ actor DoubaoWebSocketSession {
     }
 
     private let eventsContinuation: AsyncStream<StreamingTranscriptionEvent>.Continuation?
+    private let connectionPool: CloudSpeechConnectionPool
+    private let connector: any CloudSpeechWebSocketConnecting
     private var connection: (any CloudSpeechWebSocketConnection)?
     private var receiveTask: Task<Void, Never>?
     private var verificationTimedOut = false
+    private var finalResultTimedOut = false
     private var audioPacketizer = DoubaoAudioPacketizer()
     private var preconnectionTarget: CloudSpeechConnectionTarget?
 
-    init(eventsContinuation: AsyncStream<StreamingTranscriptionEvent>.Continuation?) {
+    init(
+        eventsContinuation: AsyncStream<StreamingTranscriptionEvent>.Continuation?,
+        connectionPool: CloudSpeechConnectionPool = .shared,
+        connector: any CloudSpeechWebSocketConnecting = URLSessionCloudSpeechWebSocketConnector()
+    ) {
         self.eventsContinuation = eventsContinuation
+        self.connectionPool = connectionPool
+        self.connector = connector
     }
 
     static func verify(
@@ -442,7 +451,8 @@ actor DoubaoWebSocketSession {
         settings: DoubaoSpeechSettings,
         recognitionContext: RecognitionContextEnvelope? = nil,
         endpoint: Endpoint,
-        startReceiving: Bool
+        startReceiving: Bool,
+        allowPreconnectedConnection: Bool = true
     ) async throws {
         guard connection == nil else { return }
         audioPacketizer.reset()
@@ -452,45 +462,85 @@ actor DoubaoWebSocketSession {
             resourceID: resourceID,
             endpoint: endpoint.url
         )
+        var connectionSource = "none"
+        var connectionStage = "select"
+        let connectStartedAt = Date()
 
         do {
             var standbyConnection: (any CloudSpeechWebSocketConnection)?
-            if endpoint == .optimizedStreaming {
-                standbyConnection = await CloudSpeechConnectionPool.shared.lease(for: target)
+            if endpoint == .optimizedStreaming, allowPreconnectedConnection {
+                connectionStage = "lease"
+                standbyConnection = await connectionPool.lease(for: target)
                 connection = standbyConnection
+                if standbyConnection != nil {
+                    connectionSource = "preconnected"
+                    Self.logger.notice(
+                        "Doubao connection selected source=preconnected \(target.key.diagnosticLabel, privacy: .public)"
+                    )
+                }
             }
             if connection == nil {
-                connection = try await URLSessionCloudSpeechWebSocketConnector().open(
+                connectionStage = "openFresh"
+                connectionSource = "fresh"
+                Self.logger.notice(
+                    "Doubao connection opening source=fresh \(target.key.diagnosticLabel, privacy: .public)"
+                )
+                connection = try await connector.open(
                     target: target,
                     onClosed: nil
+                )
+                Self.logger.notice(
+                    "Doubao connection opened source=fresh elapsed=\(Date().timeIntervalSince(connectStartedAt), format: .fixed(precision: 3), privacy: .public)s \(target.key.diagnosticLabel, privacy: .public)"
                 )
             }
             guard let connection else { throw StreamingTranscriptionError.notConnected }
             if let logID = connection.responseHeader(named: "X-Tt-Logid"), !logID.isEmpty {
-                Self.logger.notice("Doubao recognition session opened logID=\(logID, privacy: .public)")
+                Self.logger.notice(
+                    "Doubao recognition session opened source=\(connectionSource, privacy: .public) logID=\(logID, privacy: .public)"
+                )
             }
             let initialRequest = try DoubaoStreamingProtocol.makeFullClientRequest(
                 customVocabulary: customVocabulary,
                 settings: settings,
                 recognitionContext: recognitionContext
             )
+            connectionStage = "sendInitialRequest"
             do {
                 try await connection.send(.data(initialRequest))
-            } catch where standbyConnection != nil {
+            } catch let preconnectedError where standbyConnection != nil {
+                Self.logger.warning(
+                    "Doubao preconnected socket rejected initial request; retrying source=fresh error=\(preconnectedError.localizedDescription, privacy: .public) \(target.key.diagnosticLabel, privacy: .public)"
+                )
                 connection.close()
-                self.connection = try await URLSessionCloudSpeechWebSocketConnector().open(
+                connectionStage = "openFreshRetry"
+                let freshRetryStartedAt = Date()
+                self.connection = try await connector.open(
                     target: target,
                     onClosed: nil
                 )
                 guard let freshConnection = self.connection else {
                     throw StreamingTranscriptionError.notConnected
                 }
+                connectionSource = "freshRetry"
+                Self.logger.notice(
+                    "Doubao fresh retry connection opened elapsed=\(Date().timeIntervalSince(freshRetryStartedAt), format: .fixed(precision: 3), privacy: .public)s \(target.key.diagnosticLabel, privacy: .public)"
+                )
+                connectionStage = "sendInitialRequestFreshRetry"
                 try await freshConnection.send(.data(initialRequest))
+                Self.logger.notice(
+                    "Doubao fresh retry initial request accepted \(target.key.diagnosticLabel, privacy: .public)"
+                )
             }
-            if endpoint == .optimizedStreaming {
+            Self.logger.notice(
+                "Doubao connection ready source=\(connectionSource, privacy: .public) elapsed=\(Date().timeIntervalSince(connectStartedAt), format: .fixed(precision: 3), privacy: .public)s \(target.key.diagnosticLabel, privacy: .public)"
+            )
+            if endpoint == .optimizedStreaming, allowPreconnectedConnection {
                 preconnectionTarget = target
             }
         } catch {
+            Self.logger.error(
+                "Doubao connection failed stage=\(connectionStage, privacy: .public) source=\(connectionSource, privacy: .public) elapsed=\(Date().timeIntervalSince(connectStartedAt), format: .fixed(precision: 3), privacy: .public)s \(target.key.diagnosticLabel, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
+            )
             closeSocket()
             throw StreamingTranscriptionError.connectionFailed(error.localizedDescription)
         }
@@ -525,7 +575,35 @@ actor DoubaoWebSocketSession {
         receiveTask = nil
         closeSocket()
         if let completedTarget {
-            await CloudSpeechConnectionPool.shared.recordUseCompleted(for: completedTarget)
+            await connectionPool.recordUseCompleted(for: completedTarget)
+        }
+    }
+
+    func receiveFinalTranscript(timeout: Duration = .seconds(10)) async throws -> String {
+        guard let connection else { throw StreamingTranscriptionError.notConnected }
+        finalResultTimedOut = false
+        let timeoutTask = Task<Void, Never> { [weak self] in
+            do {
+                try await Task.sleep(for: timeout)
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
+            await self?.cancelForFinalResultTimeout()
+        }
+        defer { timeoutTask.cancel() }
+
+        do {
+            while true {
+                let message = try await connection.receive()
+                guard let response = try DoubaoStreamingProtocol.parseServerMessage(message) else { continue }
+                if response.isFinal {
+                    return response.text
+                }
+            }
+        } catch {
+            if finalResultTimedOut { throw StreamingTranscriptionError.timeout }
+            throw error
         }
     }
 
@@ -554,6 +632,11 @@ actor DoubaoWebSocketSession {
         connection?.close()
     }
 
+    private func cancelForFinalResultTimeout() {
+        finalResultTimedOut = true
+        connection?.close()
+    }
+
     private func receiveLoop() async {
         guard let connection else { return }
 
@@ -563,6 +646,10 @@ actor DoubaoWebSocketSession {
                 guard let response = try DoubaoStreamingProtocol.parseServerMessage(message) else { continue }
                 if response.isFinal {
                     eventsContinuation?.yield(.committed(text: response.text))
+                    // The final frame completes the Doubao request. Do not wait
+                    // for the server's normal WebSocket close and surface that
+                    // close as a transport failure after a valid transcript.
+                    return
                 } else if !response.text.isEmpty {
                     eventsContinuation?.yield(.snapshot(text: response.text, stableText: response.stableText))
                 }

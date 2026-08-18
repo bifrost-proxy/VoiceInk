@@ -34,6 +34,8 @@ struct VoiceInkTests {
         original.firstCommitLatency = 0.83
         original.drainDuration = 0.12
         original.finalizationDuration = 0.09
+        original.fallbackDuration = 4.2
+        original.fallbackError = "CloudTranscriptionError: connection closed"
         original.transcriptionDuration = 2.1
         original.postProcessingDuration = 0.08
         original.enhancementDuration = 0.7
@@ -63,6 +65,43 @@ struct VoiceInkTests {
             performanceData: transcription.performanceData
         )
         #expect(metric.performanceData == transcription.performanceData)
+    }
+
+    @Test func legacyPerformanceSnapshotWithoutFallbackErrorStillDecodes() throws {
+        let legacyJSON = Data(
+            #"{"schemaVersion":1,"executionMode":"nativeStreaming","fallbackDuration":1.25}"#.utf8
+        )
+
+        let snapshot = try JSONDecoder().decode(TranscriptionPerformanceSnapshot.self, from: legacyJSON)
+
+        #expect(snapshot.schemaVersion == 1)
+        #expect(snapshot.fallbackDuration == 1.25)
+        #expect(snapshot.fallbackError == nil)
+    }
+
+    @Test func diagnosticLogRetentionUsesSevenDaysAndFiftyMiB() {
+        let policy = LogExportRetentionPolicy.voiceInkDefault
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+
+        #expect(policy.maximumAge == 7 * 24 * 60 * 60)
+        #expect(policy.maximumBytes == 50 * 1_024 * 1_024)
+        #expect(policy.cutoffDate(relativeTo: now) == now.addingTimeInterval(-7 * 24 * 60 * 60))
+    }
+
+    @Test func diagnosticLogBufferDropsOldestLinesAndHonorsByteLimit() {
+        var buffer = BoundedDiagnosticLogBuffer(maximumBytes: 8)
+        buffer.append("old")
+        buffer.append("new")
+        buffer.append("tail")
+
+        #expect(buffer.lines == ["tail"])
+        #expect(buffer.byteCount <= 8)
+        #expect(buffer.droppedLineCount == 2)
+
+        var oversizedBuffer = BoundedDiagnosticLogBuffer(maximumBytes: 8)
+        oversizedBuffer.append("1234567890")
+        #expect(oversizedBuffer.lines == ["1234567"])
+        #expect(oversizedBuffer.byteCount == 8)
     }
 
     @Test func historyCapacityLimitsUseEitherThresholdAndDefaultToUnlimited() {

@@ -82,6 +82,7 @@ final class StreamingTranscriptionSession: TranscriptionSession {
     private var startupTask: Task<Void, Never>?
     private var startupTaskID: UUID?
     private var fallbackDuration: TimeInterval?
+    private var fallbackErrorDescription: String?
     private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "StreamingTranscriptionSession")
 
     init(streamingService: StreamingTranscriptionService, fallbackService: TranscriptionService) {
@@ -95,8 +96,10 @@ final class StreamingTranscriptionSession: TranscriptionSession {
 
         self.model = model
         self.context = context
+        self.streamingFailed = false
         self.lastResolution = nil
         self.fallbackDuration = nil
+        self.fallbackErrorDescription = nil
         logger.notice("Streaming session prepare model=\(model.displayName, privacy: .public)")
 
         streamingService.prepareForStart()
@@ -202,14 +205,24 @@ final class StreamingTranscriptionSession: TranscriptionSession {
 
         let fallbackStart = Date()
         logger.notice(
-            "Using batch fallback for \(model.displayName, privacy: .public) file=\(audioURL.lastPathComponent, privacy: .public)"
+            "Batch fallback started model=\(model.displayName, privacy: .public) resolution=\(self.lastResolution?.rawValue ?? "unknown", privacy: .public) file=\(audioURL.lastPathComponent, privacy: .public)"
         )
-        let text = try await fallbackService.transcribe(audioURL: audioURL, model: model, context: context)
-        fallbackDuration = Date().timeIntervalSince(fallbackStart)
-        logger.notice(
-            "Batch fallback completed elapsed=\(Date().timeIntervalSince(fallbackStart), format: .fixed(precision: 3), privacy: .public)s chars=\(text.count, privacy: .public)"
-        )
-        return text
+        do {
+            let text = try await fallbackService.transcribe(audioURL: audioURL, model: model, context: context)
+            fallbackDuration = Date().timeIntervalSince(fallbackStart)
+            fallbackErrorDescription = nil
+            logger.notice(
+                "Batch fallback completed outcome=success elapsed=\(self.fallbackDuration ?? 0, format: .fixed(precision: 3), privacy: .public)s chars=\(text.count, privacy: .public)"
+            )
+            return text
+        } catch {
+            fallbackDuration = Date().timeIntervalSince(fallbackStart)
+            fallbackErrorDescription = "\(String(reflecting: type(of: error))): \(error.localizedDescription)"
+            logger.error(
+                "Batch fallback completed outcome=failure elapsed=\(self.fallbackDuration ?? 0, format: .fixed(precision: 3), privacy: .public)s error=\(self.fallbackErrorDescription ?? error.localizedDescription, privacy: .public)"
+            )
+            throw error
+        }
     }
 
     var performanceSnapshot: TranscriptionPerformanceSnapshot? {
@@ -226,6 +239,7 @@ final class StreamingTranscriptionSession: TranscriptionSession {
         }
         snapshot.streamingResolution = lastResolution?.rawValue
         snapshot.fallbackDuration = fallbackDuration
+        snapshot.fallbackError = fallbackErrorDescription
         return snapshot
     }
 

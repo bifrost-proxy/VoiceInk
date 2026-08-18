@@ -4,7 +4,7 @@ import Foundation
 /// Values stay optional so older records and non-streaming providers never
 /// acquire measurements that were not actually observed.
 struct TranscriptionPerformanceSnapshot: Codable, Equatable, Sendable {
-    static let currentSchemaVersion = 1
+    static let currentSchemaVersion = 2
 
     var schemaVersion: Int = currentSchemaVersion
     var executionMode: String
@@ -15,6 +15,7 @@ struct TranscriptionPerformanceSnapshot: Codable, Equatable, Sendable {
     var drainDuration: TimeInterval?
     var finalizationDuration: TimeInterval?
     var fallbackDuration: TimeInterval?
+    var fallbackError: String?
     var transcriptionDuration: TimeInterval?
     var postProcessingDuration: TimeInterval?
     var enhancementDuration: TimeInterval?

@@ -1,13 +1,74 @@
 import Foundation
 import OSLog
 
+struct LogExportRetentionPolicy: Equatable, Sendable {
+    static let voiceInkDefault = LogExportRetentionPolicy(
+        maximumAge: 7 * 24 * 60 * 60,
+        maximumBytes: 50 * 1_024 * 1_024
+    )
+
+    let maximumAge: TimeInterval
+    let maximumBytes: Int
+
+    func cutoffDate(relativeTo date: Date) -> Date {
+        date.addingTimeInterval(-maximumAge)
+    }
+}
+
+struct BoundedDiagnosticLogBuffer {
+    private let maximumBytes: Int
+    private var storage: [(line: String, bytes: Int)] = []
+    private var headIndex = 0
+    private(set) var byteCount = 0
+    private(set) var droppedLineCount = 0
+
+    init(maximumBytes: Int) {
+        self.maximumBytes = max(0, maximumBytes)
+    }
+
+    mutating func append(_ line: String) {
+        guard maximumBytes > 1 else {
+            droppedLineCount += 1
+            return
+        }
+
+        var retainedLine = line
+        var retainedBytes = line.lengthOfBytes(using: .utf8) + 1
+        if retainedBytes > maximumBytes {
+            let prefix = Data(line.utf8).prefix(maximumBytes - 1)
+            retainedLine = String(decoding: prefix, as: UTF8.self)
+            retainedBytes = retainedLine.lengthOfBytes(using: .utf8) + 1
+        }
+
+        storage.append((retainedLine, retainedBytes))
+        byteCount += retainedBytes
+
+        while byteCount > maximumBytes, headIndex < storage.count {
+            byteCount -= storage[headIndex].bytes
+            headIndex += 1
+            droppedLineCount += 1
+        }
+
+        if headIndex > 1_024, headIndex * 2 > storage.count {
+            storage.removeFirst(headIndex)
+            headIndex = 0
+        }
+    }
+
+    var lines: [String] {
+        guard headIndex < storage.count else { return [] }
+        return storage[headIndex...].map { $0.line }
+    }
+}
+
 final class LogExporter {
     static let shared = LogExporter()
 
     private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "LogExporter")
     private let subsystem = "com.prakashjoshipax.voiceink"
-    private let maxSessionsToKeep = 3
+    private let maxSessionsToKeep = 100
     private let sessionsKey = "logExporter.sessionStartDates.v1"
+    private let retentionPolicy = LogExportRetentionPolicy.voiceInkDefault
 
     private(set) var sessionStartDates: [Date] = []
 
@@ -19,7 +80,9 @@ final class LogExporter {
             loadedDates = dates
         }
 
-        sessionStartDates = [Date()] + loadedDates
+        let now = Date()
+        let cutoffDate = retentionPolicy.cutoffDate(relativeTo: now)
+        sessionStartDates = [now] + loadedDates.filter { $0 >= cutoffDate && $0 <= now }
         sessionStartDates = Array(sessionStartDates.prefix(maxSessionsToKeep))
         saveSessions()
 
@@ -50,26 +113,37 @@ final class LogExporter {
         let store = try OSLogStore(scope: .system)
         let predicate = NSPredicate(format: "subsystem == %@", subsystem)
 
-        var logLines: [String] = []
+        let now = Date()
+        let cutoffDate = retentionPolicy.cutoffDate(relativeTo: now)
+        var headerLines: [String] = []
         let dateFormatter = DateFormatter()
         dateFormatter.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"
 
-        logLines.append("=== VoiceInk Diagnostic Logs ===")
-        logLines.append("Export Date: \(dateFormatter.string(from: Date()))")
-        logLines.append("Subsystem: \(subsystem)")
-        logLines.append("Total Sessions: \(sessionStartDates.count)")
-        logLines.append("================================")
-        logLines.append("")
-        logLines.append(systemInfo)
-        logLines.append("")
+        headerLines.append("=== VoiceInk Diagnostic Logs ===")
+        headerLines.append("Export Date: \(dateFormatter.string(from: now))")
+        headerLines.append("Subsystem: \(subsystem)")
+        headerLines.append("Retention: newest logs from at most 7 days, export capped at 50 MiB")
+        headerLines.append("Oldest Included Date: \(dateFormatter.string(from: cutoffDate))")
+        headerLines.append("Total Sessions: \(sessionStartDates.count)")
+        headerLines.append("================================")
+        headerLines.append("")
+        headerLines.append(systemInfo)
+        headerLines.append("")
+
+        let headerBytes = headerLines.joined(separator: "\n").lengthOfBytes(using: .utf8) + 1
+        let truncationNoticeReserve = 512
+        var boundedLogs = BoundedDiagnosticLogBuffer(
+            maximumBytes: max(0, retentionPolicy.maximumBytes - headerBytes - truncationNoticeReserve)
+        )
 
         // Build session ranges with labels
         let totalSessions = sessionStartDates.count
         var sessionRanges: [(label: String, start: Date, end: Date?)] = []
 
         for i in 0..<totalSessions {
-            let start = sessionStartDates[i]
+            let start = max(sessionStartDates[i], cutoffDate)
             let end: Date? = (i == 0) ? nil : sessionStartDates[i - 1]
+            if let end, end <= cutoffDate { continue }
             let sessionNumber = totalSessions - i
 
             let label: String
@@ -88,8 +162,8 @@ final class LogExporter {
 
         // Fetch logs for each session (oldest first for chronological order)
         for (label, startDate, endDate) in sessionRanges.reversed() {
-            logLines.append("--- \(label) ---")
-            logLines.append("")
+            boundedLogs.append("--- \(label) ---")
+            boundedLogs.append("")
 
             let position = store.position(date: startDate)
             let entries = try store.getEntries(at: position, matching: predicate)
@@ -105,18 +179,24 @@ final class LogExporter {
                 let category = logEntry.category
                 let message = logEntry.composedMessage
 
-                logLines.append("[\(timestamp)] [\(level)] [\(category)] \(message)")
+                boundedLogs.append("[\(timestamp)] [\(level)] [\(category)] \(message)")
                 sessionLogCount += 1
             }
 
             if sessionLogCount == 0 {
-                logLines.append("No logs found for this session.")
+                boundedLogs.append("No logs found for this session.")
             }
 
-            logLines.append("")
+            boundedLogs.append("")
         }
 
-        return logLines
+        if boundedLogs.droppedLineCount > 0 {
+            headerLines.append(
+                "NOTICE: \(boundedLogs.droppedLineCount) older log line(s) were omitted to keep this export under 50 MiB."
+            )
+            headerLines.append("")
+        }
+        return headerLines + boundedLogs.lines
     }
 
     private func logLevelString(_ level: OSLogEntryLog.Level) -> String {
