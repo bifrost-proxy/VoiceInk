@@ -125,10 +125,11 @@ PR 描述至少包含：
 4. 创建指向主干 commit 的 `vX.Y.Z` tag 并推送。
 5. 监控 `.github/workflows/release.yml` 到终态，不能在 job 仍运行时宣称发布完成。
 6. 验证 GitHub Release 不是 draft/prerelease，并包含：
-   - `VoiceInk.zip`
+   - `VoiceInk-arm64.zip`
+   - `VoiceInk-x86_64.zip`
    - `SHA256SUMS`
    - `voiceink.rb`
-7. 重新下载线上资产，执行 SHA256 校验，解压并验证版本、build、bundle ID、`arm64 + x86_64`、代码签名和必需资源。
+7. 重新下载线上资产，执行 SHA256 校验，解压并验证版本、build、bundle ID、各包仅包含对应 CPU 架构、代码签名和必需资源。
 
 已发布且已有用户可下载资产的 tag 不得移动或覆盖；需要修复时发布新的 patch 版本。若 tag 触发错误但尚未生成 Release，任何取消、删除或重建 tag 的操作都必须先核对 workflow 与远端 Release 状态并留下说明。
 
@@ -137,7 +138,7 @@ PR 描述至少包含：
 只有用户明确要求安装时才修改 `/Applications`：
 
 1. 查询 GitHub 最新正式 Release，确认目标版本。
-2. 下载 `VoiceInk.zip` 和 `SHA256SUMS`，校验通过后再解压。
+2. 根据本机 CPU 下载 `VoiceInk-arm64.zip` 或 `VoiceInk-x86_64.zip` 以及 `SHA256SUMS`，校验通过后再解压。
 3. 验证待安装应用的版本、build、架构、签名和必需资源。
 4. 若 VoiceInk 正在运行，先正常退出并确认进程结束。
 5. 将现有 `/Applications/VoiceInk.app` 保留为可回滚副本，再安装新版本。
