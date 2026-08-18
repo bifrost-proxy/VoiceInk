@@ -86,7 +86,7 @@ for architecture in "${ARCHITECTURES[@]}"; do
     rm -f "$OUTPUT_DIR/VoiceInk-$architecture.zip"
 done
 if [[ "$REQUESTED_ARCHITECTURE" == "all" ]]; then
-    rm -f "$OUTPUT_DIR/voiceink.rb" "$OUTPUT_DIR/SHA256SUMS"
+    rm -f "$OUTPUT_DIR/VoiceInk.zip" "$OUTPUT_DIR/voiceink.rb" "$OUTPUT_DIR/SHA256SUMS"
 fi
 
 make -C "$REPO_ROOT" whisper
@@ -226,6 +226,10 @@ for architecture in "${ARCHITECTURES[@]}"; do
 done
 
 if [[ "$REQUESTED_ARCHITECTURE" == "all" ]]; then
+    "$REPO_ROOT/scripts/build-legacy-universal-package.sh" \
+        --version "$VERSION" \
+        --build-number "$BUILD_NUMBER" \
+        --output-dir "$OUTPUT_DIR"
     "$REPO_ROOT/scripts/generate-release-metadata.sh" \
         --version "$VERSION" \
         --output-dir "$OUTPUT_DIR"
