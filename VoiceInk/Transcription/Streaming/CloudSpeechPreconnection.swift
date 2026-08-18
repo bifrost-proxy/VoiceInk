@@ -14,6 +14,17 @@ enum CloudSpeechConnectionKey: Hashable, Sendable {
         case .aliyun: "Alibaba Cloud Qwen"
         }
     }
+
+    var diagnosticLabel: String {
+        switch self {
+        case .doubao(let endpoint, let resourceID):
+            let host = URL(string: endpoint)?.host ?? "invalid-endpoint"
+            return "provider=Doubao endpoint=\(host) resourceID=\(resourceID)"
+        case .aliyun(let endpoint):
+            let host = URL(string: endpoint)?.host ?? "invalid-endpoint"
+            return "provider=AlibabaCloudQwen endpoint=\(host)"
+        }
+    }
 }
 
 enum CloudSpeechConnectionTarget: Equatable, @unchecked Sendable {
@@ -275,6 +286,7 @@ actor CloudSpeechConnectionPool {
         let replacements = Dictionary(uniqueKeysWithValues: newTargets.map { ($0.key, $0) })
 
         for key in Set(targets.keys).subtracting(replacements.keys) {
+            logger.notice("Cloud speech keep-alive target removed \(key.diagnosticLabel, privacy: .public)")
             removeSlot(for: key)
         }
 
@@ -282,6 +294,7 @@ actor CloudSpeechConnectionPool {
             removeSlot(for: key)
             targets[key] = target
             generations[key] = UUID()
+            logger.notice("Cloud speech keep-alive target registered \(key.diagnosticLabel, privacy: .public)")
             recordActivity(for: key)
         }
 
@@ -294,18 +307,24 @@ actor CloudSpeechConnectionPool {
     func lease(for target: CloudSpeechConnectionTarget) async -> (any CloudSpeechWebSocketConnection)? {
         let key = target.key
         guard targets[key] == target else {
+            logger.notice(
+                "Cloud speech keep-alive lease miss reason=targetNotRegistered \(key.diagnosticLabel, privacy: .public)"
+            )
             return nil
         }
         recordActivity(for: key)
         guard let connection = readyConnections.removeValue(forKey: key) else {
-            logger.notice("Cloud speech ready connection unavailable provider=\(key.providerLabel, privacy: .public)")
+            let state = dormantKeys.contains(key) ? "dormant" : (connectTasks[key] != nil ? "connecting" : "notReady")
+            logger.notice(
+                "Cloud speech keep-alive lease miss reason=\(state, privacy: .public) suspended=\(self.isSuspended, privacy: .public) \(key.diagnosticLabel, privacy: .public)"
+            )
             return nil
         }
 
         healthTasks.removeValue(forKey: key)?.cancel()
         generations[key] = UUID()
         ensureConnecting(for: key)
-        logger.notice("Using ready cloud speech connection provider=\(key.providerLabel, privacy: .public)")
+        logger.notice("Cloud speech keep-alive lease hit source=preconnected \(key.diagnosticLabel, privacy: .public)")
         return connection
     }
 
@@ -317,6 +336,9 @@ actor CloudSpeechConnectionPool {
     func setSuspended(_ suspended: Bool) {
         guard isSuspended != suspended else { return }
         isSuspended = suspended
+        logger.notice(
+            "Cloud speech keep-alive suspension changed suspended=\(suspended, privacy: .public) targetCount=\(self.targets.count, privacy: .public)"
+        )
         if suspended {
             for key in targets.keys {
                 invalidateConnectionWork(for: key)
@@ -356,6 +378,11 @@ actor CloudSpeechConnectionPool {
         let generation = generations[key] ?? UUID()
         generations[key] = generation
         let connector = connector
+        let attempt = (failureCounts[key] ?? 0) + 1
+        let startedAt = Date()
+        logger.notice(
+            "Cloud speech keep-alive connect started attempt=\(attempt, privacy: .public) \(key.diagnosticLabel, privacy: .public)"
+        )
         connectTasks[key] = Task { [weak self] in
             guard let self else { return }
             do {
@@ -367,9 +394,21 @@ actor CloudSpeechConnectionPool {
                         }
                     }
                 )
-                await self.connectionOpened(connection, for: key, generation: generation)
+                await self.connectionOpened(
+                    connection,
+                    for: key,
+                    generation: generation,
+                    attempt: attempt,
+                    elapsed: Date().timeIntervalSince(startedAt)
+                )
             } catch {
-                await self.connectionFailed(for: key, generation: generation, error: error)
+                await self.connectionFailed(
+                    for: key,
+                    generation: generation,
+                    attempt: attempt,
+                    elapsed: Date().timeIntervalSince(startedAt),
+                    error: error
+                )
             }
         }
     }
@@ -377,7 +416,9 @@ actor CloudSpeechConnectionPool {
     private func connectionOpened(
         _ connection: any CloudSpeechWebSocketConnection,
         for key: CloudSpeechConnectionKey,
-        generation: UUID
+        generation: UUID,
+        attempt: Int,
+        elapsed: TimeInterval
     ) {
         guard generations[key] == generation, targets[key] != nil, !isSuspended, !isShuttingDown else {
             connection.close()
@@ -390,18 +431,22 @@ actor CloudSpeechConnectionPool {
         readyConnections[key]?.close()
         readyConnections[key] = connection
         startHealthChecks(for: key, generation: generation, connection: connection)
-        logger.notice("Cloud speech connection ready provider=\(key.providerLabel, privacy: .public)")
+        logger.notice(
+            "Cloud speech keep-alive connect ready attempt=\(attempt, privacy: .public) elapsed=\(elapsed, format: .fixed(precision: 3), privacy: .public)s \(key.diagnosticLabel, privacy: .public)"
+        )
     }
 
     private func connectionFailed(
         for key: CloudSpeechConnectionKey,
         generation: UUID,
+        attempt: Int,
+        elapsed: TimeInterval,
         error: Error
     ) {
         guard generations[key] == generation, targets[key] != nil, !isSuspended, !isShuttingDown else { return }
         connectTasks[key] = nil
         logger.warning(
-            "Cloud speech preconnection failed provider=\(key.providerLabel, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
+            "Cloud speech keep-alive connect failed attempt=\(attempt, privacy: .public) elapsed=\(elapsed, format: .fixed(precision: 3), privacy: .public)s \(key.diagnosticLabel, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
         )
         scheduleRetry(for: key, generation: generation)
     }
@@ -409,17 +454,17 @@ actor CloudSpeechConnectionPool {
     private func connectionClosed(
         for key: CloudSpeechConnectionKey,
         generation: UUID,
+        source: String = "transportCallback",
         error: Error?
     ) {
         guard generations[key] == generation, targets[key] != nil, !isSuspended, !isShuttingDown else { return }
         readyConnections.removeValue(forKey: key)?.close()
         healthTasks.removeValue(forKey: key)?.cancel()
         connectTasks[key] = nil
-        if let error {
-            logger.notice(
-                "Cloud speech standby closed provider=\(key.providerLabel, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
-            )
-        }
+        let errorDescription = error?.localizedDescription ?? "none"
+        logger.notice(
+            "Cloud speech keep-alive standby closed source=\(source, privacy: .public) \(key.diagnosticLabel, privacy: .public) error=\(errorDescription, privacy: .public)"
+        )
         scheduleRetry(for: key, generation: generation)
     }
 
@@ -436,7 +481,12 @@ actor CloudSpeechConnectionPool {
                 do {
                     try await connection.ping()
                 } catch {
-                    await self?.connectionClosed(for: key, generation: generation, error: error)
+                    await self?.connectionClosed(
+                        for: key,
+                        generation: generation,
+                        source: "healthCheck",
+                        error: error
+                    )
                     return
                 }
             }
@@ -451,6 +501,9 @@ actor CloudSpeechConnectionPool {
         failureCounts[key] = failureCount
         let exponentialDelay = min(0.5 * pow(2, Double(max(0, failureCount - 1))), 30)
         let delay = exponentialDelay + Double.random(in: 0...0.25)
+        logger.notice(
+            "Cloud speech keep-alive retry scheduled nextAttempt=\(failureCount + 1, privacy: .public) delay=\(delay, format: .fixed(precision: 3), privacy: .public)s \(key.diagnosticLabel, privacy: .public)"
+        )
 
         retryTasks[key] = Task { [weak self] in
             try? await Task.sleep(for: .seconds(delay))
@@ -478,7 +531,7 @@ actor CloudSpeechConnectionPool {
             await self?.becomeDormant(for: key, activityToken: token)
         }
         if wasDormant {
-            logger.notice("Cloud speech preconnection resumed provider=\(key.providerLabel, privacy: .public)")
+            logger.notice("Cloud speech keep-alive resumed reason=activity \(key.diagnosticLabel, privacy: .public)")
         }
         ensureConnecting(for: key)
     }
@@ -490,7 +543,7 @@ actor CloudSpeechConnectionPool {
         dormantKeys.insert(key)
         invalidateConnectionWork(for: key)
         logger.notice(
-            "Cloud speech preconnection paused after 30 minutes idle provider=\(key.providerLabel, privacy: .public)"
+            "Cloud speech keep-alive paused reason=idleTimeout \(key.diagnosticLabel, privacy: .public)"
         )
     }
 
@@ -518,6 +571,10 @@ actor CloudSpeechConnectionPool {
 final class CloudSpeechPreconnectionService: ObservableObject {
     private let transcriptionModelManager: TranscriptionModelManager
     private let pool: CloudSpeechConnectionPool
+    private let logger = Logger(
+        subsystem: "com.prakashjoshipax.voiceink",
+        category: "CloudSpeechPreconnectionService"
+    )
     private let pathMonitor = NWPathMonitor()
     private let pathQueue = DispatchQueue(label: "com.prakashjoshipax.voiceink.cloud-speech-path")
     private var observers: [NSObjectProtocol] = []
@@ -525,6 +582,7 @@ final class CloudSpeechPreconnectionService: ObservableObject {
     private var refreshTask: Task<Void, Never>?
     private var isSleeping = false
     private var isNetworkAvailable = true
+    private var lastConfigurationSummary: String?
 
     init(
         transcriptionModelManager: TranscriptionModelManager,
@@ -616,6 +674,9 @@ final class CloudSpeechPreconnectionService: ObservableObject {
 
     private func updateSuspension() {
         let suspended = isSleeping || !isNetworkAvailable
+        logger.notice(
+            "Cloud speech keep-alive runtime state suspended=\(suspended, privacy: .public) sleeping=\(self.isSleeping, privacy: .public) pathAvailable=\(self.isNetworkAvailable, privacy: .public)"
+        )
         Task { [pool] in
             await pool.setSuspended(suspended)
         }
@@ -634,11 +695,14 @@ final class CloudSpeechPreconnectionService: ObservableObject {
         var targets: [CloudSpeechConnectionTarget] = []
 
         let doubaoSettings = DoubaoSpeechSettings.current()
+        let doubaoAPIKey = APIKeyManager.shared.getAPIKey(forProvider: "Doubao Speech")
+        var doubaoResourceCount = 0
         if doubaoSettings.keepConnectionReady,
-            let apiKey = APIKeyManager.shared.getAPIKey(forProvider: "Doubao Speech"),
+            let apiKey = doubaoAPIKey,
             !apiKey.isEmpty
         {
             let resourceIDs = configuredDoubaoResourceIDs()
+            doubaoResourceCount = resourceIDs.count
             targets.append(
                 contentsOf: resourceIDs.map {
                     .doubao(
@@ -651,12 +715,26 @@ final class CloudSpeechPreconnectionService: ObservableObject {
         }
 
         let aliyunSettings = AliyunQwenSpeechSettings.current()
+        let aliyunAPIKey = APIKeyManager.shared.getAPIKey(forProvider: AliyunQwenSpeechProvider.key)
         if aliyunSettings.keepConnectionReady,
-            let apiKey = APIKeyManager.shared.getAPIKey(forProvider: AliyunQwenSpeechProvider.key),
+            let apiKey = aliyunAPIKey,
             !apiKey.isEmpty,
             let endpoint = try? aliyunSettings.webSocketURL()
         {
             targets.append(.aliyun(apiKey: apiKey, endpoint: endpoint))
+        }
+
+        let summary = [
+            "doubaoEnabled=\(doubaoSettings.keepConnectionReady)",
+            "doubaoConfigured=\(!(doubaoAPIKey ?? "").isEmpty)",
+            "doubaoResourceCount=\(doubaoResourceCount)",
+            "aliyunEnabled=\(aliyunSettings.keepConnectionReady)",
+            "aliyunConfigured=\(!(aliyunAPIKey ?? "").isEmpty)",
+            "targetCount=\(targets.count)",
+        ].joined(separator: " ")
+        if summary != lastConfigurationSummary {
+            lastConfigurationSummary = summary
+            logger.notice("Cloud speech keep-alive configuration \(summary, privacy: .public)")
         }
 
         Task { [pool] in

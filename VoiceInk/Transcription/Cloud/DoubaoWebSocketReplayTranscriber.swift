@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 protocol DoubaoReplayTranscribing: Sendable {
     func transcribe(
@@ -77,6 +78,10 @@ struct DoubaoWAVPayload: Sendable {
 }
 
 struct DoubaoWebSocketReplayTranscriber: DoubaoReplayTranscribing {
+    private let logger = Logger(
+        subsystem: "com.prakashjoshipax.voiceink",
+        category: "DoubaoWebSocketReplayTranscriber"
+    )
     private let connectionPool: CloudSpeechConnectionPool
     private let connector: any CloudSpeechWebSocketConnecting
     private let paceAudioInRealtime: Bool
@@ -99,15 +104,24 @@ struct DoubaoWebSocketReplayTranscriber: DoubaoReplayTranscribing {
         settings: DoubaoSpeechSettings,
         recognitionContext: RecognitionContextEnvelope?
     ) async throws -> String {
-        let payload = try DoubaoWAVPayload(data: wavData)
-        let session = DoubaoWebSocketSession(
-            eventsContinuation: nil,
-            connectionPool: connectionPool,
-            connector: connector
-        )
+        let startedAt = Date()
+        var stage = "parse"
+        var session: DoubaoWebSocketSession?
 
         do {
-            try await session.connect(
+            let payload = try DoubaoWAVPayload(data: wavData)
+            let estimatedDuration = Double(payload.pcmData.count) / Double(16_000 * MemoryLayout<Int16>.size)
+            logger.notice(
+                "Doubao full-file fallback started stage=parse pcmBytes=\(payload.pcmData.count, privacy: .public) audioDuration=\(estimatedDuration, format: .fixed(precision: 3), privacy: .public)s paceRealtime=\(self.paceAudioInRealtime, privacy: .public)"
+            )
+            let replaySession = DoubaoWebSocketSession(
+                eventsContinuation: nil,
+                connectionPool: connectionPool,
+                connector: connector
+            )
+            session = replaySession
+            stage = "connect"
+            try await replaySession.connect(
                 apiKey: apiKey,
                 resourceID: resourceID,
                 customVocabulary: customVocabulary,
@@ -118,6 +132,7 @@ struct DoubaoWebSocketReplayTranscriber: DoubaoReplayTranscribing {
                 allowPreconnectedConnection: false
             )
 
+            stage = "send"
             var offset = 0
             while offset < payload.pcmData.count {
                 try Task.checkCancellation()
@@ -126,7 +141,7 @@ struct DoubaoWebSocketReplayTranscriber: DoubaoReplayTranscribing {
                     : DoubaoAudioPacketizer.packetByteCount
                 let end = min(offset + packetByteCount, payload.pcmData.count)
                 let chunk = payload.pcmData.subdata(in: offset..<end)
-                try await session.sendAudioChunk(chunk)
+                try await replaySession.sendAudioChunk(chunk)
                 offset = end
 
                 if paceAudioInRealtime {
@@ -137,17 +152,26 @@ struct DoubaoWebSocketReplayTranscriber: DoubaoReplayTranscribing {
                 }
             }
 
-            try await session.commit()
-            let transcript = try await session.receiveFinalTranscript()
+            stage = "commit"
+            try await replaySession.commit()
+            stage = "finalResponse"
+            let transcript = try await replaySession.receiveFinalTranscript()
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            await session.disconnect()
+            await replaySession.disconnect()
+            session = nil
 
             guard !transcript.isEmpty else {
                 throw CloudTranscriptionError.noTranscriptionReturned
             }
+            logger.notice(
+                "Doubao full-file fallback completed outcome=success elapsed=\(Date().timeIntervalSince(startedAt), format: .fixed(precision: 3), privacy: .public)s chars=\(transcript.count, privacy: .public)"
+            )
             return transcript
         } catch {
-            await session.disconnect()
+            await session?.disconnect()
+            logger.error(
+                "Doubao full-file fallback completed outcome=failure stage=\(stage, privacy: .public) elapsed=\(Date().timeIntervalSince(startedAt), format: .fixed(precision: 3), privacy: .public)s error=\(error.localizedDescription, privacy: .public)"
+            )
             throw error
         }
     }

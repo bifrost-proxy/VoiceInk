@@ -462,32 +462,58 @@ actor DoubaoWebSocketSession {
             resourceID: resourceID,
             endpoint: endpoint.url
         )
+        var connectionSource = "none"
+        var connectionStage = "select"
+        let connectStartedAt = Date()
 
         do {
             var standbyConnection: (any CloudSpeechWebSocketConnection)?
             if endpoint == .optimizedStreaming, allowPreconnectedConnection {
+                connectionStage = "lease"
                 standbyConnection = await connectionPool.lease(for: target)
                 connection = standbyConnection
+                if standbyConnection != nil {
+                    connectionSource = "preconnected"
+                    Self.logger.notice(
+                        "Doubao connection selected source=preconnected \(target.key.diagnosticLabel, privacy: .public)"
+                    )
+                }
             }
             if connection == nil {
+                connectionStage = "openFresh"
+                connectionSource = "fresh"
+                Self.logger.notice(
+                    "Doubao connection opening source=fresh \(target.key.diagnosticLabel, privacy: .public)"
+                )
                 connection = try await connector.open(
                     target: target,
                     onClosed: nil
                 )
+                Self.logger.notice(
+                    "Doubao connection opened source=fresh elapsed=\(Date().timeIntervalSince(connectStartedAt), format: .fixed(precision: 3), privacy: .public)s \(target.key.diagnosticLabel, privacy: .public)"
+                )
             }
             guard let connection else { throw StreamingTranscriptionError.notConnected }
             if let logID = connection.responseHeader(named: "X-Tt-Logid"), !logID.isEmpty {
-                Self.logger.notice("Doubao recognition session opened logID=\(logID, privacy: .public)")
+                Self.logger.notice(
+                    "Doubao recognition session opened source=\(connectionSource, privacy: .public) logID=\(logID, privacy: .public)"
+                )
             }
             let initialRequest = try DoubaoStreamingProtocol.makeFullClientRequest(
                 customVocabulary: customVocabulary,
                 settings: settings,
                 recognitionContext: recognitionContext
             )
+            connectionStage = "sendInitialRequest"
             do {
                 try await connection.send(.data(initialRequest))
-            } catch where standbyConnection != nil {
+            } catch let preconnectedError where standbyConnection != nil {
+                Self.logger.warning(
+                    "Doubao preconnected socket rejected initial request; retrying source=fresh error=\(preconnectedError.localizedDescription, privacy: .public) \(target.key.diagnosticLabel, privacy: .public)"
+                )
                 connection.close()
+                connectionStage = "openFreshRetry"
+                let freshRetryStartedAt = Date()
                 self.connection = try await connector.open(
                     target: target,
                     onClosed: nil
@@ -495,12 +521,26 @@ actor DoubaoWebSocketSession {
                 guard let freshConnection = self.connection else {
                     throw StreamingTranscriptionError.notConnected
                 }
+                connectionSource = "freshRetry"
+                Self.logger.notice(
+                    "Doubao fresh retry connection opened elapsed=\(Date().timeIntervalSince(freshRetryStartedAt), format: .fixed(precision: 3), privacy: .public)s \(target.key.diagnosticLabel, privacy: .public)"
+                )
+                connectionStage = "sendInitialRequestFreshRetry"
                 try await freshConnection.send(.data(initialRequest))
+                Self.logger.notice(
+                    "Doubao fresh retry initial request accepted \(target.key.diagnosticLabel, privacy: .public)"
+                )
             }
+            Self.logger.notice(
+                "Doubao connection ready source=\(connectionSource, privacy: .public) elapsed=\(Date().timeIntervalSince(connectStartedAt), format: .fixed(precision: 3), privacy: .public)s \(target.key.diagnosticLabel, privacy: .public)"
+            )
             if endpoint == .optimizedStreaming, allowPreconnectedConnection {
                 preconnectionTarget = target
             }
         } catch {
+            Self.logger.error(
+                "Doubao connection failed stage=\(connectionStage, privacy: .public) source=\(connectionSource, privacy: .public) elapsed=\(Date().timeIntervalSince(connectStartedAt), format: .fixed(precision: 3), privacy: .public)s \(target.key.diagnosticLabel, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
+            )
             closeSocket()
             throw StreamingTranscriptionError.connectionFailed(error.localizedDescription)
         }

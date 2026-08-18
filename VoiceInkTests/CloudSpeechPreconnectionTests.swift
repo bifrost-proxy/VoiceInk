@@ -23,8 +23,14 @@ struct CloudSpeechPreconnectionTests {
                 == DoubaoSpeechProvider.defaultResourceID
         )
         #expect(doubao.makeRequest().value(forHTTPHeaderField: "Authorization") == nil)
+        #expect(doubao.key.diagnosticLabel.contains("provider=Doubao"))
+        #expect(doubao.key.diagnosticLabel.contains("endpoint=openspeech.bytedance.com"))
+        #expect(doubao.key.diagnosticLabel.contains("resourceID=\(DoubaoSpeechProvider.defaultResourceID)"))
+        #expect(!doubao.key.diagnosticLabel.contains("doubao-key"))
         #expect(aliyun.makeRequest().url?.host == "dashscope.aliyuncs.com")
         #expect(aliyun.makeRequest().value(forHTTPHeaderField: "X-Api-Resource-Id") == nil)
+        #expect(aliyun.key.diagnosticLabel == "provider=AlibabaCloudQwen endpoint=dashscope.aliyuncs.com")
+        #expect(!aliyun.key.diagnosticLabel.contains("aliyun-key"))
     }
 
     @Test func leasingAReadyConnectionImmediatelyBuildsAReplacement() async throws {
