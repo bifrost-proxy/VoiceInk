@@ -115,6 +115,27 @@ struct RecordingPermissionPreflightTests {
         )
     }
 
+    @Test func accessibilityAuthorizationMonitorRefreshesWithoutAppActivation() async throws {
+        var isAuthorized = false
+        var refreshCount = 0
+        let monitor = AccessibilityAuthorizationMonitor(
+            pollingIntervalNanoseconds: 10_000_000,
+            isAuthorized: { isAuthorized },
+            onAuthorizationGranted: { refreshCount += 1 }
+        )
+
+        monitor.start()
+        monitor.start()
+        isAuthorized = true
+
+        for _ in 0..<50 where refreshCount == 0 {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+
+        #expect(refreshCount == 1)
+        monitor.stop()
+    }
+
     @Test func screenPermissionRequestDoesNotBlockMainActor() async throws {
         let startedAt = Date()
         let permissionTask = Task { @MainActor in
