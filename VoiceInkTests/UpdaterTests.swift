@@ -65,13 +65,18 @@ struct UpdaterTests {
     }
 
     @Test func checksumManifestRequiresTheExactVoiceInkArchive() throws {
-        let expected = String(repeating: "a", count: 64)
+        let legacy = String(repeating: "a", count: 64)
+        let arm64 = String(repeating: "b", count: 64)
+        let x86_64 = String(repeating: "c", count: 64)
         let manifest = """
-            \(String(repeating: "b", count: 64))  Other.zip
-            \(expected)  VoiceInk-arm64.zip
+            \(legacy)  VoiceInk.zip
+            \(arm64)  VoiceInk-arm64.zip
+            \(x86_64)  VoiceInk-x86_64.zip
             """
 
-        #expect(try UpdateService.checksum(for: "VoiceInk-arm64.zip", in: Data(manifest.utf8)) == expected)
+        #expect(try UpdateService.checksum(for: "VoiceInk.zip", in: Data(manifest.utf8)) == legacy)
+        #expect(try UpdateService.checksum(for: "VoiceInk-arm64.zip", in: Data(manifest.utf8)) == arm64)
+        #expect(try UpdateService.checksum(for: "VoiceInk-x86_64.zip", in: Data(manifest.utf8)) == x86_64)
         #expect(throws: UpdateService.Failure.self) {
             _ = try UpdateService.checksum(for: "Missing.zip", in: Data(manifest.utf8))
         }
