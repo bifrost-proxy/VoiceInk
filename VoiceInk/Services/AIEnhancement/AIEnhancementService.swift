@@ -152,7 +152,7 @@ class AIEnhancementService: ObservableObject {
             if !customVocabulary.isEmpty {
                 """
                 # Custom Vocabulary
-                Use these custom vocabulary words, proper nouns, acronyms, product names, and technical terms as the spelling authority. When the text clearly refers to one of these entries, replace similar-sounding or phonetically close transcription mistakes with the exact spelling shown below. Do not force a replacement when the text clearly means something else:
+                \(AIPrompts.customVocabularyGuidance)
                 <CUSTOM_VOCABULARY>
                 \(customVocabulary)
                 </CUSTOM_VOCABULARY>
