@@ -446,7 +446,7 @@ struct DoubaoStreamingTests {
     }
 
     @Test func wavPayloadExtractsRecordedPCMAndRejectsTheWrongFormat() throws {
-        let pcm = Data((0..<12_345).map { UInt8($0 % 251) })
+        let pcm = Data((0..<12_346).map { UInt8($0 % 251) })
         let wav = makePCM16WAV(pcm: pcm)
 
         #expect(try DoubaoWAVPayload(data: wav).pcmData == pcm)
@@ -478,7 +478,7 @@ struct DoubaoStreamingTests {
     }
 
     @Test func replayUsesOneFreshDoubaoConnectionAndPreservesEveryPCMByte() async throws {
-        let pcm = Data((0..<15_123).map { UInt8($0 % 251) })
+        let pcm = Data((0..<15_124).map { UInt8($0 % 251) })
         let connection = DoubaoReplayTestConnection(finalText: "恢复成功")
         let connector = DoubaoReplayTestConnector(connection: connection)
         let pool = CloudSpeechConnectionPool(connector: connector)
