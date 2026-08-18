@@ -126,9 +126,8 @@ final class CoreAudioRecorder: @unchecked Sendable {
     // Output format (16kHz mono PCM Int16 for transcription)
     private var outputFormat = AudioStreamBasicDescription()
 
-    // Conversion buffer, used only on audioProcessingQueue.
-    private var conversionBuffer: UnsafeMutablePointer<Int16>?
-    private var conversionBufferSize: UInt32 = 0
+    // Recording-lifetime converter, accessed only on audioProcessingQueue.
+    private var audioResampler: StatefulAudioResampler?
 
     // Audio metering. Store bit patterns so the render callback never locks.
     private let averagePowerBits = ManagedAtomic<UInt32>(Float32(-160.0).bitPattern)
@@ -163,6 +162,11 @@ final class CoreAudioRecorder: @unchecked Sendable {
     private let renderCallbacksInFlight = ManagedAtomic<UInt32>(0)
     private let droppedInputBuffersBackpressure = ManagedAtomic<UInt64>(0)
     private let droppedInputBuffersCapacity = ManagedAtomic<UInt64>(0)
+    private let droppedInputFrames = ManagedAtomic<UInt64>(0)
+    private let capturedInputFrames = ManagedAtomic<UInt64>(0)
+    private let convertedOutputFrames = ManagedAtomic<UInt64>(0)
+    private let capturedInputSampleRateBits = ManagedAtomic<UInt64>(Double(0).bitPattern)
+    private(set) var lastCaptureIntegritySnapshot = AudioCaptureIntegritySnapshot.empty
     // Accessed only from audioProcessingQueue. Completed batches are handed to
     // audioFileWriteQueue so disk latency never gates realtime transcription.
     private var audioFileWriteBatcher = AudioFileWriteBatcher()
@@ -242,6 +246,11 @@ final class CoreAudioRecorder: @unchecked Sendable {
             try createOutputFile(at: url)
             resetAudioProcessingState()
             resetAudioFileWriteBuffer()
+            resetCaptureIntegrityCounters()
+            resetAudioResampler(
+                inputSampleRate: deviceFormat.mSampleRate,
+                maximumInputFrames: renderFrameCapacity(for: currentDeviceID)
+            )
 
             try startAudioUnit()
         } catch {
@@ -278,8 +287,9 @@ final class CoreAudioRecorder: @unchecked Sendable {
             }
         }
 
-        drainAudioProcessingQueue(flushAudioFileBuffer: true)
-        logDroppedInputBufferCounters(context: "stop")
+        drainAudioProcessingQueue(flushResampler: true, flushAudioFileBuffer: true)
+        lastCaptureIntegritySnapshot = captureIntegritySnapshot()
+        logDroppedInputBufferCounters(context: "stop", snapshot: lastCaptureIntegritySnapshot)
 
         closeOutputFileAfterPendingWrites()
         recordingURL = nil
@@ -321,8 +331,8 @@ final class CoreAudioRecorder: @unchecked Sendable {
         }
 
         waitForRenderCallbacksToFinish()
-        drainAudioProcessingQueue()
-        logDroppedInputBufferCounters(context: "device-switch")
+        drainAudioProcessingQueue(flushResampler: true)
+        logDroppedInputBufferCounters(context: "device-switch", snapshot: captureIntegritySnapshot())
 
         // Step 2: Uninitialize to allow reconfiguration
         status = AudioUnitUninitialize(unit)
@@ -642,12 +652,7 @@ final class CoreAudioRecorder: @unchecked Sendable {
             inputBufferCapacitySamples = bufferSamples
         }
 
-        let maxOutputFrames = UInt32(ceil(Double(maxFrames) * (outputFormat.mSampleRate / inputSampleRate))) + 1
-        if maxOutputFrames > conversionBufferSize {
-            conversionBuffer?.deallocate()
-            conversionBuffer = UnsafeMutablePointer<Int16>.allocate(capacity: Int(maxOutputFrames))
-            conversionBufferSize = maxOutputFrames
-        }
+        resetAudioResampler(inputSampleRate: inputSampleRate, maximumInputFrames: maxFrames)
 
         if resetQueuedAudio {
             resetAudioProcessingState()
@@ -797,11 +802,7 @@ final class CoreAudioRecorder: @unchecked Sendable {
     private func freeBuffers() {
         drainAudioProcessingQueue()
 
-        if let buffer = conversionBuffer {
-            buffer.deallocate()
-            conversionBuffer = nil
-            conversionBufferSize = 0
-        }
+        audioResampler = nil
 
         if let buffer = renderBuffer {
             buffer.deallocate()
@@ -861,12 +862,15 @@ final class CoreAudioRecorder: @unchecked Sendable {
         let channelCount = captureChannelCount
         let inputSampleRate = deviceFormat.mSampleRate
         let requiredSamples = inNumberFrames * channelCount
+        capturedInputFrames.wrappingIncrement(by: UInt64(inNumberFrames), ordering: .relaxed)
+        capturedInputSampleRateBits.store(inputSampleRate.bitPattern, ordering: .relaxed)
 
         guard let renderBuf = renderBuffer,
             requiredSamples <= renderBufferSize,
             requiredSamples <= inputBufferCapacitySamples
         else {
             droppedInputBuffersCapacity.wrappingIncrement(ordering: .relaxed)
+            droppedInputFrames.wrappingIncrement(by: UInt64(inNumberFrames), ordering: .relaxed)
             return noErr
         }
 
@@ -953,6 +957,7 @@ final class CoreAudioRecorder: @unchecked Sendable {
 
         guard sampleCount <= inputBufferCapacitySamples else {
             droppedInputBuffersCapacity.wrappingIncrement(ordering: .relaxed)
+            droppedInputFrames.wrappingIncrement(by: UInt64(frameCount), ordering: .relaxed)
             return
         }
 
@@ -960,6 +965,7 @@ final class CoreAudioRecorder: @unchecked Sendable {
         let readIndex = inputReadIndex.load(ordering: .acquiring)
         guard writeIndex - readIndex < UInt64(inputBufferSlots.count) else {
             droppedInputBuffersBackpressure.wrappingIncrement(ordering: .relaxed)
+            droppedInputFrames.wrappingIncrement(by: UInt64(frameCount), ordering: .relaxed)
             return
         }
 
@@ -1020,9 +1026,15 @@ final class CoreAudioRecorder: @unchecked Sendable {
         }
     }
 
-    private func drainAudioProcessingQueue(flushAudioFileBuffer: Bool = false) {
+    private func drainAudioProcessingQueue(
+        flushResampler: Bool = false,
+        flushAudioFileBuffer: Bool = false
+    ) {
         let drain = {
             self.processQueuedInputBuffers()
+            if flushResampler {
+                self.flushAudioResampler()
+            }
             if flushAudioFileBuffer {
                 self.flushAudioFileWriteBuffer()
             }
@@ -1041,15 +1053,37 @@ final class CoreAudioRecorder: @unchecked Sendable {
         }
     }
 
-    private func logDroppedInputBufferCounters(context: String) {
-        let backpressureDrops = droppedInputBuffersBackpressure.exchange(0, ordering: .acquiringAndReleasing)
-        let capacityDrops = droppedInputBuffersCapacity.exchange(0, ordering: .acquiringAndReleasing)
-
-        if backpressureDrops > 0 || capacityDrops > 0 {
+    private func logDroppedInputBufferCounters(
+        context: String,
+        snapshot: AudioCaptureIntegritySnapshot? = nil
+    ) {
+        let snapshot = snapshot ?? captureIntegritySnapshot()
+        if snapshot.hasCaptureLoss {
             logger.warning(
-                "🎙️ Dropped input buffers context=\(context, privacy: .public) backpressure=\(backpressureDrops, privacy: .public) capacity=\(capacityDrops, privacy: .public)"
+                "🎙️ Dropped input buffers context=\(context, privacy: .public) backpressure=\(snapshot.droppedBackpressureBuffers, privacy: .public) capacity=\(snapshot.droppedCapacityBuffers, privacy: .public) frames=\(snapshot.droppedFrames, privacy: .public)"
             )
         }
+    }
+
+    private func captureIntegritySnapshot() -> AudioCaptureIntegritySnapshot {
+        AudioCaptureIntegritySnapshot(
+            droppedBackpressureBuffers: droppedInputBuffersBackpressure.load(ordering: .acquiring),
+            droppedCapacityBuffers: droppedInputBuffersCapacity.load(ordering: .acquiring),
+            droppedFrames: droppedInputFrames.load(ordering: .acquiring),
+            inputFrames: capturedInputFrames.load(ordering: .acquiring),
+            outputFrames: convertedOutputFrames.load(ordering: .acquiring),
+            inputSampleRate: Double(bitPattern: capturedInputSampleRateBits.load(ordering: .acquiring))
+        )
+    }
+
+    private func resetCaptureIntegrityCounters() {
+        droppedInputBuffersBackpressure.store(0, ordering: .releasing)
+        droppedInputBuffersCapacity.store(0, ordering: .releasing)
+        droppedInputFrames.store(0, ordering: .releasing)
+        capturedInputFrames.store(0, ordering: .releasing)
+        convertedOutputFrames.store(0, ordering: .releasing)
+        capturedInputSampleRateBits.store(Double(0).bitPattern, ordering: .releasing)
+        lastCaptureIntegritySnapshot = .empty
     }
 
     private func resetAudioProcessingState() {
@@ -1064,75 +1098,64 @@ final class CoreAudioRecorder: @unchecked Sendable {
         }
     }
 
+    private func resetAudioResampler(inputSampleRate: Double, maximumInputFrames: UInt32) {
+        let reset = {
+            self.audioResampler = try? StatefulAudioResampler(
+                inputSampleRate: inputSampleRate,
+                outputSampleRate: self.outputFormat.mSampleRate,
+                maximumInputFrames: maximumInputFrames
+            )
+        }
+        if DispatchQueue.getSpecific(key: audioProcessingQueueKey) != nil {
+            reset()
+        } else {
+            audioProcessingQueue.sync(execute: reset)
+        }
+    }
+
     private func convertAndDispatchAudio(
         inputSamples: UnsafeMutablePointer<Float32>,
         frameCount: UInt32,
         inputChannels: UInt32,
         inputSampleRate: Double
     ) {
-        let outputSampleRate = outputFormat.mSampleRate
-
-        // Calculate output frame count after sample rate conversion
-        let ratio = outputSampleRate / inputSampleRate
-        let outputFrameCount = UInt32(Double(frameCount) * ratio)
-
-        guard outputFrameCount > 0,
-            let outputBuffer = conversionBuffer,
-            outputFrameCount <= conversionBufferSize
-        else { return }
-
-        // Convert Float32 multi-channel → Int16 mono (with sample rate conversion if needed)
-        if inputSampleRate == outputSampleRate {
-            // Direct conversion, just format change and channel mixing
-            for i in 0..<Int(frameCount) {
-                var sample: Float32 = 0
-                // Mix all channels to mono
-                for ch in 0..<Int(inputChannels) {
-                    sample += inputSamples[i * Int(inputChannels) + ch]
-                }
-                sample /= Float32(inputChannels)
-
-                // Convert to Int16 with clipping
-                let scaled = sample * 32767.0
-                let clipped = max(-32768.0, min(32767.0, scaled))
-                outputBuffer[i] = Int16(clipped)
-            }
-        } else {
-            // Sample rate conversion needed - use linear interpolation
-            for i in 0..<Int(outputFrameCount) {
-                let inputIndex = Double(i) / ratio
-                let inputIndexInt = Int(inputIndex)
-                let frac = Float32(inputIndex - Double(inputIndexInt))
-
-                var sample: Float32 = 0
-                let idx1 = min(inputIndexInt, Int(frameCount) - 1)
-                let idx2 = min(inputIndexInt + 1, Int(frameCount) - 1)
-
-                // Mix channels and interpolate
-                for ch in 0..<Int(inputChannels) {
-                    let s1 = inputSamples[idx1 * Int(inputChannels) + ch]
-                    let s2 = inputSamples[idx2 * Int(inputChannels) + ch]
-                    sample += s1 + frac * (s2 - s1)
-                }
-                sample /= Float32(inputChannels)
-
-                // Convert to Int16
-                let scaled = sample * 32767.0
-                let clipped = max(-32768.0, min(32767.0, scaled))
-                outputBuffer[i] = Int16(clipped)
-            }
+        guard let audioResampler,
+            abs(audioResampler.inputSampleRate - inputSampleRate) < 0.5
+        else {
+            logger.error("🎙️ Audio resampler is unavailable for \(inputSampleRate, privacy: .public) Hz input")
+            return
         }
 
-        let byteCount = Int(outputFrameCount) * MemoryLayout<Int16>.size
-
-        // Realtime consumers receive PCM before any disk work is scheduled.
-        if let audioChunk = onAudioChunk {
-            let data = Data(bytes: outputBuffer, count: byteCount)
-            audioChunk(data)
+        do {
+            let data = try audioResampler.convert(
+                interleavedSamples: UnsafePointer(inputSamples),
+                frameCount: frameCount,
+                channelCount: inputChannels
+            )
+            dispatchConvertedAudio(data)
+        } catch {
+            logger.error("🎙️ Audio conversion failed: \(error.localizedDescription, privacy: .public)")
         }
+    }
 
-        let bytes = UnsafeRawBufferPointer(start: outputBuffer, count: byteCount)
-        if let batch = audioFileWriteBatcher.append(bytes) {
+    private func flushAudioResampler() {
+        guard let audioResampler else { return }
+        do {
+            dispatchConvertedAudio(try audioResampler.finish())
+        } catch {
+            logger.error("🎙️ Failed to flush audio converter: \(error.localizedDescription, privacy: .public)")
+        }
+        self.audioResampler = nil
+    }
+
+    private func dispatchConvertedAudio(_ data: Data) {
+        guard !data.isEmpty else { return }
+        convertedOutputFrames.wrappingIncrement(
+            by: UInt64(data.count / MemoryLayout<Int16>.size),
+            ordering: .relaxed
+        )
+        onAudioChunk?(data)
+        if let batch = audioFileWriteBatcher.append(data) {
             enqueueAudioFileWrite(batch)
         }
     }

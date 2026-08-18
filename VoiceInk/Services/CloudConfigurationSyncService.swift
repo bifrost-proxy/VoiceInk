@@ -108,6 +108,9 @@ final class CloudConfigurationSyncService: ObservableObject {
         // and recognition context may contain private domain information.
         AliyunQwenSpeechSettings.Keys.apiHost,
         AliyunQwenSpeechSettings.Keys.contextPrompt,
+        AliyunQwenSpeechSettings.Keys.useSelectedTextContext,
+        AliyunQwenSpeechSettings.Keys.useClipboardContext,
+        AliyunQwenSpeechSettings.Keys.useScreenContext,
         AliyunQwenSpeechSettings.Keys.keepConnectionReady,
         // A POI hint identifies the user's current or intended city and stays local.
         DoubaoSpeechSettings.Keys.poiCityName,

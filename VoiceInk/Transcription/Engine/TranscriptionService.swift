@@ -3,17 +3,35 @@ import Foundation
 struct TranscriptionRequestContext {
     let language: String?
     let prompt: String?
+    let speechRecognitionContext: String?
+
+    init(
+        language: String?,
+        prompt: String?,
+        speechRecognitionContext: String? = nil
+    ) {
+        self.language = language
+        self.prompt = prompt
+        self.speechRecognitionContext = speechRecognitionContext
+    }
 
     static var currentDefaults: TranscriptionRequestContext {
         TranscriptionRequestContext(
             language: UserDefaults.standard.string(forKey: "SelectedLanguage") ?? "auto",
-            prompt: UserDefaults.standard.string(forKey: "TranscriptionPrompt")
+            prompt: UserDefaults.standard.string(forKey: "TranscriptionPrompt"),
+            speechRecognitionContext: nil
         )
     }
 
     func scoped(to model: any TranscriptionModel) -> TranscriptionRequestContext {
         guard model.provider == .whisper || model.provider == .qwenMlx else {
-            return TranscriptionRequestContext(language: language, prompt: nil)
+            return TranscriptionRequestContext(
+                language: language,
+                prompt: nil,
+                speechRecognitionContext: model.provider == .aliyunQwen
+                    ? speechRecognitionContext
+                    : nil
+            )
         }
 
         return self

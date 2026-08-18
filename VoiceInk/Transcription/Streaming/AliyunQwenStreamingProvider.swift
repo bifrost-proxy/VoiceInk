@@ -37,7 +37,8 @@ enum AliyunQwenStreamingProtocol {
         sampleRate: Int,
         language: String?,
         customVocabulary: [String],
-        settings: AliyunQwenSpeechSettings
+        settings: AliyunQwenSpeechSettings,
+        recognitionContext: String? = nil
     ) throws -> String {
         var parameters: [String: Any] = [
             "format": format,
@@ -61,7 +62,10 @@ enum AliyunQwenStreamingProtocol {
         }
 
         var input: [String: Any] = [:]
-        let contextPrompt = settings.contextPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        let contextPrompt = combinedContext(
+            staticContext: settings.contextPrompt,
+            recognitionContext: recognitionContext
+        )
         if !contextPrompt.isEmpty {
             input["context"] = [
                 [
@@ -173,6 +177,16 @@ enum AliyunQwenStreamingProtocol {
         return result
     }
 
+    private static func combinedContext(
+        staticContext: String,
+        recognitionContext: String?
+    ) -> String {
+        let parts = [staticContext, recognitionContext ?? ""]
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        return String(parts.joined(separator: "、").prefix(AliyunQwenSpeechSettings.maximumContextLength))
+    }
+
     private static func encode(_ object: [String: Any]) throws -> String {
         guard JSONSerialization.isValidJSONObject(object) else {
             throw AliyunQwenStreamingProtocolError.invalidMessage("Could not encode request")
@@ -187,12 +201,14 @@ enum AliyunQwenStreamingProtocol {
 
 final class AliyunQwenStreamingProvider: StreamingTranscriptionProvider {
     private let customVocabulary: [String]
+    private let recognitionContext: String?
     private let session: AliyunQwenWebSocketSession
     private var eventsContinuation: AsyncStream<StreamingTranscriptionEvent>.Continuation?
     private(set) var transcriptionEvents: AsyncStream<StreamingTranscriptionEvent>
 
-    init(customVocabulary: [String]) {
+    init(customVocabulary: [String], recognitionContext: String? = nil) {
         self.customVocabulary = customVocabulary
+        self.recognitionContext = recognitionContext
         var continuation: AsyncStream<StreamingTranscriptionEvent>.Continuation!
         transcriptionEvents = AsyncStream { continuation = $0 }
         eventsContinuation = continuation
@@ -220,7 +236,8 @@ final class AliyunQwenStreamingProvider: StreamingTranscriptionProvider {
             language: language,
             customVocabulary: customHotwordTerms(),
             settings: .current(),
-            format: "pcm"
+            format: "pcm",
+            recognitionContext: recognitionContext
         )
     }
 
@@ -291,7 +308,8 @@ actor AliyunQwenWebSocketSession {
         language: String?,
         customVocabulary: [String],
         settings: AliyunQwenSpeechSettings,
-        format: String
+        format: String,
+        recognitionContext: String? = nil
     ) async throws {
         guard connection == nil else { return }
 
@@ -317,7 +335,8 @@ actor AliyunQwenWebSocketSession {
                 sampleRate: 16_000,
                 language: language,
                 customVocabulary: customVocabulary,
-                settings: settings
+                settings: settings,
+                recognitionContext: recognitionContext
             )
             do {
                 try await connection.send(.string(runTask))
@@ -352,9 +371,9 @@ actor AliyunQwenWebSocketSession {
         guard connection != nil else { throw StreamingTranscriptionError.notConnected }
         pendingAudio.append(data)
         while pendingAudio.count >= 3_200 {
-            let chunk = pendingAudio.prefix(3_200)
+            let chunk = Data(pendingAudio.prefix(3_200))
+            try await sendBinary(chunk)
             pendingAudio.removeFirst(3_200)
-            try await sendBinary(Data(chunk))
         }
     }
 
@@ -362,8 +381,8 @@ actor AliyunQwenWebSocketSession {
         guard let connection, let taskID else { throw StreamingTranscriptionError.notConnected }
         if !pendingAudio.isEmpty {
             let remainder = pendingAudio
-            pendingAudio.removeAll(keepingCapacity: true)
             try await sendBinary(remainder)
+            pendingAudio.removeAll(keepingCapacity: true)
         }
 
         let finishTask = try AliyunQwenStreamingProtocol.makeFinishTask(taskID: taskID)
@@ -374,6 +393,10 @@ actor AliyunQwenWebSocketSession {
 
     func finalTranscript() -> String {
         committedSentences.keys.sorted().compactMap { committedSentences[$0] }.joined(separator: " ")
+    }
+
+    var pendingAudioByteCount: Int {
+        pendingAudio.count
     }
 
     func disconnect() async {

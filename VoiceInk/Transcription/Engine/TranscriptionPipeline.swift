@@ -58,6 +58,7 @@ class TranscriptionPipeline {
         triggerWordModeSelection: @escaping (String) -> String? = { _ in nil },
         enhancementConfiguration: @escaping () -> EnhancementRuntimeConfiguration?,
         recordingContextSnapshot: @escaping () async -> RecordingContextSnapshot? = { nil },
+        captureIntegritySnapshot: AudioCaptureIntegritySnapshot? = nil,
         outputConfiguration: @escaping () -> OutputRuntimeConfiguration,
         onStateChange: @escaping (RecordingState) -> Void,
         shouldCancel: () -> Bool,
@@ -92,6 +93,7 @@ class TranscriptionPipeline {
             )
             var performance = session?.performanceSnapshot
                 ?? TranscriptionPerformanceSnapshot(executionMode: "batch")
+            performance.recordCaptureIntegrity(captureIntegritySnapshot)
             performance.totalProcessingDuration = Date().timeIntervalSince(processingStartedAt)
             transcription.performanceSnapshot = performance
             transcription.syncModifiedAt = Date()
@@ -286,6 +288,7 @@ class TranscriptionPipeline {
         func saveTranscriptionAndPostCompletion() {
             var performance = session?.performanceSnapshot
                 ?? TranscriptionPerformanceSnapshot(executionMode: "batch")
+            performance.recordCaptureIntegrity(captureIntegritySnapshot)
             performance.transcriptionDuration = transcription.transcriptionDuration
             performance.postProcessingDuration = postProcessingDuration
             performance.enhancementDuration = transcription.enhancementDuration

@@ -79,8 +79,16 @@ enum StreamingAudioIntegrityPolicy {
     static let commitTimeout: Duration = .seconds(10)
     static let disconnectTimeout: Duration = .seconds(3)
 
-    static func requiresBatchFallback(droppedChunks: Int, drainedInTime: Bool) -> Bool {
-        droppedChunks > 0 || !drainedInTime
+    static func requiresBatchFallback(
+        droppedChunks: Int,
+        transportSendFailures: Int,
+        hasTerminalReceiveError: Bool,
+        drainedInTime: Bool
+    ) -> Bool {
+        droppedChunks > 0
+            || transportSendFailures > 0
+            || hasTerminalReceiveError
+            || !drainedInTime
     }
 
     /// Waits for an unstructured task without making a non-cooperative provider
@@ -122,6 +130,8 @@ private final class StreamingMetrics: @unchecked Sendable {
     private var sentBytes = 0
     private var droppedChunks = 0
     private var droppedBytes = 0
+    private var transportSendFailures = 0
+    private var transportFailedBytes = 0
 
     func reset() {
         lock.lock()
@@ -131,6 +141,8 @@ private final class StreamingMetrics: @unchecked Sendable {
         sentBytes = 0
         droppedChunks = 0
         droppedBytes = 0
+        transportSendFailures = 0
+        transportFailedBytes = 0
         lock.unlock()
     }
 
@@ -162,17 +174,35 @@ private final class StreamingMetrics: @unchecked Sendable {
         lock.unlock()
     }
 
+    func recordTransportSendFailure(_ byteCount: Int) {
+        lock.lock()
+        transportSendFailures += 1
+        transportFailedBytes += byteCount
+        lock.unlock()
+    }
+
     func snapshot() -> (
         receivedChunks: Int,
         receivedBytes: Int,
         sentChunks: Int,
         sentBytes: Int,
         droppedChunks: Int,
-        droppedBytes: Int
+        droppedBytes: Int,
+        transportSendFailures: Int,
+        transportFailedBytes: Int
     ) {
         lock.lock()
         defer { lock.unlock() }
-        return (receivedChunks, receivedBytes, sentChunks, sentBytes, droppedChunks, droppedBytes)
+        return (
+            receivedChunks,
+            receivedBytes,
+            sentChunks,
+            sentBytes,
+            droppedChunks,
+            droppedBytes,
+            transportSendFailures,
+            transportFailedBytes
+        )
     }
 }
 
@@ -231,6 +261,12 @@ enum StreamingStopResult {
 @MainActor
 class StreamingTranscriptionService {
 
+    typealias ProviderFactory = (
+        _ model: any TranscriptionModel,
+        _ context: TranscriptionRequestContext,
+        _ customVocabulary: [String]
+    ) -> any StreamingTranscriptionProvider
+
     private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "StreamingTranscriptionService")
     private var provider: StreamingProviderTransport?
     private var sendTask: Task<Void, Never>?
@@ -241,6 +277,7 @@ class StreamingTranscriptionService {
     private let customVocabulary: [String]
     private let fluidAudioService: FluidAudioTranscriptionService?
     private let sherpaOnnxService: SherpaOnnxTranscriptionService?
+    private let providerFactory: ProviderFactory?
     private var onPartialTranscript: (@MainActor (String) -> Void)?
     private let metrics = StreamingMetrics()
     private var stopStartedAt: Date?
@@ -252,16 +289,19 @@ class StreamingTranscriptionService {
     private var firstCommitLatency: TimeInterval?
     private var drainDuration: TimeInterval?
     private var finalizationDuration: TimeInterval?
+    private var terminalReceiveErrorDescription: String?
 
     init(
         modelContext: ModelContext, fluidAudioService: FluidAudioTranscriptionService? = nil,
         sherpaOnnxService: SherpaOnnxTranscriptionService? = nil,
-        onPartialTranscript: (@MainActor (String) -> Void)? = nil
+        onPartialTranscript: (@MainActor (String) -> Void)? = nil,
+        providerFactory: ProviderFactory? = nil
     ) {
         self.customVocabulary = TranscriptionVocabularyContext.uniqueTerms(from: modelContext)
         self.fluidAudioService = fluidAudioService
         self.sherpaOnnxService = sherpaOnnxService
         self.onPartialTranscript = onPartialTranscript
+        self.providerFactory = providerFactory
     }
 
     deinit {
@@ -292,6 +332,9 @@ class StreamingTranscriptionService {
         result.sentBytes = counters.sentBytes
         result.droppedChunks = counters.droppedChunks
         result.droppedBytes = counters.droppedBytes
+        result.transportSendFailures = counters.transportSendFailures
+        result.transportFailedBytes = counters.transportFailedBytes
+        result.terminalReceiveError = terminalReceiveErrorDescription
         return result
     }
 
@@ -311,6 +354,7 @@ class StreamingTranscriptionService {
         firstCommitLatency = nil
         drainDuration = nil
         finalizationDuration = nil
+        terminalReceiveErrorDescription = nil
     }
 
     /// Start a streaming transcription session for the given model.
@@ -389,10 +433,12 @@ class StreamingTranscriptionService {
         let afterDrain = metrics.snapshot()
         if StreamingAudioIntegrityPolicy.requiresBatchFallback(
             droppedChunks: afterDrain.droppedChunks,
+            transportSendFailures: afterDrain.transportSendFailures,
+            hasTerminalReceiveError: terminalReceiveErrorDescription != nil,
             drainedInTime: drainedInTime
         ) {
             logger.warning(
-                "Streaming audio integrity lost; retrying complete file droppedChunks=\(afterDrain.droppedChunks, privacy: .public) drainedInTime=\(drainedInTime, privacy: .public)"
+                "Streaming audio integrity lost; retrying complete file droppedChunks=\(afterDrain.droppedChunks, privacy: .public) sendFailures=\(afterDrain.transportSendFailures, privacy: .public) receiveError=\(self.terminalReceiveErrorDescription != nil, privacy: .public) drainedInTime=\(drainedInTime, privacy: .public)"
             )
             state = .done
             await cleanupStreaming()
@@ -437,6 +483,12 @@ class StreamingTranscriptionService {
 
         // Wait for the server to acknowledge our commit (or timeout)
         let finalText = await waitForFinalCommit(signalStream: signalStream)
+        if terminalReceiveErrorDescription != nil {
+            logger.warning("Streaming receive failed during commit; retrying complete file")
+            state = .done
+            await cleanupStreaming()
+            return .requiresBatchFallback
+        }
         if let stopStartedAt {
             finalizationDuration = Date().timeIntervalSince(stopStartedAt)
             logger.notice(
@@ -481,8 +533,17 @@ class StreamingTranscriptionService {
         for model: any TranscriptionModel,
         context: TranscriptionRequestContext
     ) -> StreamingTranscriptionProvider {
+        if let providerFactory {
+            return providerFactory(model, context, customVocabulary)
+        }
         if model.provider == .qwenMlx {
             return QwenMLXStreamingProvider(context: context.prompt)
+        }
+        if model.provider == .aliyunQwen {
+            return AliyunQwenStreamingProvider(
+                customVocabulary: customVocabulary,
+                recognitionContext: context.speechRecognitionContext
+            )
         }
 
         if model.provider == .fluidAudio {
@@ -549,9 +610,12 @@ class StreamingTranscriptionService {
                     metrics.recordSent(chunk.count)
                 } catch {
                     let desc = error.localizedDescription
+                    metrics.recordTransportSendFailure(chunk.count)
                     await MainActor.run {
                         self?.logger.error("Failed to send audio chunk: \(desc, privacy: .public)")
+                        self?.chunkSource.finish()
                     }
+                    break
                 }
             }
         }
@@ -659,6 +723,12 @@ class StreamingTranscriptionService {
                 case .error(let error):
                     await MainActor.run {
                         self.logger.error("Streaming event error: \(error, privacy: .public)")
+                        if self.terminalReceiveErrorDescription == nil {
+                            self.terminalReceiveErrorDescription = error.localizedDescription
+                        }
+                        self.chunkSource.finish()
+                        self.sendTask?.cancel()
+                        self.commitSignal?.finish()
                     }
                 }
             }

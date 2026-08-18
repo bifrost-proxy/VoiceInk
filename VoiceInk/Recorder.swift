@@ -28,6 +28,7 @@ class Recorder: NSObject, ObservableObject {
     private var smoothedAverage: Float = 0
     private var smoothedPeak: Float = 0
     private let audioMeterDeliveryBuffer = AudioMeterDeliveryBuffer()
+    private(set) var lastCaptureIntegritySnapshot = AudioCaptureIntegritySnapshot.empty
 
     /// Audio chunk callback for streaming. Can be updated while recording;
     /// changes are forwarded to the live CoreAudioRecorder.
@@ -119,6 +120,7 @@ class Recorder: NSObject, ObservableObject {
     }
 
     func startRecording(toOutputFile url: URL) async throws {
+        lastCaptureIntegritySnapshot = .empty
         deviceManager.isRecordingActive = true
         NotificationCenter.default.post(name: .recordingDidStart, object: nil)
 
@@ -181,12 +183,15 @@ class Recorder: NSObject, ObservableObject {
         // Capture current recorder to stop it on the serial hardware queue.
         let currentRecorder = self.recorder
 
-        await withCheckedContinuation { continuation in
+        let captureSnapshot = await withCheckedContinuation { continuation in
             audioSetupQueue.async {
                 currentRecorder?.stopRecording()
-                continuation.resume()
+                continuation.resume(
+                    returning: currentRecorder?.lastCaptureIntegritySnapshot ?? .empty
+                )
             }
         }
+        lastCaptureIntegritySnapshot = captureSnapshot
         onAudioChunk = nil
 
         smoothedValuesLock.lock()

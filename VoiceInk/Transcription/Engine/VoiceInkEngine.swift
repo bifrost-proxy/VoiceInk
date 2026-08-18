@@ -144,7 +144,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
     private var activeRecordingUseCase: RecordingUseCase = .newSession
     private var activePipelineUseCase: RecordingUseCase = .newSession
     private var activeRecordingContextStore: RecordingContextSnapshotStore?
-    private var activeRecordingContextTasks: [Task<Void, Never>] = []
+    private var activeRecordingContextTasks: RecordingContextCaptureTasks?
     private var pendingPermissionModeId: UUID?
     private var isPermissionAuthorizationInProgress = false
     private let recordingDurationLimiter = RecordingDurationLimiter()
@@ -235,6 +235,13 @@ class VoiceInkEngine: NSObject, ObservableObject {
             activeRecordingStartID = nil
             recordingState = .transcribing
             await recorder.stopRecording()
+            if recorder.lastCaptureIntegritySnapshot.hasCaptureLoss {
+                NotificationManager.shared.showNotification(
+                    title: String(localized: "Some audio frames were dropped; this transcription may be incomplete"),
+                    type: .warning,
+                    duration: 6.0
+                )
+            }
 
             if let recordedFile {
                 if !shouldCancelRecording {
@@ -295,6 +302,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
                         }
                         let activeModeTask = modeApplication.completion
                         let canPrepareStreamingImmediately = !modeApplication.waitsForBrowserURL
+                            && !self.shouldWaitForInitialAliyunContext(modeId: modeId)
 
                         do {
                             let fileName = "\(UUID().uuidString).wav"
@@ -310,7 +318,8 @@ class VoiceInkEngine: NSObject, ObservableObject {
                                 guard
                                     try await self.prepareTranscriptionSession(
                                         startID: startID,
-                                        realtimeAudioGate: realtimeAudioGate
+                                        realtimeAudioGate: realtimeAudioGate,
+                                        recognitionContext: nil
                                     )
                                 else {
                                     activeModeTask.cancel()
@@ -360,10 +369,16 @@ class VoiceInkEngine: NSObject, ObservableObject {
                             self.startRecordingContextCapture()
 
                             if !canPrepareStreamingImmediately {
+                                let recognitionContext = await self.initialAliyunRecognitionContext()
+                                guard self.recordingState == .recording,
+                                    self.activeRecordingStartID == startID,
+                                    !self.shouldCancelRecording
+                                else { return }
                                 guard
                                     try await self.prepareTranscriptionSession(
                                         startID: startID,
-                                        realtimeAudioGate: realtimeAudioGate
+                                        realtimeAudioGate: realtimeAudioGate,
+                                        recognitionContext: recognitionContext
                                     )
                                 else {
                                     await self.abortRecordingStartup(permanentURL: permanentURL)
@@ -462,7 +477,8 @@ class VoiceInkEngine: NSObject, ObservableObject {
     /// URL modes call it only after URL resolution has selected the final model.
     private func prepareTranscriptionSession(
         startID: UUID,
-        realtimeAudioGate: RealtimeAudioChunkGate
+        realtimeAudioGate: RealtimeAudioChunkGate,
+        recognitionContext: String?
     ) async throws -> Bool {
         let modelResolution = ModeRuntimeResolver.transcriptionModelResolution(
             transcriptionModelManager: transcriptionModelManager
@@ -477,12 +493,16 @@ class VoiceInkEngine: NSObject, ObservableObject {
             return false
         }
         guard
-            let transcriptionConfiguration = ModeRuntimeResolver.transcriptionConfiguration(
+            let resolvedConfiguration = ModeRuntimeResolver.transcriptionConfiguration(
                 from: modelResolution
             )
         else {
             preconditionFailure("Recording readiness accepted an unavailable transcription model")
         }
+
+        let transcriptionConfiguration = resolvedConfiguration.addingSpeechRecognitionContext(
+            recognitionContext
+        )
 
         guard serviceRegistry.shouldUseRealtimeTranscription(for: transcriptionConfiguration) else {
             currentSession = nil
@@ -780,12 +800,58 @@ class VoiceInkEngine: NSObject, ObservableObject {
 
         let store = RecordingContextSnapshotStore()
         activeRecordingContextStore = store
-        activeRecordingContextTasks = RecordingContextCaptureService.startCapture(into: store)
+        let captureTasks = RecordingContextCaptureService.startCapture(into: store)
+        activeRecordingContextTasks = captureTasks
+    }
+
+    private func shouldWaitForInitialAliyunContext(modeId: UUID?) -> Bool {
+        let mode = modeId.flatMap(ModeManager.shared.getConfiguration(with:))
+            ?? ModeManager.shared.currentEffectiveConfiguration
+        guard
+            let configuration = ModeRuntimeResolver.transcriptionConfiguration(
+                mode: mode,
+                transcriptionModelManager: transcriptionModelManager
+            ),
+            configuration.model.provider == .aliyunQwen
+        else { return false }
+
+        let settings = AliyunQwenSpeechSettings.current()
+        return (configuration.mode.useSelectedTextContext && settings.useSelectedTextContext)
+            || (configuration.mode.useClipboardContext && settings.useClipboardContext)
+            || (configuration.mode.useScreenCapture && settings.useScreenContext)
+    }
+
+    private func initialAliyunRecognitionContext() async -> String? {
+        guard
+            let store = activeRecordingContextStore,
+            let configuration = ModeRuntimeResolver.transcriptionConfiguration(
+                transcriptionModelManager: transcriptionModelManager
+            ),
+            configuration.model.provider == .aliyunQwen,
+            shouldWaitForInitialAliyunContext(modeId: configuration.mode.id)
+        else { return nil }
+
+        let settings = AliyunQwenSpeechSettings.current()
+        if configuration.mode.useSelectedTextContext, settings.useSelectedTextContext {
+            await activeRecordingContextTasks?.selectedText.value
+        }
+        if configuration.mode.useClipboardContext, settings.useClipboardContext {
+            await activeRecordingContextTasks?.clipboard.value
+        }
+        if configuration.mode.useScreenCapture, settings.useScreenContext {
+            await activeRecordingContextTasks?.screenText.value
+        }
+        guard !Task.isCancelled, activeRecordingContextStore === store else { return nil }
+        return SpeechRecognitionContextBuilder.build(
+            snapshot: store.snapshot,
+            mode: configuration.mode,
+            settings: settings
+        )
     }
 
     private func clearActiveRecordingContext() {
-        activeRecordingContextTasks.forEach { $0.cancel() }
-        activeRecordingContextTasks.removeAll()
+        activeRecordingContextTasks?.cancelAll()
+        activeRecordingContextTasks = nil
         activeRecordingContextStore = nil
     }
 
@@ -840,6 +906,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
                     contextStore?.snapshot
                 }
             },
+            captureIntegritySnapshot: recorder.lastCaptureIntegritySnapshot,
             outputConfiguration: {
                 ModeRuntimeResolver.outputConfiguration()
             },

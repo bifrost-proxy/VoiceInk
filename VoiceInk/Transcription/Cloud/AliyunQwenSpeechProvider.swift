@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 struct AliyunQwenSpeechProvider: CloudProvider {
     static let modelID = "qwen-audio-3.0-asr-flash-streaming"
@@ -13,7 +14,18 @@ struct AliyunQwenSpeechProvider: CloudProvider {
     let providerKey = Self.key
     let languageCodes: [String]? = Self.supportedLanguageCodes
     let includesAutoDetect = true
+    // The catalog model remains streaming-only for normal operation. The HTTP
+    // endpoint is intentionally reserved for complete-file recovery.
     let isStreamingOnly = true
+    private let offlineTranscriber: AliyunQwenOfflineTranscriber
+    private let logger = Logger(
+        subsystem: "com.prakashjoshipax.voiceink",
+        category: "AliyunQwenSpeechProvider"
+    )
+
+    init(offlineTranscriber: AliyunQwenOfflineTranscriber = AliyunQwenOfflineTranscriber()) {
+        self.offlineTranscriber = offlineTranscriber
+    }
 
     var models: [CloudModel] {
         [
@@ -46,7 +58,54 @@ struct AliyunQwenSpeechProvider: CloudProvider {
         language: String?,
         customVocabulary: [String]
     ) async throws -> String {
+        try await transcribe(
+            audioData: audioData,
+            fileName: "",
+            apiKey: apiKey,
+            model: model,
+            language: language,
+            customVocabulary: customVocabulary,
+            recognitionContext: nil
+        )
+    }
+
+    func transcribe(
+        audioData: Data,
+        fileName _: String,
+        apiKey: String,
+        model: String,
+        language: String?,
+        customVocabulary: [String],
+        recognitionContext: String?
+    ) async throws -> String {
         let settings = AliyunQwenSpeechSettings.current()
+        if offlineTranscriber.supportsFastRequest(audioData: audioData) {
+            do {
+                let transcript = try await offlineTranscriber.transcribe(
+                    audioData: audioData,
+                    apiKey: apiKey,
+                    language: language,
+                    customVocabulary: customVocabulary,
+                    settings: settings,
+                    recognitionContext: recognitionContext
+                )
+                logger.notice(
+                    "Alibaba Cloud fast offline recovery succeeded bytes=\(audioData.count, privacy: .public) chars=\(transcript.count, privacy: .public)"
+                )
+                return transcript
+            } catch {
+                // Preserve the existing reliability path if the newer HTTP
+                // endpoint is unavailable for a tenant or transiently fails.
+                logger.warning(
+                    "Alibaba Cloud fast offline recovery failed; using realtime replay: \(error.localizedDescription, privacy: .public)"
+                )
+            }
+        } else {
+            logger.notice(
+                "Alibaba Cloud recording exceeds fast offline request limit; using realtime replay bytes=\(audioData.count, privacy: .public)"
+            )
+        }
+
         let session = AliyunQwenWebSocketSession(eventsContinuation: nil)
 
         do {
@@ -56,7 +115,8 @@ struct AliyunQwenSpeechProvider: CloudProvider {
                 language: language,
                 customVocabulary: customVocabulary,
                 settings: settings,
-                format: "wav"
+                format: "wav",
+                recognitionContext: recognitionContext
             )
 
             for offset in stride(from: 0, to: audioData.count, by: 3_200) {
