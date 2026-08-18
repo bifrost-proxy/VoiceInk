@@ -551,7 +551,7 @@ struct ModeConfigFormView: View {
                 }
             }
 
-            Text("Cloud speech recognition also requires the matching provider permission. AI enhancement uses these mode settings directly.")
+            Text("Screen OCR is used only by AI enhancement. Other context sources require the matching provider permission for cloud speech recognition.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }

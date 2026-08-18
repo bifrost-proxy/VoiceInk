@@ -17,7 +17,7 @@ struct DoubaoSpeechSettings: Equatable, Sendable {
         static let useClipboardContext = "DoubaoSpeechUseClipboardContext"
         static let useApplicationContext = "DoubaoSpeechUseApplicationContext"
         static let useWindowTitleContext = "DoubaoSpeechUseWindowTitleContext"
-        static let useScreenContext = "DoubaoSpeechUseScreenContext"
+        static let legacyUseScreenContext = "DoubaoSpeechUseScreenContext"
         static let keepConnectionReady = "DoubaoSpeechKeepConnectionReady"
     }
 
@@ -40,7 +40,6 @@ struct DoubaoSpeechSettings: Equatable, Sendable {
         useClipboardContext: false,
         useApplicationContext: false,
         useWindowTitleContext: false,
-        useScreenContext: false,
         keepConnectionReady: false
     )
 
@@ -59,7 +58,6 @@ struct DoubaoSpeechSettings: Equatable, Sendable {
     let useClipboardContext: Bool
     let useApplicationContext: Bool
     let useWindowTitleContext: Bool
-    let useScreenContext: Bool
     let keepConnectionReady: Bool
 
     init(
@@ -78,7 +76,6 @@ struct DoubaoSpeechSettings: Equatable, Sendable {
         useClipboardContext: Bool = false,
         useApplicationContext: Bool = false,
         useWindowTitleContext: Bool = false,
-        useScreenContext: Bool = false,
         keepConnectionReady: Bool = false
     ) {
         self.enableTwoPassRecognition = enableTwoPassRecognition
@@ -97,7 +94,6 @@ struct DoubaoSpeechSettings: Equatable, Sendable {
         self.useClipboardContext = useClipboardContext
         self.useApplicationContext = useApplicationContext
         self.useWindowTitleContext = useWindowTitleContext
-        self.useScreenContext = useScreenContext
         self.keepConnectionReady = keepConnectionReady
     }
 
@@ -170,11 +166,6 @@ struct DoubaoSpeechSettings: Equatable, Sendable {
                 fallback: Self.defaults.useWindowTitleContext,
                 in: defaults
             ),
-            useScreenContext: bool(
-                forKey: Keys.useScreenContext,
-                fallback: Self.defaults.useScreenContext,
-                in: defaults
-            ),
             keepConnectionReady: bool(
                 forKey: Keys.keepConnectionReady,
                 fallback: Self.defaults.keepConnectionReady,
@@ -188,8 +179,7 @@ struct DoubaoSpeechSettings: Equatable, Sendable {
             selectedText: useSelectedTextContext,
             clipboard: useClipboardContext,
             application: useApplicationContext,
-            windowTitle: useWindowTitleContext,
-            screenOCR: useScreenContext
+            windowTitle: useWindowTitleContext
         )
     }
 

@@ -48,8 +48,6 @@ struct ProviderDetailPanel: View {
     private var doubaoUseApplicationContext = DoubaoSpeechSettings.defaults.useApplicationContext
     @AppStorage(DoubaoSpeechSettings.Keys.useWindowTitleContext)
     private var doubaoUseWindowTitleContext = DoubaoSpeechSettings.defaults.useWindowTitleContext
-    @AppStorage(DoubaoSpeechSettings.Keys.useScreenContext)
-    private var doubaoUseScreenContext = DoubaoSpeechSettings.defaults.useScreenContext
     @AppStorage(DoubaoSpeechSettings.Keys.keepConnectionReady)
     private var doubaoKeepConnectionReady = DoubaoSpeechSettings.defaults.keepConnectionReady
     @AppStorage(AliyunQwenSpeechSettings.Keys.region)
@@ -86,8 +84,6 @@ struct ProviderDetailPanel: View {
     private var aliyunUseApplicationContext = AliyunQwenSpeechSettings.defaults.useApplicationContext
     @AppStorage(AliyunQwenSpeechSettings.Keys.useWindowTitleContext)
     private var aliyunUseWindowTitleContext = AliyunQwenSpeechSettings.defaults.useWindowTitleContext
-    @AppStorage(AliyunQwenSpeechSettings.Keys.useScreenContext)
-    private var aliyunUseScreenContext = AliyunQwenSpeechSettings.defaults.useScreenContext
     @AppStorage(AliyunQwenSpeechSettings.Keys.keepConnectionReady)
     private var aliyunKeepConnectionReady = AliyunQwenSpeechSettings.defaults.keepConnectionReady
 
@@ -437,13 +433,6 @@ struct ProviderDetailPanel: View {
                     isOn: $doubaoUseWindowTitleContext
                 )
                 .accessibilityIdentifier("doubao.settings.windowTitleContext")
-                Divider()
-                optionToggleRow(
-                    title: "Allow screen-OCR features",
-                    detail: "Requires the active mode's Screen OCR setting. The screenshot and full OCR text are not sent.",
-                    isOn: $doubaoUseScreenContext
-                )
-                .accessibilityIdentifier("doubao.settings.screenContext")
             }
             .padding(.horizontal, 12)
             .background(ProviderSurface(cornerRadius: 10))
@@ -581,13 +570,6 @@ struct ProviderDetailPanel: View {
                     isOn: $aliyunUseWindowTitleContext
                 )
                 .accessibilityIdentifier("aliyun.settings.windowTitleContext")
-                Divider()
-                optionToggleRow(
-                    title: "Allow screen-OCR features",
-                    detail: "Requires the active mode's Screen OCR setting. The screenshot and full OCR text are not sent.",
-                    isOn: $aliyunUseScreenContext
-                )
-                .accessibilityIdentifier("aliyun.settings.screenContext")
             }
             .padding(.horizontal, 12)
             .background(ProviderSurface(cornerRadius: 10))

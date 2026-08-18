@@ -150,19 +150,19 @@
         "de" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "VoiceInk benötigt Zugriff auf die Bildschirmaufnahme, um Kontext von Ihrem Bildschirm für eine höhere Transkriptionsgenauigkeit zu erfassen."
+            "value" : "VoiceInk benötigt Zugriff auf die Bildschirmaufnahme, um Bildschirminhalte für die KI-Verbesserung zu verwenden."
           }
         },
         "en" : {
           "stringUnit" : {
             "state" : "new",
-            "value" : "VoiceInk needs screen recording access to understand context from your screen for improved transcription accuracy."
+            "value" : "VoiceInk needs screen recording access to use on-screen context for AI enhancement."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "VoiceInk 需要屏幕录制权限以理解屏幕上的上下文，提高转录准确性。"
+            "value": "VoiceInk 需要屏幕录制权限，以将屏幕内容用于 AI 润色。"
           }
         }
       }
