@@ -33,6 +33,31 @@ final class TranscriptionDelivery {
         let failResponse: (String) async -> Void
     }
 
+    /// Immediately pastes an unenhanced transcript after the user skips an in-flight enhancement.
+    /// This intentionally does not auto-send, because the user asked to regain the text quickly,
+    /// not to submit it before reviewing the raw transcript.
+    func pasteOriginalImmediately(
+        _ text: String,
+        dismiss: @escaping () async -> Void
+    ) async {
+        await paste(
+            text,
+            output: OutputRuntimeConfiguration(
+                mode: nil,
+                outputMode: .paste,
+                autoSendKey: .none,
+                customCommand: nil
+            ),
+            actions: Actions(
+                setState: { _ in },
+                dismiss: dismiss,
+                sendFollowUp: { _, _ in },
+                showResponse: { _, _ in },
+                failResponse: { _ in }
+            )
+        )
+    }
+
     func deliver(_ request: Request, actions: Actions) async {
         guard request.transcription.transcriptionStatus == TranscriptionStatus.completed.rawValue else {
             await actions.dismiss()

@@ -170,7 +170,9 @@ class RecorderUIManager: ObservableObject, RecorderPanelPresenting {
             switch engine.recordingState {
             case .recording:
                 await engine.toggleRecord(modeId: modeId)
-            case .starting, .transcribing, .enhancing:
+            case .enhancing:
+                await cancelEnhancementAndPasteOriginal()
+            case .starting, .transcribing:
                 await cancelRecording()
             case .idle:
                 if let permissionGuidance = engine.recordingPermissionGuidance {
@@ -237,6 +239,11 @@ class RecorderUIManager: ObservableObject, RecorderPanelPresenting {
         guard let engine = engine else { return }
         await engine.cancelRecording()
         await dismissRecorderPanel()
+    }
+
+    func cancelEnhancementAndPasteOriginal() async {
+        guard let engine = engine else { return }
+        await engine.cancelEnhancementAndPasteOriginal()
     }
 
     // MARK: - Notification Handling

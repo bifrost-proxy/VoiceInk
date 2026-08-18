@@ -157,7 +157,11 @@ class VoiceInkEngine: NSObject, ObservableObject {
     private var currentSessionTranscriptionConfiguration: TranscriptionRuntimeConfiguration?
     private var activeRecordingStartID: UUID?
     private var activePipelineTranscriptionID: UUID?
+    private var activePipelineTranscription: Transcription?
+    private var activePipelineTask: Task<Void, Never>?
     private var canceledPipelineTranscriptionIDs = Set<UUID>()
+    private var enhancementBypassTranscriptionIDs = Set<UUID>()
+    private let enhancementBypassDelivery = TranscriptionDelivery()
     private var activeRecordingUseCase: RecordingUseCase = .newSession
     private var activePipelineUseCase: RecordingUseCase = .newSession
     private var activeRecordingContextStore: RecordingContextSnapshotStore?
@@ -272,11 +276,17 @@ class VoiceInkEngine: NSObject, ObservableObject {
                     try? modelContext.save()
                     NotificationCenter.default.post(name: .transcriptionCreated, object: transcription)
 
-                    await runPipeline(
-                        on: transcription,
-                        audioURL: recordedFile,
-                        contextStore: activeRecordingContextStore
-                    )
+                    let contextStore = activeRecordingContextStore
+                    let pipelineTask = Task { @MainActor [weak self] in
+                        guard let self else { return }
+                        await self.runPipeline(
+                            on: transcription,
+                            audioURL: recordedFile,
+                            contextStore: contextStore
+                        )
+                    }
+                    activePipelineTask = pipelineTask
+                    await pipelineTask.value
                 } else {
                     await finishActiveRecorderCancellation()
                 }
@@ -976,6 +986,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
         let session = currentSession
         let transcriptionID = transcription.id
         activePipelineTranscriptionID = transcriptionID
+        activePipelineTranscription = transcription
 
         await pipeline.run(
             transcription: transcription,
@@ -1023,6 +1034,9 @@ class VoiceInkEngine: NSObject, ObservableObject {
                 return self.canceledPipelineTranscriptionIDs.contains(transcriptionID)
                     || (self.activePipelineTranscriptionID == transcriptionID && self.shouldCancelRecording)
             },
+            shouldBypassEnhancement: { [weak self] in
+                self?.enhancementBypassTranscriptionIDs.contains(transcriptionID) == true
+            },
             onCancel: { [weak self, session] in
                 guard let self else { return }
                 self.cancelPipelineSession(transcriptionID: transcriptionID, session: session)
@@ -1064,6 +1078,8 @@ class VoiceInkEngine: NSObject, ObservableObject {
             await finishRecorderSession()
             await cleanupResources()
             activePipelineTranscriptionID = nil
+            activePipelineTranscription = nil
+            activePipelineTask = nil
             currentSession = nil
             currentSessionTranscriptionConfiguration = nil
             recordedFile = nil
@@ -1072,6 +1088,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
             clearActiveRecordingContext()
         }
         canceledPipelineTranscriptionIDs.remove(transcriptionID)
+        enhancementBypassTranscriptionIDs.remove(transcriptionID)
 
         if didFinishActivePipeline
             && (recordingState == .transcribing || recordingState == .enhancing || recordingState == .busy)
@@ -1115,11 +1132,38 @@ class VoiceInkEngine: NSObject, ObservableObject {
         }
     }
 
+    /// Stops only the AI enhancement phase and immediately returns the completed raw transcript.
+    func cancelEnhancementAndPasteOriginal() async {
+        guard recordingState == .enhancing,
+            let transcriptionID = activePipelineTranscriptionID,
+            !enhancementBypassTranscriptionIDs.contains(transcriptionID),
+            let transcription = activePipelineTranscription
+        else {
+            return
+        }
+
+        let originalText = transcription.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !originalText.isEmpty else { return }
+
+        enhancementBypassTranscriptionIDs.insert(transcriptionID)
+        activePipelineTask?.cancel()
+        partialTranscript = originalText
+        recordingState = .busy
+
+        await enhancementBypassDelivery.pasteOriginalImmediately(originalText) { [weak self] in
+            await self?.recorderUIManager?.dismissRecorderPanel()
+        }
+    }
+
     func resetRecordingSession() async {
         cancelCurrentSession()
         activeRecordingStartID = nil
         activePipelineTranscriptionID = nil
+        activePipelineTranscription = nil
+        activePipelineTask?.cancel()
+        activePipelineTask = nil
         canceledPipelineTranscriptionIDs.removeAll()
+        enhancementBypassTranscriptionIDs.removeAll()
         shouldCancelRecording = false
         partialTranscript = ""
         assistantSession.reset()
