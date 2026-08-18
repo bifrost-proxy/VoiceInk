@@ -110,10 +110,18 @@ final class CloudConfigurationSyncService: ObservableObject {
         AliyunQwenSpeechSettings.Keys.contextPrompt,
         AliyunQwenSpeechSettings.Keys.useSelectedTextContext,
         AliyunQwenSpeechSettings.Keys.useClipboardContext,
+        AliyunQwenSpeechSettings.Keys.useApplicationContext,
+        AliyunQwenSpeechSettings.Keys.useWindowTitleContext,
         AliyunQwenSpeechSettings.Keys.useScreenContext,
         AliyunQwenSpeechSettings.Keys.keepConnectionReady,
         // A POI hint identifies the user's current or intended city and stays local.
         DoubaoSpeechSettings.Keys.poiCityName,
+        DoubaoSpeechSettings.Keys.contextPrompt,
+        DoubaoSpeechSettings.Keys.useSelectedTextContext,
+        DoubaoSpeechSettings.Keys.useClipboardContext,
+        DoubaoSpeechSettings.Keys.useApplicationContext,
+        DoubaoSpeechSettings.Keys.useWindowTitleContext,
+        DoubaoSpeechSettings.Keys.useScreenContext,
         DoubaoSpeechSettings.Keys.keepConnectionReady,
         // Local maintenance, migration, framework and macOS UI state.
         CleanupSettingsKeys.lastAutomaticAudioCleanupDate,

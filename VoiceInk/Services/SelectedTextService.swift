@@ -1,3 +1,4 @@
+import AppKit
 import ApplicationServices
 import Foundation
 import SelectedTextKit
@@ -13,9 +14,15 @@ final class SelectedTextService {
         .appleScript,
     ]
 
-    static func fetchSelectedText() async -> String? {
+    static func fetchSelectedText(targetProcessID: pid_t? = nil) async -> String? {
         guard AXIsProcessTrusted() else {
             logger.debug("Accessibility is not trusted; selected text capture skipped")
+            return nil
+        }
+        if let targetProcessID,
+            NSWorkspace.shared.frontmostApplication?.processIdentifier != targetProcessID
+        {
+            logger.debug("The locked application is no longer frontmost; selected text capture skipped")
             return nil
         }
 

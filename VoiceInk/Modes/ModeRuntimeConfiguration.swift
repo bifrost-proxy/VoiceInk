@@ -5,14 +5,14 @@ struct TranscriptionRuntimeConfiguration {
     let model: any TranscriptionModel
     let language: String
     let isRealtimeEnabled: Bool
-    let speechRecognitionContext: String?
+    let speechRecognitionContext: RecognitionContextEnvelope?
 
     init(
         mode: ModeConfig,
         model: any TranscriptionModel,
         language: String,
         isRealtimeEnabled: Bool,
-        speechRecognitionContext: String? = nil
+        speechRecognitionContext: RecognitionContextEnvelope? = nil
     ) {
         self.mode = mode
         self.model = model
@@ -36,7 +36,7 @@ struct TranscriptionRuntimeConfiguration {
         )
     }
 
-    func addingSpeechRecognitionContext(_ context: String?) -> TranscriptionRuntimeConfiguration {
+    func addingSpeechRecognitionContext(_ context: RecognitionContextEnvelope?) -> TranscriptionRuntimeConfiguration {
         TranscriptionRuntimeConfiguration(
             mode: mode,
             model: model,
@@ -60,7 +60,33 @@ struct EnhancementRuntimeConfiguration {
     let modelName: String?
     let useClipboardContext: Bool
     let useSelectedTextContext: Bool
+    let useActiveApplicationContext: Bool
+    let useWindowTitleContext: Bool
     let useScreenCaptureContext: Bool
+
+    init(
+        mode: ModeConfig?,
+        isEnabled: Bool,
+        prompt: CustomPrompt?,
+        provider: AIProvider?,
+        modelName: String?,
+        useClipboardContext: Bool,
+        useSelectedTextContext: Bool,
+        useActiveApplicationContext: Bool = false,
+        useWindowTitleContext: Bool = false,
+        useScreenCaptureContext: Bool
+    ) {
+        self.mode = mode
+        self.isEnabled = isEnabled
+        self.prompt = prompt
+        self.provider = provider
+        self.modelName = modelName
+        self.useClipboardContext = useClipboardContext
+        self.useSelectedTextContext = useSelectedTextContext
+        self.useActiveApplicationContext = useActiveApplicationContext
+        self.useWindowTitleContext = useWindowTitleContext
+        self.useScreenCaptureContext = useScreenCaptureContext
+    }
 
     func replacingPrompt(_ prompt: CustomPrompt) -> EnhancementRuntimeConfiguration {
         EnhancementRuntimeConfiguration(
@@ -71,6 +97,8 @@ struct EnhancementRuntimeConfiguration {
             modelName: modelName,
             useClipboardContext: useClipboardContext,
             useSelectedTextContext: useSelectedTextContext,
+            useActiveApplicationContext: useActiveApplicationContext,
+            useWindowTitleContext: useWindowTitleContext,
             useScreenCaptureContext: useScreenCaptureContext
         )
     }
@@ -249,6 +277,8 @@ enum ModeRuntimeResolver {
             modelName: modelName,
             useClipboardContext: mode?.useClipboardContext ?? false,
             useSelectedTextContext: mode?.useSelectedTextContext ?? true,
+            useActiveApplicationContext: mode?.useActiveApplicationContext ?? false,
+            useWindowTitleContext: mode?.useWindowTitleContext ?? false,
             useScreenCaptureContext: mode?.useScreenCapture ?? false
         )
     }

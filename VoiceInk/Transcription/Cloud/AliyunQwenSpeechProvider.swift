@@ -76,7 +76,7 @@ struct AliyunQwenSpeechProvider: CloudProvider {
         model: String,
         language: String?,
         customVocabulary: [String],
-        recognitionContext: String?
+        recognitionContext: RecognitionContextEnvelope?
     ) async throws -> String {
         let settings = AliyunQwenSpeechSettings.current()
         if offlineTranscriber.supportsFastRequest(audioData: audioData) {

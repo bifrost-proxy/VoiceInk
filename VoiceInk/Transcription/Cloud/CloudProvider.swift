@@ -19,7 +19,7 @@ protocol CloudProvider: Sendable {
         model: String,
         language: String?,
         customVocabulary: [String],
-        recognitionContext: String?
+        recognitionContext: RecognitionContextEnvelope?
     ) async throws -> String
     func makeStreamingProvider(customVocabulary: [String]) -> (any StreamingTranscriptionProvider)?
     func verifyAPIKey(_ key: String) async -> (isValid: Bool, errorMessage: String?)
@@ -43,7 +43,7 @@ extension CloudProvider {
         model: String,
         language: String?,
         customVocabulary: [String],
-        recognitionContext _: String?
+        recognitionContext _: RecognitionContextEnvelope?
     ) async throws -> String {
         try await transcribe(
             audioData: audioData,

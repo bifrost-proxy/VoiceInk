@@ -42,23 +42,23 @@ struct AliyunQwenOfflineTranscriber: Sendable {
         language: String?,
         customVocabulary: [String],
         settings: AliyunQwenSpeechSettings,
-        recognitionContext: String? = nil
+        recognitionContext: RecognitionContextEnvelope? = nil
     ) async throws -> String {
         guard supportsFastRequest(audioData: audioData) else {
             throw AliyunQwenOfflineError.requestTooLarge
         }
 
         var messages: [[String: Any]] = []
-        let context = [settings.contextPrompt, recognitionContext ?? ""]
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-            .joined(separator: "、")
-        if !context.isEmpty {
+        let context = QwenRecognitionContextSerializer.serialize(
+            recognitionContext,
+            fallbackScenario: settings.contextPrompt
+        ).value
+        if let context {
             messages.append([
                 "role": "user",
                 "content": [[
                     "type": "input_text",
-                    "text": String(context.prefix(AliyunQwenSpeechSettings.maximumContextLength)),
+                    "text": context,
                 ]],
             ])
         }

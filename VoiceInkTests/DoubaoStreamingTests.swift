@@ -225,6 +225,12 @@ struct DoubaoStreamingTests {
         ]
         #expect(keys.allSatisfy(CloudConfigurationSyncService.isEligiblePreferenceKey))
         #expect(!CloudConfigurationSyncService.isEligiblePreferenceKey(DoubaoSpeechSettings.Keys.poiCityName))
+        #expect(!CloudConfigurationSyncService.isEligiblePreferenceKey(DoubaoSpeechSettings.Keys.contextPrompt))
+        #expect(!CloudConfigurationSyncService.isEligiblePreferenceKey(DoubaoSpeechSettings.Keys.useSelectedTextContext))
+        #expect(!CloudConfigurationSyncService.isEligiblePreferenceKey(DoubaoSpeechSettings.Keys.useClipboardContext))
+        #expect(!CloudConfigurationSyncService.isEligiblePreferenceKey(DoubaoSpeechSettings.Keys.useApplicationContext))
+        #expect(!CloudConfigurationSyncService.isEligiblePreferenceKey(DoubaoSpeechSettings.Keys.useWindowTitleContext))
+        #expect(!CloudConfigurationSyncService.isEligiblePreferenceKey(DoubaoSpeechSettings.Keys.useScreenContext))
         #expect(!CloudConfigurationSyncService.isEligiblePreferenceKey(DoubaoSpeechSettings.Keys.keepConnectionReady))
     }
 
@@ -260,6 +266,88 @@ struct DoubaoStreamingTests {
         #expect(hotwords.compactMap { $0["word"] } == ["VoiceInk", "五道口"])
         let location = try #require(context["loc_info"] as? [String: String])
         #expect(location["city_name"] == "北京市")
+    }
+
+    @Test func hotwordsLocationAndDialogContextShareTheSerializedCorpusContext() throws {
+        let settings = DoubaoSpeechSettings(
+            enableTwoPassRecognition: true,
+            enableTextNormalization: true,
+            enablePunctuation: true,
+            enableSemanticSmoothing: false,
+            enableFirstTextAcceleration: false,
+            firstTextAccelerationLevel: 0,
+            silenceFinalizationMilliseconds: 800,
+            enablePOIFunctionCall: true,
+            poiCityName: "深圳市"
+        )
+        let envelope = RecognitionContextEnvelope(
+            capturedAt: Date(),
+            applicationName: "Xcode",
+            windowTitle: "VoiceInk",
+            configuredScenario: nil,
+            features: [
+                ContextFeature(value: "RecognitionContext", sources: [.selectedText], priority: 90)
+            ]
+        )
+        let frame = try DoubaoStreamingProtocol.makeFullClientRequest(
+            customVocabulary: ["VoiceInk"],
+            settings: settings,
+            recognitionContext: envelope
+        )
+        let payload = Data([UInt8](frame)[8...])
+        let root = try #require(JSONSerialization.jsonObject(with: payload) as? [String: Any])
+        let request = try #require(root["request"] as? [String: Any])
+        let corpus = try #require(request["corpus"] as? [String: Any])
+        let contextString = try #require(corpus["context"] as? String)
+        let context = try #require(
+            JSONSerialization.jsonObject(with: Data(contextString.utf8)) as? [String: Any]
+        )
+
+        #expect(context["hotwords"] as? [[String: String]] == [["word": "VoiceInk"]])
+        #expect(context["loc_info"] as? [String: String] == ["city_name": "深圳市"])
+        #expect(context["context_type"] as? String == "dialog_ctx")
+        let items = try #require(context["context_data"] as? [[String: String]])
+        #expect(items.first?["text"] == "用户当前选中文本关键词：RecognitionContext")
+    }
+
+    @Test(
+        .enabled(if: ProcessInfo.processInfo.environment["VOICEINK_DOUBAO_CONTEXT_INTEGRATION"] == "1")
+    )
+    func realServiceAcceptsHotwordsLocationAndDialogContextTogether() async throws {
+        let injectedAPIKey = ProcessInfo.processInfo.environment["VOICEINK_DOUBAO_API_KEY"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let apiKey = try #require(
+            injectedAPIKey?.isEmpty == false ? injectedAPIKey : nil,
+            "Set VOICEINK_DOUBAO_API_KEY when opting into the live Doubao integration test."
+        )
+        let settings = DoubaoSpeechSettings(
+            enableTwoPassRecognition: true,
+            enableTextNormalization: true,
+            enablePunctuation: true,
+            enableSemanticSmoothing: false,
+            enableFirstTextAcceleration: false,
+            firstTextAccelerationLevel: 0,
+            silenceFinalizationMilliseconds: 800,
+            enablePOIFunctionCall: true,
+            poiCityName: "深圳市"
+        )
+        let envelope = RecognitionContextEnvelope(
+            capturedAt: Date(),
+            applicationName: "VoiceInk",
+            windowTitle: "Context integration",
+            configuredScenario: "VoiceInk context verification",
+            features: [
+                ContextFeature(value: "RecognitionContext", sources: [.selectedText], priority: 90)
+            ]
+        )
+
+        try await DoubaoWebSocketSession.verifyContextCombination(
+            apiKey: apiKey,
+            resourceID: DoubaoSpeechProvider.defaultResourceID,
+            customVocabulary: ["VoiceInk"],
+            settings: settings,
+            recognitionContext: envelope
+        )
     }
 
     @Test func vocabularyBecomesDoubaoHotwordsButReplacementsDoNot() throws {

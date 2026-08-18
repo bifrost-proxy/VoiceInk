@@ -56,12 +56,16 @@ struct AliyunQwenStreamingTests {
             "Recognition context",
             "Add domain terms or prior context to improve recognition (up to 400 characters).",
             "Optional context",
-            "Use selected text for cloud recognition",
-            "Sends locally extracted terms only when the active mode also allows selected-text context.",
-            "Use clipboard for cloud recognition",
-            "Off by default. Sends locally extracted terms only when the active mode allows clipboard context.",
-            "Use screen text for cloud recognition",
-            "Off by default. Sends locally extracted terms only when the active mode allows screen context.",
+            "Allow selected-text features",
+            "Requires the active mode's Selected Text setting. Full selected text is not sent to speech recognition.",
+            "Allow clipboard features",
+            "Requires the active mode's Clipboard setting. Full clipboard text is not sent to speech recognition.",
+            "Allow application name",
+            "Requires the active mode's Active Application setting. The bundle identifier stays local.",
+            "Allow window title",
+            "Requires the active mode's Window Title setting. Window titles may contain sensitive names.",
+            "Allow screen-OCR features",
+            "Requires the active mode's Screen OCR setting. The screenshot and full OCR text are not sent.",
             "Recognition options sync through iCloud; recognition context stays on this Mac.",
         ]
 
@@ -264,6 +268,16 @@ struct AliyunQwenStreamingTests {
     }
 
     @Test func runTaskCarriesPrivacyFilteredDynamicContext() throws {
+        let envelope = RecognitionContextEnvelope(
+            capturedAt: Date(),
+            applicationName: nil,
+            windowTitle: nil,
+            configuredScenario: nil,
+            features: [
+                ContextFeature(value: "VoiceInk", sources: [.selectedText], priority: 90),
+                ContextFeature(value: "Bifrost", sources: [.selectedText], priority: 90),
+            ]
+        )
         let request = try AliyunQwenStreamingProtocol.makeRunTask(
             taskID: "task-1",
             model: AliyunQwenSpeechProvider.modelID,
@@ -272,7 +286,7 @@ struct AliyunQwenStreamingTests {
             language: "zh",
             customVocabulary: [],
             settings: settings(region: .beijing, host: ""),
-            recognitionContext: "VoiceInk、Bifrost"
+            recognitionContext: envelope
         )
         let root = try #require(
             JSONSerialization.jsonObject(with: Data(request.utf8)) as? [String: Any]
@@ -283,7 +297,7 @@ struct AliyunQwenStreamingTests {
         let input = try #require(payload["input"] as? [String: Any])
         let context = try #require(input["context"] as? [[String: Any]])
         let content = try #require(context.first?["content"] as? [[String: Any]])
-        #expect(content.first?["text"] as? String == "VoiceInk、Bifrost")
+        #expect(content.first?["text"] as? String == "[选中文本关键词] VoiceInk, Bifrost")
     }
 
     @Test func dynamicContextRequiresBothModeAndProviderOptIn() throws {
@@ -297,7 +311,7 @@ struct AliyunQwenStreamingTests {
         let snapshot = RecordingContextSnapshot(
             selectedText: "VoiceInk uses Bifrost",
             clipboardText: "PrivateClipboardTerm",
-            screenText: "PrivateScreenTerm"
+            screenOCRText: "PrivateScreenTerm"
         )
         let settings = AliyunQwenSpeechSettings(
             region: .beijing,
@@ -316,9 +330,17 @@ struct AliyunQwenStreamingTests {
             useScreenContext: false
         )
 
-        let context = try #require(
-            SpeechRecognitionContextBuilder.build(snapshot: snapshot, mode: mode, settings: settings)
+        let envelope = try #require(
+            SpeechRecognitionContextBuilder.build(
+                snapshot: snapshot,
+                mode: mode,
+                providerConfiguration: RecognitionContextProviderConfiguration(
+                    permissions: settings.recognitionContextPermissions,
+                    configuredScenario: nil
+                )
+            )
         )
+        let context = try #require(QwenRecognitionContextSerializer.serialize(envelope).value)
         #expect(context.contains("VoiceInk"))
         #expect(context.contains("Bifrost"))
         #expect(!context.contains("PrivateClipboardTerm"))
@@ -439,7 +461,7 @@ struct AliyunQwenStreamingTests {
         let content = try #require(context.first?["content"] as? [[String: Any]])
         #expect(context.first?["role"] as? String == "user")
         #expect(content.first?["type"] as? String == "input_text")
-        #expect(content.first?["text"] as? String == "VoiceInk、通义千问、百炼")
+        #expect(content.first?["text"] as? String == "[场景] VoiceInk、通义千问、百炼")
     }
 
     @Test func automaticLanguageAndDisabledOptionalFeaturesAreOmitted() throws {
@@ -592,6 +614,11 @@ struct AliyunQwenStreamingTests {
         #expect(syncedKeys.allSatisfy(CloudConfigurationSyncService.isEligiblePreferenceKey))
         #expect(!CloudConfigurationSyncService.isEligiblePreferenceKey(AliyunQwenSpeechSettings.Keys.apiHost))
         #expect(!CloudConfigurationSyncService.isEligiblePreferenceKey(AliyunQwenSpeechSettings.Keys.contextPrompt))
+        #expect(!CloudConfigurationSyncService.isEligiblePreferenceKey(AliyunQwenSpeechSettings.Keys.useSelectedTextContext))
+        #expect(!CloudConfigurationSyncService.isEligiblePreferenceKey(AliyunQwenSpeechSettings.Keys.useClipboardContext))
+        #expect(!CloudConfigurationSyncService.isEligiblePreferenceKey(AliyunQwenSpeechSettings.Keys.useApplicationContext))
+        #expect(!CloudConfigurationSyncService.isEligiblePreferenceKey(AliyunQwenSpeechSettings.Keys.useWindowTitleContext))
+        #expect(!CloudConfigurationSyncService.isEligiblePreferenceKey(AliyunQwenSpeechSettings.Keys.useScreenContext))
         #expect(!CloudConfigurationSyncService.isEligiblePreferenceKey(AliyunQwenSpeechSettings.Keys.keepConnectionReady))
     }
 

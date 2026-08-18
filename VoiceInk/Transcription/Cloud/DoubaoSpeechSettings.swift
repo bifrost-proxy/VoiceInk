@@ -12,6 +12,12 @@ struct DoubaoSpeechSettings: Equatable, Sendable {
         static let enablePOIFunctionCall = "DoubaoSpeechEnablePOIFunctionCall"
         static let poiCityName = "DoubaoSpeechPOICityName"
         static let enableMusicFunctionCall = "DoubaoSpeechEnableMusicFunctionCall"
+        static let contextPrompt = "DoubaoSpeechContextPrompt"
+        static let useSelectedTextContext = "DoubaoSpeechUseSelectedTextContext"
+        static let useClipboardContext = "DoubaoSpeechUseClipboardContext"
+        static let useApplicationContext = "DoubaoSpeechUseApplicationContext"
+        static let useWindowTitleContext = "DoubaoSpeechUseWindowTitleContext"
+        static let useScreenContext = "DoubaoSpeechUseScreenContext"
         static let keepConnectionReady = "DoubaoSpeechKeepConnectionReady"
     }
 
@@ -29,6 +35,12 @@ struct DoubaoSpeechSettings: Equatable, Sendable {
         enablePOIFunctionCall: false,
         poiCityName: "",
         enableMusicFunctionCall: false,
+        contextPrompt: "",
+        useSelectedTextContext: false,
+        useClipboardContext: false,
+        useApplicationContext: false,
+        useWindowTitleContext: false,
+        useScreenContext: false,
         keepConnectionReady: false
     )
 
@@ -42,6 +54,12 @@ struct DoubaoSpeechSettings: Equatable, Sendable {
     let enablePOIFunctionCall: Bool
     let poiCityName: String
     let enableMusicFunctionCall: Bool
+    let contextPrompt: String
+    let useSelectedTextContext: Bool
+    let useClipboardContext: Bool
+    let useApplicationContext: Bool
+    let useWindowTitleContext: Bool
+    let useScreenContext: Bool
     let keepConnectionReady: Bool
 
     init(
@@ -55,6 +73,12 @@ struct DoubaoSpeechSettings: Equatable, Sendable {
         enablePOIFunctionCall: Bool = false,
         poiCityName: String = "",
         enableMusicFunctionCall: Bool = false,
+        contextPrompt: String = "",
+        useSelectedTextContext: Bool = false,
+        useClipboardContext: Bool = false,
+        useApplicationContext: Bool = false,
+        useWindowTitleContext: Bool = false,
+        useScreenContext: Bool = false,
         keepConnectionReady: Bool = false
     ) {
         self.enableTwoPassRecognition = enableTwoPassRecognition
@@ -68,6 +92,12 @@ struct DoubaoSpeechSettings: Equatable, Sendable {
         self.enablePOIFunctionCall = enablePOIFunctionCall
         self.poiCityName = poiCityName.trimmingCharacters(in: .whitespacesAndNewlines)
         self.enableMusicFunctionCall = enableMusicFunctionCall
+        self.contextPrompt = String(contextPrompt.trimmingCharacters(in: .whitespacesAndNewlines).prefix(400))
+        self.useSelectedTextContext = useSelectedTextContext
+        self.useClipboardContext = useClipboardContext
+        self.useApplicationContext = useApplicationContext
+        self.useWindowTitleContext = useWindowTitleContext
+        self.useScreenContext = useScreenContext
         self.keepConnectionReady = keepConnectionReady
     }
 
@@ -119,11 +149,47 @@ struct DoubaoSpeechSettings: Equatable, Sendable {
                 fallback: Self.defaults.enableMusicFunctionCall,
                 in: defaults
             ),
+            contextPrompt: defaults.string(forKey: Keys.contextPrompt) ?? Self.defaults.contextPrompt,
+            useSelectedTextContext: bool(
+                forKey: Keys.useSelectedTextContext,
+                fallback: Self.defaults.useSelectedTextContext,
+                in: defaults
+            ),
+            useClipboardContext: bool(
+                forKey: Keys.useClipboardContext,
+                fallback: Self.defaults.useClipboardContext,
+                in: defaults
+            ),
+            useApplicationContext: bool(
+                forKey: Keys.useApplicationContext,
+                fallback: Self.defaults.useApplicationContext,
+                in: defaults
+            ),
+            useWindowTitleContext: bool(
+                forKey: Keys.useWindowTitleContext,
+                fallback: Self.defaults.useWindowTitleContext,
+                in: defaults
+            ),
+            useScreenContext: bool(
+                forKey: Keys.useScreenContext,
+                fallback: Self.defaults.useScreenContext,
+                in: defaults
+            ),
             keepConnectionReady: bool(
                 forKey: Keys.keepConnectionReady,
                 fallback: Self.defaults.keepConnectionReady,
                 in: defaults
             )
+        )
+    }
+
+    var recognitionContextPermissions: RecognitionContextPermissions {
+        RecognitionContextPermissions(
+            selectedText: useSelectedTextContext,
+            clipboard: useClipboardContext,
+            application: useApplicationContext,
+            windowTitle: useWindowTitleContext,
+            screenOCR: useScreenContext
         )
     }
 

@@ -89,6 +89,18 @@ enum AppDefaults {
                 DoubaoSpeechSettings.defaults.poiCityName,
             DoubaoSpeechSettings.Keys.enableMusicFunctionCall:
                 DoubaoSpeechSettings.defaults.enableMusicFunctionCall,
+            DoubaoSpeechSettings.Keys.contextPrompt:
+                DoubaoSpeechSettings.defaults.contextPrompt,
+            DoubaoSpeechSettings.Keys.useSelectedTextContext:
+                DoubaoSpeechSettings.defaults.useSelectedTextContext,
+            DoubaoSpeechSettings.Keys.useClipboardContext:
+                DoubaoSpeechSettings.defaults.useClipboardContext,
+            DoubaoSpeechSettings.Keys.useApplicationContext:
+                DoubaoSpeechSettings.defaults.useApplicationContext,
+            DoubaoSpeechSettings.Keys.useWindowTitleContext:
+                DoubaoSpeechSettings.defaults.useWindowTitleContext,
+            DoubaoSpeechSettings.Keys.useScreenContext:
+                DoubaoSpeechSettings.defaults.useScreenContext,
             DoubaoSpeechSettings.Keys.keepConnectionReady:
                 DoubaoSpeechSettings.defaults.keepConnectionReady,
             AliyunQwenSpeechSettings.Keys.region: AliyunQwenSpeechSettings.defaults.region.rawValue,
@@ -115,6 +127,10 @@ enum AppDefaults {
                 AliyunQwenSpeechSettings.defaults.useSelectedTextContext,
             AliyunQwenSpeechSettings.Keys.useClipboardContext:
                 AliyunQwenSpeechSettings.defaults.useClipboardContext,
+            AliyunQwenSpeechSettings.Keys.useApplicationContext:
+                AliyunQwenSpeechSettings.defaults.useApplicationContext,
+            AliyunQwenSpeechSettings.Keys.useWindowTitleContext:
+                AliyunQwenSpeechSettings.defaults.useWindowTitleContext,
             AliyunQwenSpeechSettings.Keys.useScreenContext:
                 AliyunQwenSpeechSettings.defaults.useScreenContext,
             AliyunQwenSpeechSettings.Keys.keepConnectionReady:

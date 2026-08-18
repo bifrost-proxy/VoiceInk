@@ -16,6 +16,8 @@ struct ModeConfigDraft {
     var isTextFormattingEnabled: Bool
     var useClipboardContext: Bool
     var useSelectedTextContext: Bool
+    var useActiveApplicationContext: Bool
+    var useWindowTitleContext: Bool
     var useScreenCapture: Bool
     var selectedAIProvider: String?
     var selectedAIModel: String?
@@ -47,6 +49,8 @@ struct ModeConfigDraft {
             isTextFormattingEnabled = true
             useClipboardContext = false
             useSelectedTextContext = false
+            useActiveApplicationContext = false
+            useWindowTitleContext = false
             useScreenCapture = true
             selectedAIProvider = inheritedConfig?.selectedAIProvider
             selectedAIModel = inheritedConfig?.selectedAIModel
@@ -74,6 +78,8 @@ struct ModeConfigDraft {
             isTextFormattingEnabled = latestConfig.isTextFormattingEnabled
             useClipboardContext = latestConfig.useClipboardContext
             useSelectedTextContext = latestConfig.useSelectedTextContext
+            useActiveApplicationContext = latestConfig.useActiveApplicationContext
+            useWindowTitleContext = latestConfig.useWindowTitleContext
             useScreenCapture = latestConfig.useScreenCapture
             selectedAIProvider = latestConfig.selectedAIProvider
             selectedAIModel = latestConfig.selectedAIModel
@@ -175,6 +181,8 @@ struct ModeConfigDraft {
                 selectedLanguage: selectedLanguage,
                 useClipboardContext: useClipboardContext,
                 useSelectedTextContext: useSelectedTextContext,
+                useActiveApplicationContext: useActiveApplicationContext,
+                useWindowTitleContext: useWindowTitleContext,
                 useScreenCapture: useScreenCapture,
                 isTextFormattingEnabled: isTextFormattingEnabled,
                 selectedAIProvider: selectedAIProvider,
@@ -201,6 +209,8 @@ struct ModeConfigDraft {
             updatedConfig.isTextFormattingEnabled = isTextFormattingEnabled
             updatedConfig.useClipboardContext = useClipboardContext
             updatedConfig.useSelectedTextContext = useSelectedTextContext
+            updatedConfig.useActiveApplicationContext = useActiveApplicationContext
+            updatedConfig.useWindowTitleContext = useWindowTitleContext
             updatedConfig.useScreenCapture = useScreenCapture
             updatedConfig.selectedAIProvider = selectedAIProvider
             updatedConfig.selectedAIModel = selectedAIModel

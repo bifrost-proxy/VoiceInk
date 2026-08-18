@@ -530,12 +530,30 @@ struct ModeConfigFormView: View {
                 }
             }
 
-            Toggle(isOn: $draft.useScreenCapture) {
+            Toggle(isOn: $draft.useActiveApplicationContext) {
                 HStack(spacing: 4) {
-                    Text("Screen")
-                    InfoTip("Use captured on-screen text as context for this mode.")
+                    Text("Active Application")
+                    InfoTip("Use the active application's display name as context for this mode.")
                 }
             }
+
+            Toggle(isOn: $draft.useWindowTitleContext) {
+                HStack(spacing: 4) {
+                    Text("Window Title")
+                    InfoTip("Use the active window title as a separate, potentially sensitive context source.")
+                }
+            }
+
+            Toggle(isOn: $draft.useScreenCapture) {
+                HStack(spacing: 4) {
+                    Text("Screen OCR")
+                    InfoTip("Use text extracted locally from the locked active window as context for this mode.")
+                }
+            }
+
+            Text("Cloud speech recognition also requires the matching provider permission. AI enhancement uses these mode settings directly.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 
