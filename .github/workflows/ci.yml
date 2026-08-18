@@ -13,6 +13,36 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  release-transition:
+    name: release transition compatibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Validate universal and CPU-specific release metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n \
+            scripts/build-legacy-universal-package.sh \
+            scripts/generate-release-metadata.sh \
+            scripts/release.sh
+          release_dir="$(mktemp -d)"
+          printf 'legacy bridge\n' > "$release_dir/VoiceInk.zip"
+          printf 'arm64 package\n' > "$release_dir/VoiceInk-arm64.zip"
+          printf 'x86_64 package\n' > "$release_dir/VoiceInk-x86_64.zip"
+          scripts/generate-release-metadata.sh \
+            --version 9.9.9 \
+            --output-dir "$release_dir"
+          [[ "$(wc -l < "$release_dir/SHA256SUMS" | tr -d ' ')" == "3" ]]
+          grep -Eq '^[0-9a-f]{64}  VoiceInk\.zip$' "$release_dir/SHA256SUMS"
+          grep -Eq '^[0-9a-f]{64}  VoiceInk-arm64\.zip$' "$release_dir/SHA256SUMS"
+          grep -Eq '^[0-9a-f]{64}  VoiceInk-x86_64\.zip$' "$release_dir/SHA256SUMS"
+          (cd "$release_dir" && shasum -a 256 -c SHA256SUMS)
+
   tests:
     name: tests (${{ matrix.architecture }})
     runs-on: macos-26

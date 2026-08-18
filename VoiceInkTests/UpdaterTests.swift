@@ -107,14 +107,23 @@ struct UpdaterTests {
         #expect(!UpdateActivity.idle.isBusy)
     }
 
-    @Test func installationHelperHasValidZshSyntax() throws {
+    @Test(arguments: ReleaseArchitecture.allCases)
+    func installationHelperRequiresExactlyTheSelectedArchitecture(
+        architecture: ReleaseArchitecture
+    ) throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("voiceink-updater-tests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
 
         let scriptURL = directory.appendingPathComponent("install-update.zsh")
-        try Data(UpdateInstaller.installationHelperScript.utf8).write(to: scriptURL)
+        let script = UpdateInstaller.installationHelperScript(expectedArchitecture: architecture)
+        try Data(script.utf8).write(to: scriptURL)
+
+        #expect(script.contains("expected_architecture=\"\(architecture.rawValue)\""))
+        #expect(script.contains("\"$installed_archs\" != \"$expected_architecture\""))
+        #expect(!script.contains("*\" arm64 \"*"))
+        #expect(!script.contains("*\" x86_64 \"*"))
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/zsh")
