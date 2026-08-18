@@ -45,7 +45,7 @@ jobs:
           sudo xcode-select -s /Applications/Xcode_26.5.app/Contents/Developer
           xcodebuild -version
 
-      - name: Build and verify universal release package
+      - name: Build and verify architecture-specific release packages
         shell: bash
         run: |
           set -euo pipefail
@@ -62,11 +62,14 @@ jobs:
           release_dir="$RUNNER_TEMP/voiceink-release"
           cask="$release_dir/voiceink.rb"
           version="${GITHUB_REF_NAME#v}"
-          checksum="$(awk '$2 == "VoiceInk.zip" { print $1 }' "$release_dir/SHA256SUMS")"
+          arm64_checksum="$(awk '$2 == "VoiceInk-arm64.zip" { print $1 }' "$release_dir/SHA256SUMS")"
+          x86_64_checksum="$(awk '$2 == "VoiceInk-x86_64.zip" { print $1 }' "$release_dir/SHA256SUMS")"
           ruby -c "$cask"
           grep -F "version \"$version\"" "$cask"
-          grep -F "sha256 \"$checksum\"" "$cask"
-          grep -F 'releases/download/v#{version}/VoiceInk.zip' "$cask"
+          grep -F 'arch arm: "arm64", intel: "x86_64"' "$cask"
+          grep -F "sha256 arm:   \"$arm64_checksum\"" "$cask"
+          grep -F "intel: \"$x86_64_checksum\"" "$cask"
+          grep -F 'releases/download/v#{version}/VoiceInk-#{arch}.zip' "$cask"
           grep -F 'com.apple.quarantine' "$cask"
           ! grep -Eq ':latest|:no_check|__[A-Z0-9_]+__' "$cask"
 
@@ -78,7 +81,8 @@ jobs:
           set -euo pipefail
           release_dir="$RUNNER_TEMP/voiceink-release"
           assets=(
-            "$release_dir/VoiceInk.zip"
+            "$release_dir/VoiceInk-arm64.zip"
+            "$release_dir/VoiceInk-x86_64.zip"
             "$release_dir/SHA256SUMS"
             "$release_dir/voiceink.rb"
           )

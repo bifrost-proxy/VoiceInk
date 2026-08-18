@@ -101,7 +101,7 @@ run:
 		fi; \
 	fi
 
-# Build the same ad-hoc-signed universal ZIP published by the tag workflow.
+# Build the same ad-hoc-signed architecture-specific ZIPs published by the tag workflow.
 release:
 	@./scripts/release.sh --version "$(or $(VERSION),2.2.2)" $(RELEASE_ARGS)
 
@@ -122,7 +122,7 @@ help:
 	@echo "  local              Build for local use (no Apple Developer certificate needed)"
 	@echo "  run                Launch the built VoiceInk app"
 	@echo "  dev                Build and run the app (for development)"
-	@echo "  release            Build a universal release ZIP (VERSION=x.y.z)"
+	@echo "  release            Build arm64 and x86_64 release ZIPs (VERSION=x.y.z)"
 	@echo "  all                Run full build process (default)"
 	@echo "  clean              Remove build artifacts"
 	@echo "  help               Show this help message"
