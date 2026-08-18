@@ -10,25 +10,36 @@ private final class RealtimeAudioChunkGate: @unchecked Sendable {
         var bufferedChunks: [Data] = []
         var callback: ((Data) -> Void)?
         var isActive = false
+        var hasReceivedFirstChunk = false
         var droppedChunks = 0
     }
 
     private let maxBufferedChunks = 2_048
     private let state = OSAllocatedUnfairLock(initialState: State())
+    private let onFirstChunk: @Sendable () -> Void
+
+    init(onFirstChunk: @escaping @Sendable () -> Void = {}) {
+        self.onFirstChunk = onFirstChunk
+    }
 
     func receive(_ data: Data) {
-        let callback = state.withLock { state -> ((Data) -> Void)? in
+        let result = state.withLock { state -> (callback: ((Data) -> Void)?, isFirstChunk: Bool) in
+            let isFirstChunk = !state.hasReceivedFirstChunk
+            state.hasReceivedFirstChunk = true
             guard state.isActive else {
                 if state.bufferedChunks.count < maxBufferedChunks {
                     state.bufferedChunks.append(data)
                 } else {
                     state.droppedChunks += 1
                 }
-                return nil
+                return (nil, isFirstChunk)
             }
-            return state.callback
+            return (state.callback, isFirstChunk)
         }
-        callback?(data)
+        if result.isFirstChunk {
+            onFirstChunk()
+        }
+        result.callback?(data)
     }
 
     func activate(_ callback: @escaping (Data) -> Void) -> Int {
@@ -243,7 +254,11 @@ class VoiceInkEngine: NSObject, ObservableObject {
 
     // MARK: - Toggle Record
 
-    func toggleRecord(modeId: UUID? = nil, isAssistantFollowUp: Bool = false) async {
+    func toggleRecord(
+        modeId: UUID? = nil,
+        isAssistantFollowUp: Bool = false,
+        onCaptureStarted: (@MainActor () -> Void)? = nil
+    ) async {
         if recordingState == .starting {
             await cancelRecording()
             return
@@ -326,50 +341,38 @@ class VoiceInkEngine: NSObject, ObservableObject {
                         let lockedTarget = capturePlan.needsActiveSurface
                             ? RecordingContextTarget.capture()
                             : nil
-                        let modeApplication = ActiveWindowService.shared.beginApplyingConfiguration(modeId: modeId) {
-                            [weak self] in
-                            guard let self else { return false }
-                            return self.activeRecordingStartID == startID && !self.shouldCancelRecording
-                        }
-                        let activeModeTask = modeApplication.completion
-                        let shouldPrepareRecognitionContext = self.startRecordingContextCapture(
-                            modeId: modeId,
-                            target: lockedTarget
-                        )
-                        let canPrepareStreamingImmediately = !modeApplication.waitsForBrowserURL
-                            && !shouldPrepareRecognitionContext
+                        var activeModeTask: Task<Void, Never>?
 
                         do {
                             let fileName = "\(UUID().uuidString).wav"
                             let permanentURL = self.recordingsDirectory.appendingPathComponent(fileName)
                             self.recordedFile = permanentURL
 
-                            let realtimeAudioGate = RealtimeAudioChunkGate()
+                            let captureRequestedAt = DispatchTime.now().uptimeNanoseconds
+                            let diagnosticsLogger = self.logger
+                            let realtimeAudioGate = RealtimeAudioChunkGate {
+                                let elapsedMilliseconds = Double(
+                                    DispatchTime.now().uptimeNanoseconds - captureRequestedAt
+                                ) / 1_000_000
+                                diagnosticsLogger.notice(
+                                    "Recording startup milestone=firstConvertedPCM elapsedMs=\(elapsedMilliseconds, privacy: .public) recordingID=\(startID.uuidString, privacy: .public)"
+                                )
+                            }
                             self.recorder.onAudioChunk = realtimeAudioGate.receive
 
                             self.recordingState = .starting
-
-                            if canPrepareStreamingImmediately {
-                                guard
-                                    try await self.prepareTranscriptionSession(
-                                        startID: startID,
-                                        realtimeAudioGate: realtimeAudioGate,
-                                        recognitionContext: nil
-                                    )
-                                else {
-                                    activeModeTask.cancel()
-                                    await self.abortRecordingStartup(permanentURL: permanentURL)
-                                    return
-                                }
-                            }
-
                             try await self.recorder.startRecording(toOutputFile: permanentURL)
+                            let audioUnitReadyMilliseconds = Double(
+                                DispatchTime.now().uptimeNanoseconds - captureRequestedAt
+                            ) / 1_000_000
+                            self.logger.notice(
+                                "Recording startup milestone=audioUnitStarted elapsedMs=\(audioUnitReadyMilliseconds, privacy: .public) recordingID=\(startID.uuidString, privacy: .public)"
+                            )
 
                             guard self.activeRecordingStartID == startID,
-                                self.recorderUIManager?.isRecorderPanelVisible ?? false,
                                 !self.shouldCancelRecording
                             else {
-                                activeModeTask.cancel()
+                                activeModeTask?.cancel()
                                 self.cancelCurrentSession()
                                 let shouldKeepRecordingFile = self.shouldCancelRecording
                                 if self.activeRecordingStartID == startID {
@@ -383,7 +386,11 @@ class VoiceInkEngine: NSObject, ObservableObject {
                                 return
                             }
 
+                            // Capture is deliberately started before panel creation, mode matching,
+                            // context capture, or cloud session setup. The realtime gate preserves
+                            // every converted chunk until the selected session is ready.
                             self.recordingState = .recording
+                            onCaptureStarted?()
                             let recordingDurationMinutes = RecordingDurationSettings.currentMinutes()
                             self.recordingDurationLimiter.schedule(
                                 recordingID: startID,
@@ -392,7 +399,35 @@ class VoiceInkEngine: NSObject, ObservableObject {
                                 await self?.stopRecordingAtDurationLimit(recordingID: recordingID)
                             }
 
-                            await activeModeTask.value
+                            let modeApplication = ActiveWindowService.shared.beginApplyingConfiguration(
+                                modeId: modeId
+                            ) { [weak self] in
+                                guard let self else { return false }
+                                return self.activeRecordingStartID == startID && !self.shouldCancelRecording
+                            }
+                            activeModeTask = modeApplication.completion
+                            let shouldPrepareRecognitionContext = self.startRecordingContextCapture(
+                                modeId: modeId,
+                                target: lockedTarget
+                            )
+                            let canPrepareStreamingImmediately = !modeApplication.waitsForBrowserURL
+                                && !shouldPrepareRecognitionContext
+
+                            if canPrepareStreamingImmediately {
+                                guard
+                                    try await self.prepareTranscriptionSession(
+                                        startID: startID,
+                                        realtimeAudioGate: realtimeAudioGate,
+                                        recognitionContext: nil
+                                    )
+                                else {
+                                    activeModeTask?.cancel()
+                                    await self.abortRecordingStartup(permanentURL: permanentURL)
+                                    return
+                                }
+                            }
+
+                            await activeModeTask?.value
 
                             guard self.recordingState == .recording,
                                 self.activeRecordingStartID == startID,
@@ -455,7 +490,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
                             }
 
                         } catch {
-                            activeModeTask.cancel()
+                            activeModeTask?.cancel()
                             self.logger.error("Recording failed to start: \(error, privacy: .public)")
                             await self.recorder.stopRecording()
                             self.cancelCurrentSession()
@@ -567,6 +602,17 @@ class VoiceInkEngine: NSObject, ObservableObject {
         currentSession = session
         currentSessionTranscriptionConfiguration = transcriptionConfiguration
         let realCallback = try await session.prepare(configuration: transcriptionConfiguration)
+
+        guard activeRecordingStartID == startID,
+            recordingState == .recording,
+            !shouldCancelRecording,
+            currentSession === session
+        else {
+            session.cancel()
+            _ = realtimeAudioGate.reset()
+            recorder.onAudioChunk = nil
+            return true
+        }
 
         if let realCallback {
             let droppedStartupChunks = realtimeAudioGate.activate(realCallback)
