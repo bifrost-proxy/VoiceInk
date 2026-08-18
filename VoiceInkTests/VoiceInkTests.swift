@@ -79,6 +79,31 @@ struct VoiceInkTests {
         #expect(snapshot.fallbackError == nil)
     }
 
+    @Test func diagnosticLogRetentionUsesSevenDaysAndFiftyMiB() {
+        let policy = LogExportRetentionPolicy.voiceInkDefault
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+
+        #expect(policy.maximumAge == 7 * 24 * 60 * 60)
+        #expect(policy.maximumBytes == 50 * 1_024 * 1_024)
+        #expect(policy.cutoffDate(relativeTo: now) == now.addingTimeInterval(-7 * 24 * 60 * 60))
+    }
+
+    @Test func diagnosticLogBufferDropsOldestLinesAndHonorsByteLimit() {
+        var buffer = BoundedDiagnosticLogBuffer(maximumBytes: 8)
+        buffer.append("old")
+        buffer.append("new")
+        buffer.append("tail")
+
+        #expect(buffer.lines == ["tail"])
+        #expect(buffer.byteCount <= 8)
+        #expect(buffer.droppedLineCount == 2)
+
+        var oversizedBuffer = BoundedDiagnosticLogBuffer(maximumBytes: 8)
+        oversizedBuffer.append("1234567890")
+        #expect(oversizedBuffer.lines == ["1234567"])
+        #expect(oversizedBuffer.byteCount == 8)
+    }
+
     @Test func historyCapacityLimitsUseEitherThresholdAndDefaultToUnlimited() {
         #expect(
             !HistoryStorageManager.shouldDelete(
