@@ -703,6 +703,139 @@ struct VoiceInkTests {
     }
 
     @MainActor
+    @Test func cloudConfigurationSyncKeepsNewerLocalModeModelWhenLegacyRemoteRewritesOldBundle() async throws {
+        let temporaryRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("VoiceInkConfigurationSyncMergeTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: temporaryRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temporaryRoot) }
+
+        let suiteName = "VoiceInkTests.ConfigurationSync.Merge.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(true, forKey: CloudSyncSettingsKeys.configurationSyncEnabled)
+
+        let schema = Schema([VocabularyWord.self, WordReplacement.self])
+        let container = try ModelContainer(
+            for: schema,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        let service = CloudConfigurationSyncService(
+            defaults: defaults,
+            iCloudDriveRootURL: temporaryRoot,
+            preferencesDomainName: suiteName
+        )
+        service.start(modelContext: container.mainContext, onRemoteConfigurationApplied: {})
+
+        let configurationURL = try #require(service.configurationFileURL)
+        let qwenModes = try modeConfigurationData(defaultDictationModelName: "qwen-audio-3.0-asr-flash-streaming")
+        let doubaoModes = try modeConfigurationData(defaultDictationModelName: "volc.seedasr.sauc.duration")
+
+        defaults.set(qwenModes, forKey: "modeConfigurationsV2")
+        service.portableContentDidChange()
+        let localSnapshot = try await waitForConfigurationSnapshot(at: configurationURL)
+        #expect(localSnapshot.preferenceUpdatedAt["modeConfigurationsV2"] != nil)
+
+        let legacyRemoteContent = CloudConfigurationSyncService.Content(
+            preferences: [
+                "modeConfigurationsV2": try encodedPreferenceValue(doubaoModes)
+            ],
+            vocabulary: [],
+            replacements: []
+        )
+        let legacyRemoteSnapshot = CloudConfigurationSyncService.Snapshot(
+            schemaVersion: CloudConfigurationSyncService.Snapshot.currentSchemaVersion,
+            revision: UUID(),
+            updatedAt: localSnapshot.updatedAt.addingTimeInterval(30),
+            sourceDeviceID: "LegacyRemoteDevice",
+            content: legacyRemoteContent
+        )
+        try writeConfigurationSnapshot(legacyRemoteSnapshot, to: configurationURL)
+
+        service.syncNow()
+
+        let localModes = try decodedModeConfigurations(from: try #require(defaults.data(forKey: "modeConfigurationsV2")))
+        #expect(defaultTranscriptionModelName(in: localModes) == "qwen-audio-3.0-asr-flash-streaming")
+
+        let reconciledSnapshot = try decodeConfigurationSnapshot(at: configurationURL)
+        let reconciledData = try #require(
+            decodedPreferenceValue(
+                reconciledSnapshot.content.preferences["modeConfigurationsV2"]
+            ) as? Data
+        )
+        let reconciledModes = try decodedModeConfigurations(from: reconciledData)
+        #expect(defaultTranscriptionModelName(in: reconciledModes) == "qwen-audio-3.0-asr-flash-streaming")
+        #expect(reconciledSnapshot.preferenceUpdatedAt["modeConfigurationsV2"] != nil)
+
+        service.setEnabled(false)
+    }
+
+    @MainActor
+    @Test func cloudConfigurationSyncMigratesExistingLocalModeFreshnessBeforeApplyingLegacyRemote() throws {
+        let temporaryRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("VoiceInkConfigurationSyncUpgradeTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: temporaryRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temporaryRoot) }
+
+        let suiteName = "VoiceInkTests.ConfigurationSync.Upgrade.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(true, forKey: CloudSyncSettingsKeys.configurationSyncEnabled)
+
+        let qwenModes = try modeConfigurationData(defaultDictationModelName: "qwen-audio-3.0-asr-flash-streaming")
+        let doubaoModes = try modeConfigurationData(defaultDictationModelName: "volc.seedasr.sauc.duration")
+        let localChangeDate = Date(timeIntervalSince1970: 1_800_000_000)
+        defaults.set(qwenModes, forKey: "modeConfigurationsV2")
+        defaults.set(localChangeDate, forKey: "CloudConfigurationSync.lastLocalChange")
+        defaults.set(false, forKey: "CloudConfigurationSync.hasPendingLocalChange")
+
+        let schema = Schema([VocabularyWord.self, WordReplacement.self])
+        let container = try ModelContainer(
+            for: schema,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        let configurationURL = temporaryRoot
+            .appendingPathComponent("VoiceInk/Configuration/VoiceInkConfig.plist")
+        let legacyRemoteSnapshot = CloudConfigurationSyncService.Snapshot(
+            schemaVersion: CloudConfigurationSyncService.Snapshot.currentSchemaVersion,
+            revision: UUID(),
+            updatedAt: localChangeDate.addingTimeInterval(30),
+            sourceDeviceID: "LegacyRemoteDevice",
+            content: CloudConfigurationSyncService.Content(
+                preferences: [
+                    "modeConfigurationsV2": try encodedPreferenceValue(doubaoModes)
+                ],
+                vocabulary: [],
+                replacements: []
+            )
+        )
+        try writeConfigurationSnapshot(legacyRemoteSnapshot, to: configurationURL)
+
+        let service = CloudConfigurationSyncService(
+            defaults: defaults,
+            iCloudDriveRootURL: temporaryRoot,
+            preferencesDomainName: suiteName
+        )
+        service.start(modelContext: container.mainContext, onRemoteConfigurationApplied: {})
+
+        let localModes = try decodedModeConfigurations(from: try #require(defaults.data(forKey: "modeConfigurationsV2")))
+        #expect(defaultTranscriptionModelName(in: localModes) == "qwen-audio-3.0-asr-flash-streaming")
+
+        let reconciledSnapshot = try decodeConfigurationSnapshot(at: configurationURL)
+        let reconciledData = try #require(
+            decodedPreferenceValue(
+                reconciledSnapshot.content.preferences["modeConfigurationsV2"]
+            ) as? Data
+        )
+        let reconciledModes = try decodedModeConfigurations(from: reconciledData)
+        #expect(defaultTranscriptionModelName(in: reconciledModes) == "qwen-audio-3.0-asr-flash-streaming")
+        #expect(reconciledSnapshot.preferenceUpdatedAt["modeConfigurationsV2"] == localChangeDate)
+
+        service.setEnabled(false)
+    }
+
+    @MainActor
     @Test func cloudConfigurationSyncWritesOnlyForEditsAndPullsLastEditWithoutEchoing() async throws {
         let temporaryRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent("VoiceInkConfigurationSyncTests-\(UUID().uuidString)", isDirectory: true)
@@ -835,6 +968,64 @@ struct VoiceInkTests {
         }
         Issue.record("Timed out waiting for a configuration sync write")
         return try decodeConfigurationSnapshot(at: url)
+    }
+
+    private func writeConfigurationSnapshot(
+        _ snapshot: CloudConfigurationSyncService.Snapshot,
+        to url: URL
+    ) throws {
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let encoder = PropertyListEncoder()
+        encoder.outputFormat = .binary
+        try encoder.encode(snapshot).write(to: url, options: .atomic)
+    }
+
+    private func encodedPreferenceValue(_ value: Any) throws -> Data {
+        try PropertyListSerialization.data(
+            fromPropertyList: ["value": value],
+            format: .binary,
+            options: 0
+        )
+    }
+
+    private func decodedPreferenceValue(_ data: Data?) throws -> Any? {
+        guard let data else { return nil }
+        let wrapper = try #require(
+            PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
+        )
+        return wrapper["value"]
+    }
+
+    private func modeConfigurationData(defaultDictationModelName: String) throws -> Data {
+        let mode: [String: Any] = [
+            "id": "10000000-0000-0000-0000-000000000001",
+            "name": "Dictation",
+            "icon": ["kind": "symbol", "value": "receipt.fill"],
+            "isAIEnhancementEnabled": false,
+            "selectedTranscriptionModelName": defaultDictationModelName,
+            "isRealtimeTranscriptionEnabled": true,
+            "selectedLanguage": "auto",
+            "isTextFormattingEnabled": true,
+            "useClipboardContext": false,
+            "useSelectedTextContext": true,
+            "useActiveApplicationContext": false,
+            "useWindowTitleContext": false,
+            "useScreenCapture": false,
+            "outputMode": "paste",
+            "autoSendKey": "none",
+            "isEnabled": true,
+            "isDefault": true,
+        ]
+        return try JSONSerialization.data(withJSONObject: [mode], options: [.sortedKeys])
+    }
+
+    private func decodedModeConfigurations(from data: Data) throws -> [[String: Any]] {
+        try #require(JSONSerialization.jsonObject(with: data) as? [[String: Any]])
+    }
+
+    private func defaultTranscriptionModelName(in modes: [[String: Any]]) -> String? {
+        let mode = modes.first { ($0["isDefault"] as? Bool) == true } ?? modes.first
+        return mode?["selectedTranscriptionModelName"] as? String
     }
 
     @Test func volcanoArkUsesOpenAICompatibleChatEndpoint() {

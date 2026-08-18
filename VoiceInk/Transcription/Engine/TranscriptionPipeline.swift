@@ -62,6 +62,7 @@ class TranscriptionPipeline {
         outputConfiguration: @escaping () -> OutputRuntimeConfiguration,
         onStateChange: @escaping (RecordingState) -> Void,
         shouldCancel: () -> Bool,
+        shouldBypassEnhancement: () -> Bool = { false },
         onCancel: @escaping () async -> Void,
         onDismiss: @escaping () async -> Void,
         assistant: AssistantHooks = .inactive
@@ -222,34 +223,46 @@ class TranscriptionPipeline {
 
                     do {
                         let contextSnapshot = await recordingContextSnapshot()
-                        let (enhancedText, enhancementDuration, promptName) = try await enhancementService.enhance(
-                            textForAI,
-                            configuration: resolvedEnhancementConfiguration,
-                            contextSnapshot: contextSnapshot
-                        )
-                        transcription.enhancedText = enhancedText
-                        transcription.aiEnhancementModelName =
-                            resolvedEnhancementConfiguration.modelName
-                            ?? resolvedEnhancementConfiguration.provider?.defaultModel
-                        transcription.promptName = promptName
-                        transcription.enhancementDuration = enhancementDuration
-                        transcription.aiRequestSystemMessage = enhancementService.lastSystemMessageSent
-                        transcription.aiRequestUserMessage = enhancementService.lastUserMessageSent
-                        finalText = enhancedText
-                    } catch {
-                        let errorDescription = EnhancementFailureFormatter.description(for: error)
-                        let failureMessage = EnhancementFailureFormatter.message(description: errorDescription)
-                        transcription.enhancedText = failureMessage
-                        responseError = errorDescription
-                        await MainActor.run {
-                            NotificationManager.shared.showNotification(
-                                title: failureMessage,
-                                type: .warning
+                        if shouldBypassEnhancement() {
+                            finalText = cleanedText
+                        } else {
+                            let (enhancedText, enhancementDuration, promptName) = try await enhancementService.enhance(
+                                textForAI,
+                                configuration: resolvedEnhancementConfiguration,
+                                contextSnapshot: contextSnapshot
                             )
+                            if shouldBypassEnhancement() {
+                                finalText = cleanedText
+                            } else {
+                                transcription.enhancedText = enhancedText
+                                transcription.aiEnhancementModelName =
+                                    resolvedEnhancementConfiguration.modelName
+                                    ?? resolvedEnhancementConfiguration.provider?.defaultModel
+                                transcription.promptName = promptName
+                                transcription.enhancementDuration = enhancementDuration
+                                transcription.aiRequestSystemMessage = enhancementService.lastSystemMessageSent
+                                transcription.aiRequestUserMessage = enhancementService.lastUserMessageSent
+                                finalText = enhancedText
+                            }
                         }
-                        if shouldCancel() {
-                            await finishCanceledTranscription()
-                            return
+                    } catch {
+                        if shouldBypassEnhancement() {
+                            finalText = cleanedText
+                        } else {
+                            let errorDescription = EnhancementFailureFormatter.description(for: error)
+                            let failureMessage = EnhancementFailureFormatter.message(description: errorDescription)
+                            transcription.enhancedText = failureMessage
+                            responseError = errorDescription
+                            await MainActor.run {
+                                NotificationManager.shared.showNotification(
+                                    title: failureMessage,
+                                    type: .warning
+                                )
+                            }
+                            if shouldCancel() {
+                                await finishCanceledTranscription()
+                                return
+                            }
                         }
                     }
                 }
@@ -325,25 +338,27 @@ class TranscriptionPipeline {
             return
         }
 
-        let deliveryStartedAt = Date()
-        await delivery.deliver(
-            TranscriptionDelivery.Request(
-                transcription: transcription,
-                text: finalText,
-                output: outputForDelivery ?? outputConfiguration(),
-                responseConfig: responseConfig,
-                responseError: responseError,
-                isAssistantFollowUp: assistant.isFollowUp
-            ),
-            actions: TranscriptionDelivery.Actions(
-                setState: onStateChange,
-                dismiss: onDismiss,
-                sendFollowUp: assistant.sendFollowUp,
-                showResponse: assistant.showResponse,
-                failResponse: assistant.failResponse
+        if !shouldBypassEnhancement() {
+            let deliveryStartedAt = Date()
+            await delivery.deliver(
+                TranscriptionDelivery.Request(
+                    transcription: transcription,
+                    text: finalText,
+                    output: outputForDelivery ?? outputConfiguration(),
+                    responseConfig: responseConfig,
+                    responseError: responseError,
+                    isAssistantFollowUp: assistant.isFollowUp
+                ),
+                actions: TranscriptionDelivery.Actions(
+                    setState: onStateChange,
+                    dismiss: onDismiss,
+                    sendFollowUp: assistant.sendFollowUp,
+                    showResponse: assistant.showResponse,
+                    failResponse: assistant.failResponse
+                )
             )
-        )
-        deliveryDuration = Date().timeIntervalSince(deliveryStartedAt)
+            deliveryDuration = Date().timeIntervalSince(deliveryStartedAt)
+        }
 
         saveTranscriptionAndPostCompletion()
     }

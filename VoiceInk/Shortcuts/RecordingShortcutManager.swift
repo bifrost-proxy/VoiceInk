@@ -208,6 +208,9 @@ class RecordingShortcutManager: ObservableObject {
             },
             cancelRecording: {
                 await recorderUIManager.cancelRecording()
+            },
+            cancelEnhancementAndPasteOriginal: {
+                await recorderUIManager.cancelEnhancementAndPasteOriginal()
             }
         )
 
@@ -538,6 +541,7 @@ final class RecordingShortcutModeHandler {
     private let recordingState: @MainActor () -> RecordingState
     private let toggleRecorderPanel: @MainActor (UUID?) async -> Void
     private let cancelRecording: @MainActor () async -> Void
+    private let cancelEnhancementAndPasteOriginal: @MainActor () async -> Void
 
     private var shortcutPressStartTime: TimeInterval?
     private var isHandsFreeRecording = false
@@ -545,6 +549,7 @@ final class RecordingShortcutModeHandler {
     private var activeRecordingShortcutAction: ShortcutAction?
     private var interruptedRecordingActions = Set<ShortcutAction>()
     private var activeShortcutCanCancelAccidentalStart = false
+    private var isBypassingEnhancementForCurrentShortcut = false
     private var lastShortcutPressTime: Date?
 
     private let shortcutPressCooldown: TimeInterval = 0.5
@@ -555,13 +560,15 @@ final class RecordingShortcutModeHandler {
         isRecorderVisible: @escaping @MainActor () -> Bool,
         recordingState: @escaping @MainActor () -> RecordingState,
         toggleRecorderPanel: @escaping @MainActor (UUID?) async -> Void,
-        cancelRecording: @escaping @MainActor () async -> Void
+        cancelRecording: @escaping @MainActor () async -> Void,
+        cancelEnhancementAndPasteOriginal: @escaping @MainActor () async -> Void
     ) {
         self.canHandleShortcutAction = canHandleShortcutAction
         self.isRecorderVisible = isRecorderVisible
         self.recordingState = recordingState
         self.toggleRecorderPanel = toggleRecorderPanel
         self.cancelRecording = cancelRecording
+        self.cancelEnhancementAndPasteOriginal = cancelEnhancementAndPasteOriginal
     }
 
     func reset() {
@@ -571,6 +578,7 @@ final class RecordingShortcutModeHandler {
         activeRecordingShortcutAction = nil
         interruptedRecordingActions.removeAll()
         activeShortcutCanCancelAccidentalStart = false
+        isBypassingEnhancementForCurrentShortcut = false
     }
 
     func handleKeyDown(
@@ -597,6 +605,12 @@ final class RecordingShortcutModeHandler {
         activeShortcutCanCancelAccidentalStart = canCurrentShortcutPressCancelAccidentalStart
         lastShortcutPressTime = Date()
         shortcutPressStartTime = eventTime
+
+        if recordingState() == .enhancing {
+            isBypassingEnhancementForCurrentShortcut = true
+            await cancelEnhancementAndPasteOriginal()
+            return
+        }
 
         switch mode {
         case .toggle, .hybrid:
@@ -630,6 +644,12 @@ final class RecordingShortcutModeHandler {
         isShortcutPressed = false
         activeRecordingShortcutAction = nil
         activeShortcutCanCancelAccidentalStart = false
+
+        if isBypassingEnhancementForCurrentShortcut {
+            isBypassingEnhancementForCurrentShortcut = false
+            shortcutPressStartTime = nil
+            return
+        }
 
         switch mode {
         case .toggle:

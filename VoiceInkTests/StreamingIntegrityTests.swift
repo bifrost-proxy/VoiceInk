@@ -84,6 +84,77 @@ struct StreamingIntegrityTests {
     }
 
     @MainActor
+    @Test func cloudConnectionFailureReconnectsBeforeBufferedAudioIsDrained() async throws {
+        let failedProvider = ReconnectProbeProvider(connectionError: ReconnectTestError.connectionFailed)
+        let connectedProvider = ReconnectProbeProvider()
+        let providerSequence = ReconnectProviderSequence([failedProvider, connectedProvider])
+        let container = try ModelContainer(
+            for: VocabularyWord.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true)
+        )
+        let service = StreamingTranscriptionService(
+            modelContext: ModelContext(container),
+            providerFactory: { _, _, _ in providerSequence.next() }
+        )
+        let bufferedAudio = Data(repeating: 0x42, count: 640)
+
+        service.prepareForStart()
+        service.sendAudioChunk(bufferedAudio)
+        try await service.startStreaming(
+            model: IntegrityTestModel(provider: .aliyunQwen),
+            context: TranscriptionRequestContext(language: "auto", prompt: nil)
+        )
+
+        let result = try await service.stopAndFinalize()
+        guard case .finalized(let text) = result else {
+            Issue.record("The immediate reconnect should preserve the streaming result")
+            return
+        }
+
+        #expect(text == "reconnected")
+        #expect(failedProvider.snapshot().connectCount == 1)
+        #expect(failedProvider.snapshot().disconnectCount == 1)
+        #expect(failedProvider.snapshot().sentAudio.isEmpty)
+        #expect(connectedProvider.snapshot().connectCount == 1)
+        #expect(connectedProvider.snapshot().sentAudio == [bufferedAudio])
+        #expect(connectedProvider.snapshot().commitCount == 1)
+        #expect(service.performanceSnapshot.receivedChunks == 1)
+        #expect(service.performanceSnapshot.sentChunks == 1)
+    }
+
+    @MainActor
+    @Test func cloudConnectionFailureFallsThroughAfterOneImmediateRetry() async throws {
+        let firstProvider = ReconnectProbeProvider(connectionError: ReconnectTestError.connectionFailed)
+        let secondProvider = ReconnectProbeProvider(connectionError: ReconnectTestError.connectionFailed)
+        let providerSequence = ReconnectProviderSequence([firstProvider, secondProvider])
+        let container = try ModelContainer(
+            for: VocabularyWord.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true)
+        )
+        let service = StreamingTranscriptionService(
+            modelContext: ModelContext(container),
+            providerFactory: { _, _, _ in providerSequence.next() }
+        )
+
+        service.prepareForStart()
+        do {
+            try await service.startStreaming(
+                model: IntegrityTestModel(provider: .doubaoSpeech),
+                context: TranscriptionRequestContext(language: "auto", prompt: nil)
+            )
+            Issue.record("Two failed cloud connections should preserve the full-file fallback path")
+        } catch ReconnectTestError.connectionFailed {
+            // Expected: StreamingTranscriptionSession will now use the existing full-file fallback.
+        }
+
+        #expect(firstProvider.snapshot().connectCount == 1)
+        #expect(firstProvider.snapshot().disconnectCount == 1)
+        #expect(secondProvider.snapshot().connectCount == 1)
+        #expect(secondProvider.snapshot().disconnectCount == 1)
+        #expect(providerSequence.requestCount == 2)
+    }
+
+    @MainActor
     private func makeService(provider: IntegrityProbeProvider) throws -> StreamingTranscriptionService {
         let container = try ModelContainer(
             for: VocabularyWord.self,
@@ -106,10 +177,87 @@ private struct IntegrityTestModel: TranscriptionModel {
     let name = "integrity-test"
     let displayName = "Integrity Test"
     let description = "Test model"
-    let provider = ModelProvider.deepgram
+    let provider: ModelProvider
     let isMultilingualModel = true
     let supportedLanguages = ["auto": "Automatic"]
     let supportsStreaming = true
+
+    init(provider: ModelProvider = .deepgram) {
+        self.provider = provider
+    }
+}
+
+private enum ReconnectTestError: Error {
+    case connectionFailed
+}
+
+private final class ReconnectProviderSequence: @unchecked Sendable {
+    private let lock = NSLock()
+    private var providers: [ReconnectProbeProvider]
+    private var storedRequestCount = 0
+
+    init(_ providers: [ReconnectProbeProvider]) {
+        self.providers = providers
+    }
+
+    var requestCount: Int {
+        lock.withLock { storedRequestCount }
+    }
+
+    func next() -> ReconnectProbeProvider {
+        lock.withLock {
+            storedRequestCount += 1
+            return providers.removeFirst()
+        }
+    }
+}
+
+private final class ReconnectProbeProvider: StreamingTranscriptionProvider {
+    private let lock = NSLock()
+    private let connectionError: Error?
+    private var connectCount = 0
+    private var disconnectCount = 0
+    private var commitCount = 0
+    private var sentAudio: [Data] = []
+    private let continuation: AsyncStream<StreamingTranscriptionEvent>.Continuation
+    let transcriptionEvents: AsyncStream<StreamingTranscriptionEvent>
+
+    init(connectionError: Error? = nil) {
+        self.connectionError = connectionError
+        let pair = AsyncStream.makeStream(of: StreamingTranscriptionEvent.self)
+        transcriptionEvents = pair.stream
+        continuation = pair.continuation
+    }
+
+    func connect(model _: any TranscriptionModel, language _: String?) async throws {
+        lock.withLock { connectCount += 1 }
+        if let connectionError {
+            throw connectionError
+        }
+    }
+
+    func sendAudioChunk(_ data: Data) async throws {
+        lock.withLock { sentAudio.append(data) }
+    }
+
+    func commit() async throws {
+        lock.withLock { commitCount += 1 }
+        continuation.yield(.committed(text: "reconnected"))
+    }
+
+    func disconnect() async {
+        lock.withLock { disconnectCount += 1 }
+        continuation.finish()
+    }
+
+    func snapshot() -> (
+        connectCount: Int,
+        disconnectCount: Int,
+        commitCount: Int,
+        sentAudio: [Data]
+    ) {
+        lock.withLock { (connectCount, disconnectCount, commitCount, sentAudio) }
+    }
 }
 
 private final class IntegrityProbeProvider: StreamingTranscriptionProvider {

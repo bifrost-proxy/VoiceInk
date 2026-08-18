@@ -34,6 +34,31 @@ private final class PasteCommandGate {
 
 @MainActor
 struct TranscriptionDeliveryTests {
+    @Test func skippingEnhancementPastesOriginalTextWithoutAutoSend() async {
+        let defaults = UserDefaults.standard
+        let previousAppendSpace = defaults.object(forKey: "AppendTrailingSpace")
+        defer {
+            restore(previousAppendSpace, forKey: "AppendTrailingSpace", in: defaults)
+        }
+        defaults.set(false, forKey: "AppendTrailingSpace")
+
+        var pastedText: String?
+        var dismissCount = 0
+        let delivery = TranscriptionDelivery(
+            pasteAtCursor: { text in
+                pastedText = text
+                return .commandPosted
+            }
+        )
+
+        await delivery.pasteOriginalImmediately("original transcript") {
+            dismissCount += 1
+        }
+
+        #expect(pastedText == "original transcript")
+        #expect(dismissCount == 1)
+    }
+
     @Test(arguments: [CursorPaster.PasteResult.commandPosted, .commandNotPosted])
     func deliveryDoesNotReturnBeforePasteCommandResolves(_ pasteResult: CursorPaster.PasteResult) async throws {
         let defaults = UserDefaults.standard
