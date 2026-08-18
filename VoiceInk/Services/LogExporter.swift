@@ -57,7 +57,7 @@ struct BoundedDiagnosticLogBuffer {
 
     var lines: [String] {
         guard headIndex < storage.count else { return [] }
-        return storage[headIndex...].map(\.line)
+        return storage[headIndex...].map { $0.line }
     }
 }
 
