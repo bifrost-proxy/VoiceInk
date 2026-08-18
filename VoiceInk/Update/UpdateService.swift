@@ -6,6 +6,21 @@ struct VoiceInkRelease: Equatable, Sendable {
     let checksumURL: URL
 }
 
+enum ReleaseArchitecture: String, CaseIterable, Sendable {
+    case arm64
+    case x86_64
+
+    static var current: ReleaseArchitecture {
+        #if arch(arm64)
+            return .arm64
+        #elseif arch(x86_64)
+            return .x86_64
+        #else
+            fatalError("VoiceInk releases do not support this CPU architecture.")
+        #endif
+    }
+}
+
 struct SemanticVersion: Comparable, Equatable, Sendable {
     let major: Int
     let minor: Int
@@ -58,8 +73,13 @@ enum UpdateService {
     }
 
     static let repository = "bifrost-proxy/VoiceInk"
-    static let archiveName = "VoiceInk.zip"
+    static let releaseArchitecture = ReleaseArchitecture.current
+    static var archiveName: String { archiveName(for: releaseArchitecture) }
     static let checksumName = "SHA256SUMS"
+
+    static func archiveName(for architecture: ReleaseArchitecture) -> String {
+        "VoiceInk-\(architecture.rawValue).zip"
+    }
 
     static var currentVersion: String {
         ProcessInfo.processInfo.environment["VOICEINK_UPDATE_CURRENT_VERSION"]
@@ -90,10 +110,14 @@ enum UpdateService {
         else {
             throw Failure.invalidResponse
         }
-        return try decodeAtomFeed(data)
+        return try decodeAtomFeed(data, architecture: releaseArchitecture)
     }
 
-    static func decodeAtomFeed(_ data: Data) throws -> VoiceInkRelease {
+    static func decodeAtomFeed(
+        _ data: Data,
+        architecture: ReleaseArchitecture = releaseArchitecture
+    ) throws -> VoiceInkRelease {
+        let archiveName = archiveName(for: architecture)
         let releases = try ReleaseAtomParser.parse(data).compactMap { entry -> VoiceInkRelease? in
             guard entry.tag.hasPrefix("v") else { return nil }
             let version = String(entry.tag.dropFirst())

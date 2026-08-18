@@ -47,7 +47,7 @@ enum UpdateInstaller {
             case .versionMismatch(let version):
                 return String(localized: "The downloaded app has an unexpected version: \(version)")
             case .invalidArchitecture:
-                return String(localized: "The downloaded app is not a Universal macOS app.")
+                return String(localized: "The downloaded app does not match this Mac's CPU architecture.")
             case .invalidSignature(let detail):
                 return String(localized: "The downloaded app failed code-signature verification: \(detail)")
             case .appNotWritable:
@@ -219,11 +219,17 @@ enum UpdateInstaller {
         let architectures = try run("/usr/bin/lipo", ["-archs", executable.path])
         let values = Set(text(architectures.stdout).split(whereSeparator: \.isWhitespace).map(String.init))
         guard architectures.status == 0,
-            values.contains("arm64"),
-            values.contains("x86_64")
+            isValidArchitectureSet(values)
         else {
             throw Failure.invalidArchitecture
         }
+    }
+
+    static func isValidArchitectureSet(
+        _ architectures: Set<String>,
+        expected: ReleaseArchitecture = UpdateService.releaseArchitecture
+    ) -> Bool {
+        architectures == [expected.rawValue]
     }
 
     private static func makePlan(

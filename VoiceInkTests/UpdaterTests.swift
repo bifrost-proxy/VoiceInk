@@ -30,15 +30,21 @@ struct UpdaterTests {
             </feed>
             """
 
-        let release = try UpdateService.decodeAtomFeed(Data(feed.utf8))
-        #expect(release.version == "2.3.0")
+        let arm64Release = try UpdateService.decodeAtomFeed(Data(feed.utf8), architecture: .arm64)
+        #expect(arm64Release.version == "2.3.0")
         #expect(
-            release.archiveURL.absoluteString
-                == "https://github.com/bifrost-proxy/VoiceInk/releases/download/v2.3.0/VoiceInk.zip"
+            arm64Release.archiveURL.absoluteString
+                == "https://github.com/bifrost-proxy/VoiceInk/releases/download/v2.3.0/VoiceInk-arm64.zip"
         )
         #expect(
-            release.checksumURL.absoluteString
+            arm64Release.checksumURL.absoluteString
                 == "https://github.com/bifrost-proxy/VoiceInk/releases/download/v2.3.0/SHA256SUMS"
+        )
+
+        let x86_64Release = try UpdateService.decodeAtomFeed(Data(feed.utf8), architecture: .x86_64)
+        #expect(
+            x86_64Release.archiveURL.absoluteString
+                == "https://github.com/bifrost-proxy/VoiceInk/releases/download/v2.3.0/VoiceInk-x86_64.zip"
         )
     }
 
@@ -62,13 +68,29 @@ struct UpdaterTests {
         let expected = String(repeating: "a", count: 64)
         let manifest = """
             \(String(repeating: "b", count: 64))  Other.zip
-            \(expected)  VoiceInk.zip
+            \(expected)  VoiceInk-arm64.zip
             """
 
-        #expect(try UpdateService.checksum(for: "VoiceInk.zip", in: Data(manifest.utf8)) == expected)
+        #expect(try UpdateService.checksum(for: "VoiceInk-arm64.zip", in: Data(manifest.utf8)) == expected)
         #expect(throws: UpdateService.Failure.self) {
             _ = try UpdateService.checksum(for: "Missing.zip", in: Data(manifest.utf8))
         }
+    }
+
+    @Test func updaterUsesOnlyTheCurrentCPUArchitecture() {
+        #expect(UpdateService.archiveName(for: .arm64) == "VoiceInk-arm64.zip")
+        #expect(UpdateService.archiveName(for: .x86_64) == "VoiceInk-x86_64.zip")
+
+        #if arch(arm64)
+            #expect(UpdateService.archiveName == "VoiceInk-arm64.zip")
+        #elseif arch(x86_64)
+            #expect(UpdateService.archiveName == "VoiceInk-x86_64.zip")
+        #endif
+
+        #expect(UpdateInstaller.isValidArchitectureSet(["arm64"], expected: .arm64))
+        #expect(UpdateInstaller.isValidArchitectureSet(["x86_64"], expected: .x86_64))
+        #expect(!UpdateInstaller.isValidArchitectureSet(["arm64", "x86_64"], expected: .arm64))
+        #expect(!UpdateInstaller.isValidArchitectureSet(["x86_64"], expected: .arm64))
     }
 
     @Test func updaterUsesAnHourlyIntervalAndClampsDownloadProgress() {
