@@ -204,6 +204,7 @@ final class CloudConfigurationSyncService: ObservableObject {
     private var pendingLocalChangeAt: Date?
     private var isApplyingRemoteSnapshot = false
     private var isWritingMetadata = false
+    private var pendingContentCollectionTask: Task<Void, Never>?
     private var pendingWriteTask: Task<Void, Never>?
     private var observers: [NSObjectProtocol] = []
     private var onRemoteConfigurationApplied: (() -> Void)?
@@ -264,6 +265,11 @@ final class CloudConfigurationSyncService: ObservableObject {
     /// creates a revision when local portable content has not changed.
     func syncNow() {
         guard isEnabled else { return }
+        if pendingContentCollectionTask != nil {
+            pendingContentCollectionTask?.cancel()
+            pendingContentCollectionTask = nil
+            captureLocalContentChange(scheduleWriteAfterCapture: false)
+        }
         pendingWriteTask?.cancel()
         pendingWriteTask = nil
         synchronizeWithRemote(applyDictionaryImmediately: true)
@@ -273,6 +279,8 @@ final class CloudConfigurationSyncService: ObservableObject {
         if isEnabled != enabled {
             defaults.set(enabled, forKey: CloudSyncSettingsKeys.configurationSyncEnabled)
         }
+        pendingContentCollectionTask?.cancel()
+        pendingContentCollectionTask = nil
         pendingWriteTask?.cancel()
         pendingWriteTask = nil
 
@@ -340,6 +348,17 @@ final class CloudConfigurationSyncService: ObservableObject {
 
     private func handleLocalContentChange() {
         guard isEnabled, !isApplyingRemoteSnapshot, !isWritingMetadata else { return }
+        pendingContentCollectionTask?.cancel()
+        pendingContentCollectionTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(200))
+            guard !Task.isCancelled, let self else { return }
+            self.pendingContentCollectionTask = nil
+            self.captureLocalContentChange()
+        }
+    }
+
+    private func captureLocalContentChange(scheduleWriteAfterCapture: Bool = true) {
+        guard isEnabled, !isApplyingRemoteSnapshot, !isWritingMetadata else { return }
         guard let content = makeLocalContent(),
             Self.shouldQueueLocalChange(current: content, lastKnown: lastKnownContent, pending: pendingLocalContent)
         else { return }
@@ -354,7 +373,9 @@ final class CloudConfigurationSyncService: ObservableObject {
         )
         setMetadata(changedAt, forKey: Self.lastLocalChangeKey)
         setMetadata(true, forKey: Self.hasPendingLocalChangeKey)
-        scheduleWrite()
+        if scheduleWriteAfterCapture {
+            scheduleWrite()
+        }
     }
 
     static func shouldQueueLocalChange(

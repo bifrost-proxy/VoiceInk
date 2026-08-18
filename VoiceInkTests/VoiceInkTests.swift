@@ -11,6 +11,37 @@ import Testing
 @testable import VoiceInk
 
 struct VoiceInkTests {
+    @Test func whisperPCMReaderConvertsSamplesWithoutPerSampleDataAllocations() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("VoiceInkWhisperSamples-\(UUID().uuidString).wav")
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        var wav = Data(repeating: 0, count: 44)
+        for sample in [Int16.min, -16_384, 0, 16_384, Int16.max] {
+            var littleEndian = sample.littleEndian
+            withUnsafeBytes(of: &littleEndian) { wav.append(contentsOf: $0) }
+        }
+        try wav.write(to: url)
+
+        let samples = try WhisperTranscriptionService.readAudioSamples(url)
+        #expect(samples.count == 5)
+        #expect(samples[0] == -1)
+        #expect(abs(samples[1] + 0.500_015_26) < 0.000_001)
+        #expect(samples[2] == 0)
+        #expect(abs(samples[3] - 0.500_015_26) < 0.000_001)
+        #expect(samples[4] == 1)
+    }
+
+    @Test func whisperPCMReaderRejectsTruncatedHeaders() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("VoiceInkWhisperTruncated-\(UUID().uuidString).wav")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try Data(repeating: 0, count: 43).write(to: url)
+
+        #expect(throws: CocoaError.self) {
+            _ = try WhisperTranscriptionService.readAudioSamples(url)
+        }
+    }
 
     @Test func cloudAndRetentionDefaultsArePrivacyPreservingAndUnlimited() throws {
         let suiteName = "VoiceInkTests.SyncDefaults"
@@ -529,7 +560,7 @@ struct VoiceInkTests {
     }
 
     @MainActor
-    @Test func cloudUsageSteadyStateDoesNotReexportLargeHistory() async throws {
+    @Test func cloudUsageBulkSyncImportsHistoryWithoutReexportingAtSteadyState() async throws {
         let temporaryRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent("VoiceInkSteadyUsageSyncTests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: temporaryRoot, withIntermediateDirectories: true)
@@ -552,6 +583,24 @@ struct VoiceInkTests {
         service.start(modelContext: container.mainContext)
         try await waitForUsageSync(service)
         #expect(service.lastExportCandidateCount == 200)
+
+        let receivingSuiteName = "VoiceInkTests.SteadyUsageSync.Receiving.\(UUID().uuidString)"
+        let receivingDefaults = try #require(UserDefaults(suiteName: receivingSuiteName))
+        defer { receivingDefaults.removePersistentDomain(forName: receivingSuiteName) }
+        receivingDefaults.set(true, forKey: CloudSyncSettingsKeys.usageDataSyncEnabled)
+        let receivingContainer = try ModelContainer(
+            for: schema,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        let receivingService = CloudUsageDataSyncService(
+            defaults: receivingDefaults,
+            iCloudDriveRootURL: temporaryRoot
+        )
+        receivingService.start(modelContext: receivingContainer.mainContext)
+        try await waitForUsageSync(receivingService)
+        #expect(try receivingContainer.mainContext.fetchCount(FetchDescriptor<Transcription>()) == 200)
+        #expect(receivingService.lastImportCandidateCount == 200)
+        receivingService.setEnabled(false)
 
         let bootstrapSyncDate = try #require(service.lastSyncedAt)
         service.syncNow()

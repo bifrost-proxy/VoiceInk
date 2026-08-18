@@ -102,24 +102,25 @@ struct ContentView: View {
         .ignoresSafeArea(.container, edges: .top)
     }
 
-    private func detailView(for viewType: ViewType) -> AnyView {
+    @ViewBuilder
+    private func detailView(for viewType: ViewType) -> some View {
         switch viewType {
         case .dashboard:
-            AnyView(DashboardView())
+            DashboardView()
         case .models:
-            AnyView(ModelManagementView())
+            ModelManagementView()
         case .transcribeAudio:
-            AnyView(AudioTranscribeView())
+            AudioTranscribeView()
         case .history:
-            AnyView(InlineHistoryView())
+            InlineHistoryView()
         case .audio:
-            AnyView(AudioSetupView())
+            AudioSetupView()
         case .dictionary:
-            AnyView(DictionarySettingsView())
+            DictionarySettingsView()
         case .modes:
-            AnyView(ModeView())
+            ModeView()
         case .settings:
-            AnyView(SettingsView())
+            SettingsView()
         }
     }
 }
