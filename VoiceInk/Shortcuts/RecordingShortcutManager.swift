@@ -1,5 +1,60 @@
 import AppKit
 import Foundation
+import OSLog
+
+@MainActor
+final class AccessibilityAuthorizationMonitor {
+    private let pollingIntervalNanoseconds: UInt64
+    private let isAuthorized: @MainActor () -> Bool
+    private let onAuthorizationGranted: @MainActor () -> Void
+    private var pollingTask: Task<Void, Never>?
+
+    init(
+        pollingIntervalNanoseconds: UInt64 = 500_000_000,
+        isAuthorized: @escaping @MainActor () -> Bool,
+        onAuthorizationGranted: @escaping @MainActor () -> Void
+    ) {
+        self.pollingIntervalNanoseconds = pollingIntervalNanoseconds
+        self.isAuthorized = isAuthorized
+        self.onAuthorizationGranted = onAuthorizationGranted
+    }
+
+    func start() {
+        guard pollingTask == nil else { return }
+
+        if isAuthorized() {
+            onAuthorizationGranted()
+            return
+        }
+
+        let pollingIntervalNanoseconds = pollingIntervalNanoseconds
+        pollingTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(nanoseconds: pollingIntervalNanoseconds)
+                } catch {
+                    return
+                }
+
+                guard let self else { return }
+                guard self.isAuthorized() else { continue }
+
+                self.pollingTask = nil
+                self.onAuthorizationGranted()
+                return
+            }
+        }
+    }
+
+    func stop() {
+        pollingTask?.cancel()
+        pollingTask = nil
+    }
+
+    deinit {
+        pollingTask?.cancel()
+    }
+}
 
 @MainActor
 class RecordingShortcutManager: ObservableObject {
@@ -47,11 +102,20 @@ class RecordingShortcutManager: ObservableObject {
     private var recorderPanelShortcutManager: RecorderPanelShortcutManager
     private let modeShortcutManager: ModeShortcutManager
     private let shortcutMonitor = ShortcutMonitor()
+    private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "ShortcutMonitor")
     private lazy var accessibilityFallbackMonitor = AccessibilityShortcutFallbackMonitor { [weak self] in
         Task { @MainActor [weak self] in
             await self?.recorderUIManager.presentRecordingPermissionGuidance()
         }
     }
+    private lazy var accessibilityAuthorizationMonitor = AccessibilityAuthorizationMonitor(
+        isAuthorized: { AXIsProcessTrusted() },
+        onAuthorizationGranted: { [weak self] in
+            guard let self else { return }
+            self.logger.notice("Accessibility authorization granted; rebuilding global shortcut monitors")
+            self.refreshShortcutMonitoringAfterAccessibilityAuthorization()
+        }
+    )
     private var shortcutChangeObserver: NSObjectProtocol?
     private var appDidBecomeActiveObserver: NSObjectProtocol?
     private let shortcutModeHandler: RecordingShortcutModeHandler
@@ -199,6 +263,7 @@ class RecordingShortcutManager: ObservableObject {
         removeAllMonitoring()
 
         guard AXIsProcessTrusted() else {
+            accessibilityAuthorizationMonitor.start()
             let shortcuts = configuredShortcutsForAccessibilityFallback()
             let fallbackCount = accessibilityFallbackMonitor.start(shortcuts: shortcuts)
             switch Self.missingAccessibilityPresentation(
@@ -417,6 +482,7 @@ class RecordingShortcutManager: ObservableObject {
     private func removeAllMonitoring() {
         shortcutMonitor.stop()
         accessibilityFallbackMonitor.stop()
+        accessibilityAuthorizationMonitor.stop()
 
         for monitor in middleClickMonitors {
             if let monitor = monitor {
