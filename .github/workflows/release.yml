@@ -80,53 +80,8 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  build-legacy-updater-bridge:
-    name: build legacy updater bridge
-    needs: build-release
-    if: github.ref_name == 'v2.2.44'
-    runs-on: macos-26
-    timeout-minutes: 15
-
-    steps:
-      - name: Check out tagged source
-        uses: actions/checkout@v4
-
-      - name: Download both architecture packages
-        uses: actions/download-artifact@v4
-        with:
-          pattern: voiceink-release-*
-          path: ${{ runner.temp }}/voiceink-release
-          merge-multiple: true
-
-      - name: Build and verify legacy universal updater bridge
-        shell: bash
-        run: |
-          set -euo pipefail
-          version="${GITHUB_REF_NAME#v}"
-          scripts/build-legacy-universal-package.sh \
-            --version "$version" \
-            --build-number "$GITHUB_RUN_NUMBER" \
-            --output-dir "$RUNNER_TEMP/voiceink-release"
-
-      - name: Upload legacy updater bridge
-        uses: actions/upload-artifact@v4
-        with:
-          name: voiceink-release-legacy-bridge
-          path: ${{ runner.temp }}/voiceink-release/VoiceInk.zip
-          if-no-files-found: error
-          retention-days: 1
-
   publish-release:
-    needs:
-      - build-release
-      - build-legacy-updater-bridge
-    if: >-
-      ${{
-        always() &&
-        needs.build-release.result == 'success' &&
-        (needs.build-legacy-updater-bridge.result == 'success' ||
-         needs.build-legacy-updater-bridge.result == 'skipped')
-      }}
+    needs: build-release
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -140,18 +95,6 @@ jobs:
           pattern: voiceink-release-*
           path: ${{ runner.temp }}/voiceink-release
           merge-multiple: true
-
-      - name: Enforce one-time legacy updater bridge
-        shell: bash
-        run: |
-          set -euo pipefail
-          legacy_archive="$RUNNER_TEMP/voiceink-release/VoiceInk.zip"
-          if [[ "$GITHUB_REF_NAME" == "v2.2.44" ]]; then
-            [[ -f "$legacy_archive" ]]
-          elif [[ -e "$legacy_archive" ]]; then
-            echo "::error::VoiceInk.zip is allowed only for the v2.2.44 legacy updater bridge"
-            exit 1
-          fi
 
       - name: Generate and validate release metadata
         shell: bash
@@ -197,10 +140,6 @@ jobs:
             "$release_dir/SHA256SUMS"
             "$release_dir/voiceink.rb"
           )
-          if [[ -f "$release_dir/VoiceInk.zip" ]]; then
-            assets+=("$release_dir/VoiceInk.zip")
-          fi
-
           if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" "${assets[@]}" \
               --repo "$GITHUB_REPOSITORY" \
