@@ -7,6 +7,10 @@ struct AIPromptContractTests {
 
         #expect(template.contains("# Editing Boundaries"))
         #expect(template.contains("Make the minimum changes necessary"))
+        #expect(template.contains("# Literal Token Preservation"))
+        #expect(template.contains("Never replace one well-formed token with a different token"))
+        #expect(template.contains("An unfamiliar token is not evidence of a transcription error."))
+        #expect(template.contains("preserve the original token exactly"))
         #expect(template.contains("# Output Language"))
         #expect(template.contains("Determine the output language from <TRANSCRIPT>"))
         #expect(template.contains("Chinese input must remain Chinese"))
@@ -16,13 +20,28 @@ struct AIPromptContractTests {
         #expect(template.contains("# Repetitions and Self-Corrections"))
         #expect(template.contains("Preserve repetitions that express emphasis"))
         #expect(template.contains("# Context Usage"))
+        #expect(template.contains("possible canonical spellings, not mandatory replacements"))
+        #expect(template.contains("Semantic relatedness, product-family similarity"))
+        #expect(template.contains("must not initiate or justify replacing a clear literal token"))
         #expect(template.contains("When context conflicts with <TRANSCRIPT>, preserve <TRANSCRIPT>."))
         #expect(template.contains("# Spoken Controls"))
         #expect(template.contains("only when they are clearly being used as dictation commands"))
         #expect(template.contains("# Mixed-Language Text"))
         #expect(template.contains("Do not translate individual words or phrases merely because they are in another language."))
+        #expect(template.contains("Normalize capitalization only when it preserves the same letters and token identity."))
+        #expect(!template.contains("Use <CUSTOM_VOCABULARY> as the spelling authority"))
         #expect(!template.contains("Format obvious lists"))
         #expect(!template.contains("# Examples"))
+    }
+
+    @Test func customVocabularyGuidanceTreatsTermsAsHintsWithoutOverridingLiteralTokens() {
+        let guidance = AIPrompts.customVocabularyGuidance
+
+        #expect(guidance.contains("possible canonical spellings, not mandatory replacements"))
+        #expect(guidance.contains("strong local evidence"))
+        #expect(guidance.contains("Never replace a clear, well-formed token"))
+        #expect(guidance.contains("If uncertain, preserve <TRANSCRIPT> unchanged."))
+        #expect(!guidance.contains("spelling authority"))
     }
 
     @Test func taskInstructionsRemainInsideTheEditingContract() throws {
