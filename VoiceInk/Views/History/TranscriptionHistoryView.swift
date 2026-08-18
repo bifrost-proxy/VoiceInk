@@ -470,6 +470,8 @@ struct TranscriptionHistoryView: View {
     }
 
     private func deleteSelectedTranscriptions() {
+        let deletedIDs = Set(selectedTranscriptions.map(\.id))
+        CloudUsageDataSyncService.shared.deleteRecordsGlobally(deletedIDs)
         for transcription in selectedTranscriptions {
             performDeletion(for: transcription)
         }

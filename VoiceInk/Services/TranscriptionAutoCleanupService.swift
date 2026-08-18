@@ -94,10 +94,14 @@ class TranscriptionAutoCleanupService {
             }
         }
 
+        let deletedID = transcription.id
         modelContext.delete(transcription)
 
         do {
             try modelContext.save()
+            Task { @MainActor in
+                CloudUsageDataSyncService.shared.recordsWereRemovedLocally([deletedID])
+            }
             NotificationCenter.default.post(name: .transcriptionDeleted, object: nil)
         } catch {
             logger.error("Failed to save after transcription deletion: \(error, privacy: .public)")
@@ -126,6 +130,7 @@ class TranscriptionAutoCleanupService {
             )
             let items = try backgroundContext.fetch(descriptor)
             var deletedCount = 0
+            var deletedIDs = Set<UUID>()
             for transcription in items {
                 if let urlString = transcription.audioFileURL,
                     let url = URL(string: urlString),
@@ -134,12 +139,15 @@ class TranscriptionAutoCleanupService {
                     try? FileManager.default.removeItem(at: url)
                 }
                 backgroundContext.delete(transcription)
+                deletedIDs.insert(transcription.id)
                 deletedCount += 1
             }
             if deletedCount > 0 {
                 try backgroundContext.save()
                 logger.notice("Cleaned up \(deletedCount, privacy: .public) old transcription(s)")
+                let locallyRemovedIDs = deletedIDs
                 await MainActor.run {
+                    CloudUsageDataSyncService.shared.recordsWereRemovedLocally(locallyRemovedIDs)
                     NotificationCenter.default.post(name: .transcriptionDeleted, object: nil)
                 }
             }
