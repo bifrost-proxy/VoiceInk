@@ -99,8 +99,6 @@ enum AppDefaults {
                 DoubaoSpeechSettings.defaults.useApplicationContext,
             DoubaoSpeechSettings.Keys.useWindowTitleContext:
                 DoubaoSpeechSettings.defaults.useWindowTitleContext,
-            DoubaoSpeechSettings.Keys.useScreenContext:
-                DoubaoSpeechSettings.defaults.useScreenContext,
             DoubaoSpeechSettings.Keys.keepConnectionReady:
                 DoubaoSpeechSettings.defaults.keepConnectionReady,
             AliyunQwenSpeechSettings.Keys.region: AliyunQwenSpeechSettings.defaults.region.rawValue,
@@ -131,8 +129,6 @@ enum AppDefaults {
                 AliyunQwenSpeechSettings.defaults.useApplicationContext,
             AliyunQwenSpeechSettings.Keys.useWindowTitleContext:
                 AliyunQwenSpeechSettings.defaults.useWindowTitleContext,
-            AliyunQwenSpeechSettings.Keys.useScreenContext:
-                AliyunQwenSpeechSettings.defaults.useScreenContext,
             AliyunQwenSpeechSettings.Keys.keepConnectionReady:
                 AliyunQwenSpeechSettings.defaults.keepConnectionReady,
 

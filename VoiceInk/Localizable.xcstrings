@@ -20628,10 +20628,10 @@
         "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "将本地从已锁定当前窗口提取的文本用作此模式的上下文。" } }
       }
     },
-    "Cloud speech recognition also requires the matching provider permission. AI enhancement uses these mode settings directly." : {
+    "Screen OCR is used only by AI enhancement. Other context sources require the matching provider permission for cloud speech recognition." : {
       "localizations" : {
-        "de" : { "stringUnit" : { "state" : "translated", "value" : "Cloud-Spracherkennung benötigt zusätzlich die passende Anbieterberechtigung. Die KI-Verbesserung nutzt diese Moduseinstellungen direkt." } },
-        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "云端语音识别还需要对应的服务商授权；AI 润色直接使用这些模式设置。" } }
+        "de" : { "stringUnit" : { "state" : "translated", "value" : "Bildschirm-OCR wird nur von der KI-Verbesserung verwendet. Andere Kontextquellen benötigen für die Cloud-Spracherkennung die passende Anbieterberechtigung." } },
+        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "屏幕 OCR 仅用于 AI 润色；其他上下文来源用于云端语音识别时，仍需开启对应的服务商授权。" } }
       }
     },
     "Optional business scenario. Dynamic sources below send extracted features, never their full text." : {
@@ -20692,18 +20692,6 @@
       "localizations" : {
         "de" : { "stringUnit" : { "state" : "translated", "value" : "Erfordert die Einstellung „Fenstertitel“ des aktiven Modus. Fenstertitel können sensible Namen enthalten." } },
         "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "需同时开启当前模式的“窗口标题”。窗口标题可能包含敏感名称。" } }
-      }
-    },
-    "Allow screen-OCR features" : {
-      "localizations" : {
-        "de" : { "stringUnit" : { "state" : "translated", "value" : "Bildschirm-OCR-Merkmale erlauben" } },
-        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "允许发送屏幕 OCR 特征" } }
-      }
-    },
-    "Requires the active mode's Screen OCR setting. The screenshot and full OCR text are not sent." : {
-      "localizations" : {
-        "de" : { "stringUnit" : { "state" : "translated", "value" : "Erfordert die Bildschirm-OCR-Einstellung des aktiven Modus. Screenshot und vollständiger OCR-Text werden nicht gesendet." } },
-        "zh-Hans" : { "stringUnit" : { "state" : "translated", "value" : "需同时开启当前模式的“屏幕 OCR”。不会发送截图或 OCR 全文。" } }
       }
     },
     "Recognition options sync through iCloud; POI and recognition-context settings stay on this Mac." : {

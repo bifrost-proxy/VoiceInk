@@ -5,7 +5,6 @@ struct RecognitionContextPermissions: Equatable, Sendable {
     var clipboard = false
     var application = false
     var windowTitle = false
-    var screenOCR = false
 
     var sources: Set<ContextSource> {
         var result = Set<ContextSource>()
@@ -13,7 +12,6 @@ struct RecognitionContextPermissions: Equatable, Sendable {
         if clipboard { result.insert(.clipboard) }
         if application { result.insert(.application) }
         if windowTitle { result.insert(.windowTitle) }
-        if screenOCR { result.insert(.screenOCR) }
         return result
     }
 }
@@ -82,8 +80,7 @@ enum RecognitionContextLogSummary {
         return "Recognition context prepared provider=\(String(describing: provider)) "
             + "sources=\(sourceNames) "
             + "featureCounts=selected:\(serialization.featureCounts[.selectedText, default: 0]),"
-            + "clipboard:\(serialization.featureCounts[.clipboard, default: 0]),"
-            + "screen:\(serialization.featureCounts[.screenOCR, default: 0]) "
+            + "clipboard:\(serialization.featureCounts[.clipboard, default: 0]) "
             + "applicationIncluded=\(serialization.includedSources.contains(.application)) "
             + "windowTitleIncluded=\(serialization.includedSources.contains(.windowTitle)) "
             + "contextItems=\(serialization.itemCount) estimatedTokens=\(serialization.estimatedTokens) "
@@ -102,7 +99,6 @@ enum RecognitionContextPolicy {
         if mode.useClipboardContext, permissions.clipboard { sources.insert(.clipboard) }
         if mode.useActiveApplicationContext, permissions.application { sources.insert(.application) }
         if mode.useWindowTitleContext, permissions.windowTitle { sources.insert(.windowTitle) }
-        if mode.useScreenCapture, permissions.screenOCR { sources.insert(.screenOCR) }
         if providerConfiguration?.configuredScenario != nil { sources.insert(.configuredScenario) }
         return sources
     }
@@ -140,10 +136,6 @@ enum SpeechRecognitionContextBuilder {
         if sources.contains(.clipboard), let text = snapshot.clipboardText {
             featureInputs.append((.clipboard, text, 50))
         }
-        if sources.contains(.screenOCR), let text = snapshot.screenOCRText {
-            featureInputs.append((.screenOCR, text, 40))
-        }
-
         let envelope = RecognitionContextEnvelope(
             capturedAt: snapshot.capturedAt,
             applicationName: sources.contains(.application) ? snapshot.activeSurface?.applicationName : nil,
@@ -309,10 +301,10 @@ enum QwenRecognitionContextSerializer {
         appendMetadata(label: "窗口", value: windowTitleValue, source: .windowTitle)
         for group in groupedFeatures(
             envelope.features,
-            sourceOrder: [.selectedText, .clipboard, .screenOCR]
+            sourceOrder: [.selectedText, .clipboard]
         ) {
             let label = group.sources
-                .sorted { sourceRank($0, in: [.selectedText, .clipboard, .screenOCR]) < sourceRank($1, in: [.selectedText, .clipboard, .screenOCR]) }
+                .sorted { sourceRank($0, in: [.selectedText, .clipboard]) < sourceRank($1, in: [.selectedText, .clipboard]) }
                 .map(qwenSourceLabel)
                 .joined(separator: "+") + "关键词"
             appendFeatures(label: label, sources: group.sources, features: group.features)
@@ -405,7 +397,7 @@ enum DoubaoRecognitionContextSerializer {
             )
         }
 
-        let doubaoSourceOrder: [ContextSource] = [.selectedText, .screenOCR, .clipboard]
+        let doubaoSourceOrder: [ContextSource] = [.selectedText, .clipboard]
         let featureGroups = groupedFeatures(envelope.features, sourceOrder: doubaoSourceOrder)
         func appendFeatureGroups(primarySource: ContextSource) {
             for group in featureGroups
@@ -431,7 +423,6 @@ enum DoubaoRecognitionContextSerializer {
             if envelope.windowTitle != nil { sources.insert(.windowTitle) }
             appendEntry(components.joined(separator: "；"), sources: sources)
         }
-        appendFeatureGroups(primarySource: .screenOCR)
         appendFeatureGroups(primarySource: .clipboard)
         if let scenario = envelope.configuredScenario {
             appendEntry("业务场景：\(scenario)", sources: [.configuredScenario])
@@ -490,7 +481,6 @@ private func qwenSourceLabel(_ source: ContextSource) -> String {
     switch source {
     case .selectedText: "选中文本"
     case .clipboard: "剪贴板"
-    case .screenOCR: "窗口OCR"
     default: source.rawValue
     }
 }
@@ -499,7 +489,6 @@ private func doubaoSourceLabel(_ source: ContextSource) -> String {
     switch source {
     case .selectedText: "用户当前选中文本"
     case .clipboard: "当前剪贴板"
-    case .screenOCR: "当前窗口OCR"
     default: source.rawValue
     }
 }

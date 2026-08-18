@@ -64,8 +64,6 @@ struct AliyunQwenStreamingTests {
             "Requires the active mode's Active Application setting. The bundle identifier stays local.",
             "Allow window title",
             "Requires the active mode's Window Title setting. Window titles may contain sensitive names.",
-            "Allow screen-OCR features",
-            "Requires the active mode's Screen OCR setting. The screenshot and full OCR text are not sent.",
             "Recognition options sync through iCloud; recognition context stays on this Mac.",
         ]
 
@@ -326,8 +324,7 @@ struct AliyunQwenStreamingTests {
             vocabularyWeight: 4,
             contextPrompt: "",
             useSelectedTextContext: true,
-            useClipboardContext: false,
-            useScreenContext: false
+            useClipboardContext: false
         )
 
         let envelope = try #require(
@@ -618,7 +615,7 @@ struct AliyunQwenStreamingTests {
         #expect(!CloudConfigurationSyncService.isEligiblePreferenceKey(AliyunQwenSpeechSettings.Keys.useClipboardContext))
         #expect(!CloudConfigurationSyncService.isEligiblePreferenceKey(AliyunQwenSpeechSettings.Keys.useApplicationContext))
         #expect(!CloudConfigurationSyncService.isEligiblePreferenceKey(AliyunQwenSpeechSettings.Keys.useWindowTitleContext))
-        #expect(!CloudConfigurationSyncService.isEligiblePreferenceKey(AliyunQwenSpeechSettings.Keys.useScreenContext))
+        #expect(!CloudConfigurationSyncService.isEligiblePreferenceKey(AliyunQwenSpeechSettings.Keys.legacyUseScreenContext))
         #expect(!CloudConfigurationSyncService.isEligiblePreferenceKey(AliyunQwenSpeechSettings.Keys.keepConnectionReady))
     }
 

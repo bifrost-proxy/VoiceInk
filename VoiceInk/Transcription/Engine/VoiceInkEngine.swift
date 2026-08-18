@@ -955,9 +955,6 @@ class VoiceInkEngine: NSObject, ObservableObject {
         if asrSources.contains(.clipboard), let task = activeRecordingContextTasks?.clipboard {
             tasks.append(task)
         }
-        if asrSources.contains(.screenOCR), let task = activeRecordingContextTasks?.screenOCR {
-            tasks.append(task)
-        }
         _ = await waitForInitialContextTasks(tasks, timeout: .seconds(1))
         guard !Task.isCancelled, activeRecordingContextStore === store else { return nil }
         let envelope = SpeechRecognitionContextBuilder.build(

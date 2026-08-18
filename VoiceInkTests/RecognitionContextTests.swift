@@ -24,8 +24,7 @@ struct RecognitionContextTests {
                 selectedText: true,
                 clipboard: false,
                 application: true,
-                windowTitle: false,
-                screenOCR: false
+                windowTitle: false
             ),
             configuredScenario: nil
         )
@@ -121,7 +120,7 @@ struct RecognitionContextTests {
         let configuration = RecognitionContextProviderConfiguration(
             permissions: RecognitionContextPermissions(
                 selectedText: true, clipboard: true, application: true,
-                windowTitle: true, screenOCR: true
+                windowTitle: true
             ),
             configuredScenario: "VoiceInk code development"
         )
@@ -141,6 +140,8 @@ struct RecognitionContextTests {
         #expect(text.contains("[窗口] VoiceInk — Context.swift"))
         #expect(text.contains("[选中文本关键词]"))
         #expect(!text.contains("com.microsoft.VSCode"))
+        #expect(!text.contains("WebSocket"))
+        #expect(!result.includedSources.contains(.screenOCR))
         #expect(result.truncated)
         for token in text.components(separatedBy: CharacterSet(charactersIn: " ,"))
             where token.hasPrefix("SelectedFeature")
@@ -190,12 +191,12 @@ struct RecognitionContextTests {
         #expect(data.map { $0["text"] ?? "" } == [
             "用户当前选中文本关键词：RecognitionContext",
             "当前应用：Visual Studio Code；窗口：VoiceInk — Context.swift",
-            "当前窗口OCR关键词：WebSocket",
             "当前剪贴板关键词：DoubaoStreamingProvider",
             "业务场景：VoiceInk code development",
         ])
         #expect(result.itemCount <= 8)
         #expect(result.estimatedTokens <= 600)
+        #expect(!result.includedSources.contains(.screenOCR))
 
         let summary = RecognitionContextLogSummary.make(
             provider: .doubaoSpeech,
@@ -207,6 +208,26 @@ struct RecognitionContextTests {
         #expect(summary.contains("hotwordCount=13"))
         #expect(!summary.contains("RecognitionContext"))
         #expect(!summary.contains("DoubaoStreamingProvider"))
+    }
+
+    @Test func speechSerializersIgnoreScreenOCRFeatures() {
+        let envelope = RecognitionContextEnvelope(
+            capturedAt: Date(),
+            applicationName: nil,
+            windowTitle: nil,
+            configuredScenario: nil,
+            features: [
+                ContextFeature(value: "PrivateScreenTerm", sources: [.screenOCR], priority: 100)
+            ]
+        )
+
+        let qwen = QwenRecognitionContextSerializer.serialize(envelope)
+        #expect(qwen.value == nil)
+        #expect(!qwen.includedSources.contains(.screenOCR))
+
+        let doubao = DoubaoRecognitionContextSerializer.serialize(envelope)
+        #expect(doubao.value == nil)
+        #expect(!doubao.includedSources.contains(.screenOCR))
     }
 
     @MainActor

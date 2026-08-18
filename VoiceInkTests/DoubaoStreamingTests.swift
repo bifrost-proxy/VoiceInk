@@ -230,7 +230,7 @@ struct DoubaoStreamingTests {
         #expect(!CloudConfigurationSyncService.isEligiblePreferenceKey(DoubaoSpeechSettings.Keys.useClipboardContext))
         #expect(!CloudConfigurationSyncService.isEligiblePreferenceKey(DoubaoSpeechSettings.Keys.useApplicationContext))
         #expect(!CloudConfigurationSyncService.isEligiblePreferenceKey(DoubaoSpeechSettings.Keys.useWindowTitleContext))
-        #expect(!CloudConfigurationSyncService.isEligiblePreferenceKey(DoubaoSpeechSettings.Keys.useScreenContext))
+        #expect(!CloudConfigurationSyncService.isEligiblePreferenceKey(DoubaoSpeechSettings.Keys.legacyUseScreenContext))
         #expect(!CloudConfigurationSyncService.isEligiblePreferenceKey(DoubaoSpeechSettings.Keys.keepConnectionReady))
     }
 
