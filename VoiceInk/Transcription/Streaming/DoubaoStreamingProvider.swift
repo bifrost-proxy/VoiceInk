@@ -348,6 +348,7 @@ final class DoubaoStreamingProvider: StreamingTranscriptionProvider {
 }
 
 actor DoubaoWebSocketSession {
+    private static let maxEarlyRecoveryAudioBytes = 2 * 1_024 * 1_024
     private static let logger = Logger(
         subsystem: "com.prakashjoshipax.voiceink",
         category: "DoubaoWebSocketSession"
@@ -375,6 +376,16 @@ actor DoubaoWebSocketSession {
     private var finalResultTimedOut = false
     private var audioPacketizer = DoubaoAudioPacketizer()
     private var preconnectionTarget: CloudSpeechConnectionTarget?
+    private var sessionGeneration = UUID()
+    private var earlyRecoveryTarget: CloudSpeechConnectionTarget?
+    private var earlyRecoveryInitialRequest: Data?
+    private var earlyRecoveryAudio = Data()
+    private var earlyRecoveryIsEligible = false
+    private var earlyRecoveryWasAttempted = false
+    private var earlyRecoveryBufferOverflowed = false
+    private var earlyRecoveryCommitRequested = false
+    private var isRecoveringEarly = false
+    private var earlyRecoveryWaiters: [CheckedContinuation<Bool, Never>] = []
 
     init(
         eventsContinuation: AsyncStream<StreamingTranscriptionEvent>.Continuation?,
@@ -456,6 +467,8 @@ actor DoubaoWebSocketSession {
     ) async throws {
         guard connection == nil else { return }
         audioPacketizer.reset()
+        resetEarlyRecoveryState()
+        sessionGeneration = UUID()
 
         let target = CloudSpeechConnectionTarget.doubao(
             apiKey: apiKey,
@@ -504,10 +517,12 @@ actor DoubaoWebSocketSession {
                 settings: settings,
                 recognitionContext: recognitionContext
             )
+            var shouldArmEarlyRecovery = standbyConnection != nil
             connectionStage = "sendInitialRequest"
             do {
                 try await connection.send(.data(initialRequest))
             } catch let preconnectedError where standbyConnection != nil {
+                shouldArmEarlyRecovery = false
                 Self.logger.warning(
                     "Doubao preconnected socket rejected initial request; retrying source=fresh error=\(preconnectedError.localizedDescription, privacy: .public) \(target.key.diagnosticLabel, privacy: .public)"
                 )
@@ -530,6 +545,11 @@ actor DoubaoWebSocketSession {
                 Self.logger.notice(
                     "Doubao fresh retry initial request accepted \(target.key.diagnosticLabel, privacy: .public)"
                 )
+            }
+            if shouldArmEarlyRecovery {
+                earlyRecoveryTarget = target
+                earlyRecoveryInitialRequest = initialRequest
+                earlyRecoveryIsEligible = true
             }
             Self.logger.notice(
                 "Doubao connection ready source=\(connectionSource, privacy: .public) elapsed=\(Date().timeIntervalSince(connectStartedAt), format: .fixed(precision: 3), privacy: .public)s \(target.key.diagnosticLabel, privacy: .public)"
@@ -554,26 +574,64 @@ actor DoubaoWebSocketSession {
     }
 
     func sendAudioChunk(_ data: Data) async throws {
-        guard let connection else { throw StreamingTranscriptionError.notConnected }
-        for packet in audioPacketizer.append(data) {
-            try await connection.send(.data(DoubaoStreamingProtocol.makeAudioRequest(packet, isFinal: false)))
+        if isRecoveringEarly {
+            bufferAudioForEarlyRecovery(data)
+            return
+        }
+        if earlyRecoveryIsEligible {
+            bufferAudioForEarlyRecovery(data)
+        }
+
+        guard let sendingConnection = connection else { throw StreamingTranscriptionError.notConnected }
+        do {
+            for packet in audioPacketizer.append(data) {
+                try await sendingConnection.send(
+                    .data(DoubaoStreamingProtocol.makeAudioRequest(packet, isFinal: false))
+                )
+            }
+        } catch {
+            if await recoverEarlyIfNeeded(after: error, failedConnection: sendingConnection) {
+                return
+            }
+            throw error
         }
     }
 
     func commit() async throws {
-        guard let connection else { throw StreamingTranscriptionError.notConnected }
-        if let remainder = audioPacketizer.flush() {
-            try await connection.send(.data(DoubaoStreamingProtocol.makeAudioRequest(remainder, isFinal: false)))
+        if isRecoveringEarly {
+            earlyRecoveryCommitRequested = true
+            return
         }
-        try await connection.send(.data(DoubaoStreamingProtocol.makeAudioRequest(Data(), isFinal: true)))
+        if earlyRecoveryIsEligible {
+            earlyRecoveryCommitRequested = true
+        }
+
+        guard let sendingConnection = connection else { throw StreamingTranscriptionError.notConnected }
+        do {
+            if let remainder = audioPacketizer.flush() {
+                try await sendingConnection.send(
+                    .data(DoubaoStreamingProtocol.makeAudioRequest(remainder, isFinal: false))
+                )
+            }
+            try await sendingConnection.send(
+                .data(DoubaoStreamingProtocol.makeAudioRequest(Data(), isFinal: true))
+            )
+        } catch {
+            if await recoverEarlyIfNeeded(after: error, failedConnection: sendingConnection) {
+                return
+            }
+            throw error
+        }
     }
 
     func disconnect() async {
         let completedTarget = preconnectionTarget
         preconnectionTarget = nil
+        sessionGeneration = UUID()
         receiveTask?.cancel()
         receiveTask = nil
         closeSocket()
+        resetEarlyRecoveryState()
         if let completedTarget {
             await connectionPool.recordUseCompleted(for: completedTarget)
         }
@@ -638,11 +696,25 @@ actor DoubaoWebSocketSession {
     }
 
     private func receiveLoop() async {
-        guard let connection else { return }
+        while !Task.isCancelled {
+            guard let receivingConnection = connection else { return }
+            let message: URLSessionWebSocketTask.Message
+            do {
+                message = try await receivingConnection.receive()
+            } catch {
+                if Task.isCancelled { return }
+                if await recoverEarlyIfNeeded(after: error, failedConnection: receivingConnection) {
+                    continue
+                }
+                eventsContinuation?.yield(.error(error))
+                return
+            }
 
-        do {
-            while !Task.isCancelled {
-                let message = try await connection.receive()
+            // Any server frame proves that the leased socket survived request
+            // startup. Protocol and service errors must remain terminal rather
+            // than being retried as stale-transport failures.
+            markServerResponseReceived()
+            do {
                 guard let response = try DoubaoStreamingProtocol.parseServerMessage(message) else { continue }
                 if response.isFinal {
                     eventsContinuation?.yield(.committed(text: response.text))
@@ -653,12 +725,153 @@ actor DoubaoWebSocketSession {
                 } else if !response.text.isEmpty {
                     eventsContinuation?.yield(.snapshot(text: response.text, stableText: response.stableText))
                 }
-            }
-        } catch {
-            if !Task.isCancelled {
+            } catch {
                 eventsContinuation?.yield(.error(error))
+                return
             }
         }
+    }
+
+    private func recoverEarlyIfNeeded(
+        after error: Error,
+        failedConnection: any CloudSpeechWebSocketConnection
+    ) async -> Bool {
+        if let currentConnection = connection, currentConnection !== failedConnection {
+            return true
+        }
+        if isRecoveringEarly {
+            return await withCheckedContinuation { continuation in
+                earlyRecoveryWaiters.append(continuation)
+            }
+        }
+        guard earlyRecoveryIsEligible, !earlyRecoveryWasAttempted,
+            let target = earlyRecoveryTarget,
+            let initialRequest = earlyRecoveryInitialRequest
+        else {
+            return false
+        }
+
+        earlyRecoveryWasAttempted = true
+        earlyRecoveryIsEligible = false
+        isRecoveringEarly = true
+        let generation = sessionGeneration
+        let recoveryStartedAt = Date()
+        connection = nil
+        failedConnection.close()
+        Self.logger.warning(
+            "Doubao preconnected socket failed before first server response; recovering immediately source=fresh error=\(error.localizedDescription, privacy: .public) bufferedBytes=\(self.earlyRecoveryAudio.count, privacy: .public) \(target.key.diagnosticLabel, privacy: .public)"
+        )
+
+        var freshConnection: (any CloudSpeechWebSocketConnection)?
+        do {
+            freshConnection = try await connector.open(target: target, onClosed: nil)
+            guard sessionGeneration == generation, !Task.isCancelled, let freshConnection else {
+                throw CancellationError()
+            }
+            connection = freshConnection
+            try await freshConnection.send(.data(initialRequest))
+            guard !earlyRecoveryBufferOverflowed else {
+                throw StreamingTranscriptionError.connectionFailed(
+                    "Doubao early-recovery audio buffer exceeded \(Self.maxEarlyRecoveryAudioBytes) bytes"
+                )
+            }
+
+            audioPacketizer.reset()
+            while !earlyRecoveryAudio.isEmpty {
+                let audio = earlyRecoveryAudio
+                earlyRecoveryAudio.removeAll(keepingCapacity: true)
+                for packet in audioPacketizer.append(audio) {
+                    try await freshConnection.send(
+                        .data(DoubaoStreamingProtocol.makeAudioRequest(packet, isFinal: false))
+                    )
+                }
+                guard sessionGeneration == generation, !Task.isCancelled else {
+                    throw CancellationError()
+                }
+                guard !earlyRecoveryBufferOverflowed else {
+                    throw StreamingTranscriptionError.connectionFailed(
+                        "Doubao early-recovery audio buffer exceeded \(Self.maxEarlyRecoveryAudioBytes) bytes"
+                    )
+                }
+            }
+            if earlyRecoveryCommitRequested {
+                if let remainder = audioPacketizer.flush() {
+                    try await freshConnection.send(
+                        .data(DoubaoStreamingProtocol.makeAudioRequest(remainder, isFinal: false))
+                    )
+                }
+                try await freshConnection.send(
+                    .data(DoubaoStreamingProtocol.makeAudioRequest(Data(), isFinal: true))
+                )
+            }
+
+            earlyRecoveryAudio.removeAll(keepingCapacity: false)
+            earlyRecoveryInitialRequest = nil
+            earlyRecoveryTarget = nil
+            earlyRecoveryCommitRequested = false
+            finishEarlyRecovery(succeeded: true)
+            Self.logger.notice(
+                "Doubao early recovery completed elapsed=\(Date().timeIntervalSince(recoveryStartedAt), format: .fixed(precision: 3), privacy: .public)s \(target.key.diagnosticLabel, privacy: .public)"
+            )
+            return true
+        } catch {
+            freshConnection?.close()
+            if let currentConnection = connection, let freshConnection,
+                currentConnection === freshConnection
+            {
+                connection = nil
+            }
+            earlyRecoveryAudio.removeAll(keepingCapacity: false)
+            finishEarlyRecovery(succeeded: false)
+            if !(error is CancellationError) {
+                Self.logger.error(
+                    "Doubao early recovery failed elapsed=\(Date().timeIntervalSince(recoveryStartedAt), format: .fixed(precision: 3), privacy: .public)s error=\(error.localizedDescription, privacy: .public) \(target.key.diagnosticLabel, privacy: .public)"
+                )
+            }
+            return false
+        }
+    }
+
+    private func bufferAudioForEarlyRecovery(_ data: Data) {
+        guard !earlyRecoveryBufferOverflowed else { return }
+        guard data.count <= Self.maxEarlyRecoveryAudioBytes - earlyRecoveryAudio.count else {
+            earlyRecoveryBufferOverflowed = true
+            earlyRecoveryAudio.removeAll(keepingCapacity: false)
+            Self.logger.error(
+                "Doubao early-recovery audio buffer limit reached maxBytes=\(Self.maxEarlyRecoveryAudioBytes, privacy: .public)"
+            )
+            return
+        }
+        earlyRecoveryAudio.append(data)
+    }
+
+    private func markServerResponseReceived() {
+        guard earlyRecoveryIsEligible else { return }
+        earlyRecoveryIsEligible = false
+        earlyRecoveryAudio.removeAll(keepingCapacity: false)
+        earlyRecoveryInitialRequest = nil
+        earlyRecoveryTarget = nil
+        earlyRecoveryCommitRequested = false
+    }
+
+    private func finishEarlyRecovery(succeeded: Bool) {
+        isRecoveringEarly = false
+        let waiters = earlyRecoveryWaiters
+        earlyRecoveryWaiters.removeAll()
+        for waiter in waiters {
+            waiter.resume(returning: succeeded)
+        }
+    }
+
+    private func resetEarlyRecoveryState() {
+        finishEarlyRecovery(succeeded: false)
+        earlyRecoveryTarget = nil
+        earlyRecoveryInitialRequest = nil
+        earlyRecoveryAudio.removeAll(keepingCapacity: false)
+        earlyRecoveryIsEligible = false
+        earlyRecoveryWasAttempted = false
+        earlyRecoveryBufferOverflowed = false
+        earlyRecoveryCommitRequested = false
     }
 
     private func closeSocket() {
