@@ -251,7 +251,7 @@ enum UpdateInstaller {
         )
         let log = logDirectory.appendingPathComponent("update.log")
 
-        let script = installationHelperScript
+        let script = installationHelperScript()
 
         do {
             try Data(script.utf8).write(to: helper, options: [.atomic])
@@ -275,7 +275,9 @@ enum UpdateInstaller {
         )
     }
 
-    static var installationHelperScript: String {
+    static func installationHelperScript(
+        expectedArchitecture: ReleaseArchitecture = UpdateService.releaseArchitecture
+    ) -> String {
         """
             #!/bin/zsh
             set -u
@@ -287,6 +289,7 @@ enum UpdateInstaller {
             update_root="$6"
             log_file="$7"
             expected_version="$8"
+            expected_architecture="\(expectedArchitecture.rawValue)"
             exec >>"$log_file" 2>&1
 
             while /bin/kill -0 "$old_pid" 2>/dev/null; do
@@ -320,8 +323,7 @@ enum UpdateInstaller {
             installed_archs=$(/usr/bin/lipo -archs "$executable" 2>/dev/null || true)
             if [[ "$installed_bundle" != "com.prakashjoshipax.VoiceInk" \
                || "$installed_version" != "$expected_version" \
-               || " $installed_archs " != *" arm64 "* \
-               || " $installed_archs " != *" x86_64 "* ]] \
+               || "$installed_archs" != "$expected_architecture" ]] \
                || ! /usr/bin/codesign --verify --deep --strict "$current_app"; then
               restore_previous
               exit 1
