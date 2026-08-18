@@ -364,33 +364,65 @@ class StreamingTranscriptionService {
             prepareForStart()
         }
 
-        let provider = StreamingProviderTransport(
-            provider: createProvider(for: model, context: context)
-        )
-        self.provider = provider
-
         let selectedLanguage = context.language ?? "auto"
-        logger.notice(
-            "Streaming start requested model=\(model.displayName, privacy: .public) language=\(selectedLanguage, privacy: .public)"
-        )
+        let maximumAttempts = shouldImmediatelyRetryConnection(for: model) ? 2 : 1
 
-        try await provider.connect(model: model, language: selectedLanguage)
-        connectionDuration = Date().timeIntervalSince(start)
+        for attempt in 1...maximumAttempts {
+            let provider = StreamingProviderTransport(
+                provider: createProvider(for: model, context: context)
+            )
+            self.provider = provider
 
-        // If cancel() was called while we were awaiting the connection, tear down immediately.
-        if state == .cancelled {
-            await provider.disconnect()
-            self.provider = nil
+            logger.notice(
+                "Streaming start requested model=\(model.displayName, privacy: .public) language=\(selectedLanguage, privacy: .public) attempt=\(attempt, privacy: .public)/\(maximumAttempts, privacy: .public)"
+            )
+
+            do {
+                try await provider.connect(model: model, language: selectedLanguage)
+            } catch {
+                await provider.disconnect()
+                self.provider = nil
+
+                if state == .cancelled {
+                    throw CancellationError()
+                }
+                guard attempt < maximumAttempts else {
+                    throw error
+                }
+
+                logger.warning(
+                    "Streaming connection attempt failed; reconnecting immediately model=\(model.displayName, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
+                )
+                continue
+            }
+
+            connectionDuration = Date().timeIntervalSince(start)
+
+            // If cancel() was called while we were awaiting the connection, tear down immediately.
+            if state == .cancelled {
+                await provider.disconnect()
+                self.provider = nil
+                return
+            }
+
+            state = .streaming
+            startSendLoop()
+            await startEventConsumer()
+
+            logger.notice(
+                "Streaming connected model=\(model.displayName, privacy: .public) elapsed=\(Date().timeIntervalSince(start), format: .fixed(precision: 3), privacy: .public)s attempt=\(attempt, privacy: .public)"
+            )
             return
         }
+    }
 
-        state = .streaming
-        startSendLoop()
-        await startEventConsumer()
-
-        logger.notice(
-            "Streaming connected model=\(model.displayName, privacy: .public) elapsed=\(Date().timeIntervalSince(start), format: .fixed(precision: 3), privacy: .public)s"
-        )
+    private func shouldImmediatelyRetryConnection(for model: any TranscriptionModel) -> Bool {
+        switch model.provider {
+        case .aliyunQwen, .doubaoSpeech:
+            true
+        default:
+            false
+        }
     }
 
     /// Buffers an audio chunk for sending. Safe to call from the recorder processing queue.
