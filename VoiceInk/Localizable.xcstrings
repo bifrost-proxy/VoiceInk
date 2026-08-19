@@ -19696,6 +19696,16 @@
         }
       }
     },
+    "Last Remote Device" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "最近远端设备"
+          }
+        }
+      }
+    },
     "Model selections and definitions, prompts, modes, dictionary entries, shortcuts, and most preferences sync automatically through iCloud Drive. API keys, permissions, device selections, downloaded model files, history, audio, and usage statistics stay on this Mac." : {
       "localizations" : {
         "zh-Hans" : {

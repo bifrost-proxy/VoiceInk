@@ -99,6 +99,8 @@ final class CloudConfigurationSyncService: ObservableObject {
     @Published private(set) var lastSyncedAt: Date?
     @Published private(set) var configurationConflictCount = 0
     @Published private(set) var dictionaryConflictCount = 0
+    @Published private(set) var lastRemoteDeviceName: String?
+    var localDeviceName: String { syncCore.deviceName }
 
     var statusText: String { state.displayText }
     var errorText: String? {
@@ -111,18 +113,18 @@ final class CloudConfigurationSyncService: ObservableObject {
         syncCore.rootURL
     }
 
-    var isEnabled: Bool {
+    nonisolated var isEnabled: Bool {
         defaults.bool(forKey: CloudSyncSettingsKeys.configurationSyncEnabled)
     }
 
-    private static let metadataPrefix = "CloudConfigurationSyncV3."
-    private static let configurationMigrationCompletedKey = metadataPrefix + "configurationLegacyMigrationCompleted"
-    private static let dictionaryMigrationCompletedKey = metadataPrefix + "dictionaryLegacyMigrationCompleted"
-    private static let configurationBootstrapCompletedKey = metadataPrefix + "configurationBootstrapCompleted"
-    private static let dictionaryBootstrapCompletedKey = metadataPrefix + "dictionaryBootstrapCompleted"
-    private static let reconciliationInterval: TimeInterval = 5 * 60
+    nonisolated private static let metadataPrefix = "CloudConfigurationSyncV3."
+    nonisolated private static let configurationMigrationCompletedKey = metadataPrefix + "configurationLegacyMigrationCompleted"
+    nonisolated private static let dictionaryMigrationCompletedKey = metadataPrefix + "dictionaryLegacyMigrationCompleted"
+    nonisolated private static let configurationBootstrapCompletedKey = metadataPrefix + "configurationBootstrapCompleted"
+    nonisolated private static let dictionaryBootstrapCompletedKey = metadataPrefix + "dictionaryBootstrapCompleted"
+    nonisolated private static let reconciliationInterval: TimeInterval = 30 * 60
 
-    private static let structuredPreferenceKeys: Set<String> = [
+    nonisolated private static let structuredPreferenceKeys: Set<String> = [
         "modeConfigurationsV2",
         "customPrompts",
         "customCloudModels",
@@ -130,7 +132,7 @@ final class CloudConfigurationSyncService: ObservableObject {
     ]
 
     /// Portable settings are opt-in. Unknown UserDefaults keys stay local.
-    private static let portablePreferenceKeys: Set<String> = [
+    nonisolated private static let portablePreferenceKeys: Set<String> = [
         "AppendTrailingSpace",
         "AppAppearancePreference",
         "EnhancementRetryOnTimeout",
@@ -192,43 +194,65 @@ final class CloudConfigurationSyncService: ObservableObject {
         AliyunQwenSpeechSettings.Keys.vocabularyWeight,
     ]
 
-    private let defaults: UserDefaults
-    private let fileManager: FileManager
-    private let iCloudDriveRootOverride: URL?
-    private let preferencesDomainName: String?
-    private let syncCore: ICloudDriveSyncCore
+    nonisolated(unsafe) private let defaults: UserDefaults
+    nonisolated(unsafe) private let fileManager: FileManager
+    nonisolated private let iCloudDriveRootOverride: URL?
+    nonisolated private let preferencesDomainName: String?
+    nonisolated private let syncCore: ICloudDriveSyncCore
+    private let executionCoordinator: ICloudSyncExecutionCoordinator
     private let logger = Logger(
         subsystem: "com.prakashjoshipax.voiceink", category: "CloudConfigurationSyncV3")
 
-    private var modelContext: ModelContext?
-    private var lastKnownConfiguration: [String: Data] = [:]
-    private var lastKnownDictionary: [String: Data] = [:]
-    private var appliedConfigurationOperationIDs: [String: [UUID]] = [:]
-    private var appliedDictionaryOperationIDs: [String: [UUID]] = [:]
-    private var hasConfigurationBaseline = false
-    private var hasDictionaryBaseline = false
-    private var isApplyingRemoteState = false
-    private var pendingSyncTask: Task<Void, Never>?
+    private var modelContainer: ModelContainer?
+    // Accessed only by ICloudSyncExecutionCoordinator's serial utility queue.
+    nonisolated(unsafe) private var lastKnownConfiguration: [String: Data] = [:]
+    nonisolated(unsafe) private var lastKnownDictionary: [String: Data] = [:]
+    nonisolated(unsafe) private var appliedConfigurationOperationIDs: [String: [UUID]] = [:]
+    nonisolated(unsafe) private var appliedDictionaryOperationIDs: [String: [UUID]] = [:]
+    nonisolated(unsafe) private var hasConfigurationBaseline = false
+    nonisolated(unsafe) private var hasDictionaryBaseline = false
+    nonisolated(unsafe) private var workerConfigurationConflictCount = 0
+    nonisolated(unsafe) private var workerDictionaryConflictCount = 0
+    private var syncTask: Task<Void, Never>?
+    private var debounceTask: Task<Void, Never>?
+    private var localChangeCheckTask: Task<Void, Never>?
+    private var retryTask: Task<Void, Never>?
+    private var syncIsRunning = false
+    private var syncRequestedWhileRunning = false
+    private var consecutiveFailureCount = 0
+    private var syncGeneration = 0
     private var timer: Timer?
     private var metadataQuery: NSMetadataQuery?
     private var metadataQueryObservers: [NSObjectProtocol] = []
     private var observers: [NSObjectProtocol] = []
     private var onRemoteConfigurationApplied: (() -> Void)?
 
+    private struct SyncOutcome: Sendable {
+        let configurationConflictCount: Int
+        let dictionaryConflictCount: Int
+        let didApplyRemoteConfiguration: Bool
+        let didApplyRemoteDictionary: Bool
+        let latestRemoteDeviceName: String?
+    }
+
     init(
         defaults: UserDefaults = .standard,
         fileManager: FileManager = .default,
         iCloudDriveRootURL: URL? = nil,
-        preferencesDomainName: String? = Bundle.main.bundleIdentifier
+        preferencesDomainName: String? = Bundle.main.bundleIdentifier,
+        deviceName: String? = nil,
+        executionCoordinator: ICloudSyncExecutionCoordinator = .shared
     ) {
         self.defaults = defaults
         self.fileManager = fileManager
         self.iCloudDriveRootOverride = iCloudDriveRootURL
         self.preferencesDomainName = preferencesDomainName
+        self.executionCoordinator = executionCoordinator
         self.syncCore = ICloudDriveSyncCore(
             defaults: defaults,
             fileManager: fileManager,
-            iCloudDriveRootURL: iCloudDriveRootURL
+            iCloudDriveRootURL: iCloudDriveRootURL,
+            deviceName: deviceName
         )
     }
 
@@ -237,7 +261,7 @@ final class CloudConfigurationSyncService: ObservableObject {
             state = .disabled
             return
         }
-        synchronize(applyDictionary: false, recordLocalChanges: false)
+        requestSync(applyDictionary: false, recordLocalChanges: false)
     }
 
     func start(modelContext: ModelContext, onRemoteConfigurationApplied: @escaping () -> Void) {
@@ -245,12 +269,12 @@ final class CloudConfigurationSyncService: ObservableObject {
             state = .disabled
             return
         }
-        self.modelContext = modelContext
+        self.modelContainer = modelContext.container
         self.onRemoteConfigurationApplied = onRemoteConfigurationApplied
         installObserversIfNeeded()
         if isEnabled {
             startMonitoring()
-            synchronize(applyDictionary: true, recordLocalChanges: true)
+            requestSync(applyDictionary: true, recordLocalChanges: true)
         } else {
             state = .disabled
         }
@@ -258,22 +282,30 @@ final class CloudConfigurationSyncService: ObservableObject {
 
     func syncNow() {
         guard isEnabled else { return }
-        pendingSyncTask?.cancel()
-        pendingSyncTask = nil
-        synchronize(applyDictionary: modelContext != nil, recordLocalChanges: true)
+        debounceTask?.cancel()
+        debounceTask = nil
+        localChangeCheckTask?.cancel()
+        localChangeCheckTask = nil
+        retryTask?.cancel()
+        retryTask = nil
+        requestSync(applyDictionary: modelContainer != nil, recordLocalChanges: true)
     }
 
     func setEnabled(_ enabled: Bool) {
         defaults.set(enabled, forKey: CloudSyncSettingsKeys.configurationSyncEnabled)
-        pendingSyncTask?.cancel()
-        pendingSyncTask = nil
+        syncGeneration += 1
+        debounceTask?.cancel()
+        debounceTask = nil
+        retryTask?.cancel()
+        retryTask = nil
         guard enabled else {
             stopMonitoring()
             state = .disabled
             return
         }
         startMonitoring()
-        synchronize(applyDictionary: modelContext != nil, recordLocalChanges: true)
+        consecutiveFailureCount = 0
+        requestSync(applyDictionary: modelContainer != nil, recordLocalChanges: true)
     }
 
     func portableContentDidChange() {
@@ -285,7 +317,7 @@ final class CloudConfigurationSyncService: ObservableObject {
         NSWorkspace.shared.activateFileViewerSelecting([configurationFileURL])
     }
 
-    static func isEligiblePreferenceKey(_ key: String) -> Bool {
+    nonisolated static func isEligiblePreferenceKey(_ key: String) -> Bool {
         portablePreferenceKeys.contains(key)
             || structuredPreferenceKeys.contains(key)
             || (key.hasPrefix("Shortcut_")
@@ -298,60 +330,197 @@ final class CloudConfigurationSyncService: ObservableObject {
         current != lastKnown && current != pending
     }
 
-    private func synchronize(applyDictionary: Bool, recordLocalChanges: Bool) {
-        guard isEnabled else {
-            state = .disabled
+    private func requestSync(applyDictionary: Bool, recordLocalChanges: Bool) {
+        guard retryTask == nil else {
+            syncRequestedWhileRunning = true
             return
         }
-        guard syncCore.rootURL != nil else {
-            state = .waitingForICloud
+        guard !syncIsRunning else {
+            syncRequestedWhileRunning = true
             return
         }
-
+        guard !AudioDeviceManager.shared.isRecordingActive else {
+            scheduleRetry(after: 5, applyDictionary: applyDictionary, recordLocalChanges: recordLocalChanges)
+            return
+        }
+        syncIsRunning = true
         state = .syncing
-        do {
-            try migrateLegacyConfigurationIfNeeded()
-            if applyDictionary { try migrateLegacyDictionaryIfNeeded() }
-            try bootstrapConfigurationIfNeeded()
-            if applyDictionary { try bootstrapDictionaryIfNeeded() }
-            if !hasConfigurationBaseline { try reconcileConfiguration() }
-            if applyDictionary, !hasDictionaryBaseline { try reconcileDictionary() }
-            if recordLocalChanges {
-                try appendLocalConfigurationChanges()
-                if applyDictionary { try appendLocalDictionaryChanges() }
+        let modelContainer = self.modelContainer
+        let executionCoordinator = self.executionCoordinator
+        let generation = syncGeneration
+        syncTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let outcome = try await executionCoordinator.run { [self] in
+                    let context = modelContainer.map(ModelContext.init)
+                    return try self.synchronize(
+                        modelContext: context,
+                        applyDictionary: applyDictionary,
+                        recordLocalChanges: recordLocalChanges
+                    )
+                }
+                if generation == self.syncGeneration, self.isEnabled {
+                    self.configurationConflictCount = outcome.configurationConflictCount
+                    self.dictionaryConflictCount = outcome.dictionaryConflictCount
+                    self.lastSyncedAt = Date()
+                    self.state = .synced
+                    self.consecutiveFailureCount = 0
+                    if let deviceName = outcome.latestRemoteDeviceName {
+                        self.lastRemoteDeviceName = deviceName
+                    }
+                    if outcome.didApplyRemoteConfiguration {
+                        self.onRemoteConfigurationApplied?()
+                        NotificationCenter.default.post(name: .AppSettingsDidChange, object: nil)
+                    }
+                    if outcome.didApplyRemoteConfiguration || outcome.didApplyRemoteDictionary {
+                        NotificationCenter.default.post(name: .cloudConfigurationDidChange, object: nil)
+                    }
+                }
+            } catch is CancellationError {
+                if generation == self.syncGeneration, self.isEnabled {
+                    self.scheduleRetry(
+                        after: 5,
+                        applyDictionary: applyDictionary,
+                        recordLocalChanges: recordLocalChanges
+                    )
+                }
+            } catch {
+                if generation == self.syncGeneration, self.isEnabled {
+                    self.consecutiveFailureCount += 1
+                    self.state = .failed(error.localizedDescription)
+                    self.logger.error("Sync failed: \(error.localizedDescription, privacy: .public)")
+                    self.scheduleRetry(
+                        after: ICloudSyncRetryPolicy.delay(afterFailureCount: self.consecutiveFailureCount),
+                        applyDictionary: applyDictionary,
+                        recordLocalChanges: recordLocalChanges
+                    )
+                }
             }
-            try reconcileConfiguration()
-            if applyDictionary { try reconcileDictionary() }
-            lastSyncedAt = Date()
-            state = .synced
-        } catch {
-            state = .failed(error.localizedDescription)
-            logger.error("Sync failed: \(error.localizedDescription, privacy: .public)")
+            self.syncTask = nil
+            self.syncIsRunning = false
+            let runAgain = self.syncRequestedWhileRunning
+            self.syncRequestedWhileRunning = false
+            if runAgain, self.retryTask == nil {
+                self.requestSync(applyDictionary: applyDictionary, recordLocalChanges: recordLocalChanges)
+            }
         }
     }
 
-    private func reconcileConfiguration() throws {
+    var isSyncRunningForTesting: Bool { syncIsRunning }
+
+    private func scheduleRetry(
+        after delay: TimeInterval,
+        applyDictionary: Bool,
+        recordLocalChanges: Bool
+    ) {
+        guard retryTask == nil, isEnabled else { return }
+        retryTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard let self, !Task.isCancelled else { return }
+            self.retryTask = nil
+            self.requestSync(applyDictionary: applyDictionary, recordLocalChanges: recordLocalChanges)
+        }
+    }
+
+    private nonisolated func synchronize(
+        modelContext: ModelContext?,
+        applyDictionary: Bool,
+        recordLocalChanges: Bool
+    ) throws -> SyncOutcome {
+        dispatchPrecondition(condition: .notOnQueue(.main))
+        guard isEnabled else {
+            return SyncOutcome(
+                configurationConflictCount: 0, dictionaryConflictCount: 0,
+                didApplyRemoteConfiguration: false, didApplyRemoteDictionary: false,
+                latestRemoteDeviceName: nil
+            )
+        }
+        guard syncCore.rootURL != nil else { throw CocoaError(.fileNoSuchFile) }
+
+        try migrateLegacyConfigurationIfNeeded()
+        if applyDictionary { try migrateLegacyDictionaryIfNeeded() }
+        try bootstrapConfigurationIfNeeded()
+        if applyDictionary { try bootstrapDictionaryIfNeeded(modelContext: modelContext) }
+        var didApplyConfiguration = false
+        var didApplyDictionary = false
+        var latestRemoteEnvelope: VoiceInkSyncEnvelope?
+        if !hasConfigurationBaseline {
+            let result = try reconcileConfiguration()
+            didApplyConfiguration = result.didApplyRemote
+            latestRemoteEnvelope = Self.latestEnvelope(latestRemoteEnvelope, result.latestRemoteEnvelope)
+        }
+        if applyDictionary, !hasDictionaryBaseline {
+            let result = try reconcileDictionary(modelContext: modelContext)
+            didApplyDictionary = result.didApplyRemote
+            latestRemoteEnvelope = Self.latestEnvelope(latestRemoteEnvelope, result.latestRemoteEnvelope)
+        }
+        if recordLocalChanges {
+            try appendLocalConfigurationChanges()
+            if applyDictionary { try appendLocalDictionaryChanges(modelContext: modelContext) }
+        }
+        let configurationResult = try reconcileConfiguration()
+        didApplyConfiguration = didApplyConfiguration || configurationResult.didApplyRemote
+        latestRemoteEnvelope = Self.latestEnvelope(
+            latestRemoteEnvelope, configurationResult.latestRemoteEnvelope)
+        if applyDictionary {
+            let dictionaryResult = try reconcileDictionary(modelContext: modelContext)
+            didApplyDictionary = didApplyDictionary || dictionaryResult.didApplyRemote
+            latestRemoteEnvelope = Self.latestEnvelope(
+                latestRemoteEnvelope, dictionaryResult.latestRemoteEnvelope)
+        }
+        return SyncOutcome(
+            configurationConflictCount: workerConfigurationConflictCount,
+            dictionaryConflictCount: workerDictionaryConflictCount,
+            didApplyRemoteConfiguration: didApplyConfiguration,
+            didApplyRemoteDictionary: didApplyDictionary,
+            latestRemoteDeviceName: latestRemoteEnvelope?.authorDisplayName
+        )
+    }
+
+    private nonisolated func reconcileConfiguration() throws -> (
+        didApplyRemote: Bool, latestRemoteEnvelope: VoiceInkSyncEnvelope?
+    ) {
+        let knownOperationIDs = Set(appliedConfigurationOperationIDs.values.flatMap { $0 })
         let register = try loadRegister(for: .configuration)
-        configurationConflictCount = register.conflictCount
+        workerConfigurationConflictCount = register.conflictCount
         let materialized = register.selectedValues()
-        applyConfiguration(materialized)
+        let localBefore = makeLocalConfiguration()
+        let hasRemoteDifference = hasRemoteMaterializedDifference(
+            local: localBefore, register: register)
+        let didApply = applyConfiguration(materialized)
         lastKnownConfiguration = makeLocalConfiguration()
         appliedConfigurationOperationIDs = activeOperationIDs(in: register)
         hasConfigurationBaseline = true
+        return (
+            didApply && hasRemoteDifference,
+            register.latestRemoteEnvelope(
+                excludingDeviceID: syncCore.deviceID, knownOperationIDs: knownOperationIDs)
+        )
     }
 
-    private func reconcileDictionary() throws {
-        guard let modelContext else { return }
+    private nonisolated func reconcileDictionary(
+        modelContext: ModelContext?
+    ) throws -> (didApplyRemote: Bool, latestRemoteEnvelope: VoiceInkSyncEnvelope?) {
+        guard let modelContext else { return (false, nil) }
+        let knownOperationIDs = Set(appliedDictionaryOperationIDs.values.flatMap { $0 })
         let register = try loadRegister(for: .dictionary)
-        dictionaryConflictCount = register.conflictCount
+        workerDictionaryConflictCount = register.conflictCount
         let materialized = register.selectedValues(addWins: true)
-        try applyDictionary(materialized, context: modelContext)
-        lastKnownDictionary = makeLocalDictionary()
+        let localBefore = makeLocalDictionary(modelContext: modelContext)
+        let hasRemoteDifference = hasRemoteMaterializedDifference(
+            local: localBefore, register: register, addWins: true)
+        let didApply = try applyDictionary(materialized, context: modelContext)
+        lastKnownDictionary = makeLocalDictionary(modelContext: modelContext)
         appliedDictionaryOperationIDs = activeOperationIDs(in: register)
         hasDictionaryBaseline = true
+        return (
+            didApply && hasRemoteDifference,
+            register.latestRemoteEnvelope(
+                excludingDeviceID: syncCore.deviceID, knownOperationIDs: knownOperationIDs)
+        )
     }
 
-    private func appendLocalConfigurationChanges() throws {
+    private nonisolated func appendLocalConfigurationChanges() throws {
         let current = makeLocalConfiguration()
         let mutations = mutations(
             current: current,
@@ -363,8 +532,8 @@ final class CloudConfigurationSyncService: ObservableObject {
         lastKnownConfiguration = current
     }
 
-    private func appendLocalDictionaryChanges() throws {
-        let current = makeLocalDictionary()
+    private nonisolated func appendLocalDictionaryChanges(modelContext: ModelContext?) throws {
+        let current = makeLocalDictionary(modelContext: modelContext)
         let mutations = mutations(
             current: current,
             previous: lastKnownDictionary,
@@ -375,7 +544,7 @@ final class CloudConfigurationSyncService: ObservableObject {
         lastKnownDictionary = current
     }
 
-    private func mutations(
+    private nonisolated func mutations(
         current: [String: Data],
         previous: [String: Data],
         appliedOperationIDs: [String: [UUID]]
@@ -390,7 +559,7 @@ final class CloudConfigurationSyncService: ObservableObject {
         }
     }
 
-    private func loadRegister(for domain: VoiceInkSyncDomain) throws -> VoiceInkSyncRegisterState {
+    private nonisolated func loadRegister(for domain: VoiceInkSyncDomain) throws -> VoiceInkSyncRegisterState {
         var register = VoiceInkSyncRegisterState()
         for envelope in try syncCore.readAll(in: domain) {
             register.apply(envelope, batch: try syncCore.decodeBatch(from: envelope))
@@ -398,7 +567,31 @@ final class CloudConfigurationSyncService: ObservableObject {
         return register
     }
 
-    private func activeOperationIDs(
+    private nonisolated func hasRemoteMaterializedDifference(
+        local: [String: Data],
+        register: VoiceInkSyncRegisterState,
+        addWins: Bool = false
+    ) -> Bool {
+        let keys = Set(local.keys).union(register.candidatesByKey.keys)
+        for key in keys {
+            let selected = register.selectedCandidate(for: key, addWins: addWins)
+            guard local[key] != selected?.mutation.value else { continue }
+            if let selected, selected.envelope.authorDeviceID != syncCore.deviceID { return true }
+        }
+        return false
+    }
+
+    private nonisolated static func latestEnvelope(
+        _ lhs: VoiceInkSyncEnvelope?,
+        _ rhs: VoiceInkSyncEnvelope?
+    ) -> VoiceInkSyncEnvelope? {
+        guard let lhs else { return rhs }
+        guard let rhs else { return lhs }
+        if lhs.createdAt != rhs.createdAt { return lhs.createdAt > rhs.createdAt ? lhs : rhs }
+        return lhs.operationID.uuidString > rhs.operationID.uuidString ? lhs : rhs
+    }
+
+    private nonisolated func activeOperationIDs(
         in register: VoiceInkSyncRegisterState
     ) -> [String: [UUID]] {
         register.candidatesByKey.reduce(into: [:]) { result, element in
@@ -406,7 +599,7 @@ final class CloudConfigurationSyncService: ObservableObject {
         }
     }
 
-    private func makeLocalConfiguration() -> [String: Data] {
+    private nonisolated func makeLocalConfiguration() -> [String: Data] {
         guard let domainName = preferencesDomainName,
             let domain = defaults.persistentDomain(forName: domainName)
         else { return [:] }
@@ -422,33 +615,31 @@ final class CloudConfigurationSyncService: ObservableObject {
         return result
     }
 
-    private func addStructuredEntities(from domain: [String: Any], to result: inout [String: Data]) {
+    private nonisolated func addStructuredEntities(from domain: [String: Any], to result: inout [String: Data]) {
         if let data = domain["modeConfigurationsV2"] as? Data,
             let values = try? JSONDecoder().decode([ModeConfig].self, from: data)
         {
-            for value in values { result["entity/mode/\(value.id.uuidString)"] = try? JSONEncoder().encode(value) }
+            for value in values { result["entity/mode/\(value.id.uuidString)"] = try? Self.encodeCanonicalJSON(value) }
         }
         if let data = domain["customPrompts"] as? Data,
             let values = try? JSONDecoder().decode([CustomPrompt].self, from: data)
         {
-            for value in values { result["entity/prompt/\(value.id.uuidString)"] = try? JSONEncoder().encode(value) }
+            for value in values { result["entity/prompt/\(value.id.uuidString)"] = try? Self.encodeCanonicalJSON(value) }
         }
         if let data = domain["customCloudModels"] as? Data,
             let values = try? JSONDecoder().decode([CustomCloudModel].self, from: data)
         {
-            for value in values { result["entity/cloud-model/\(value.id.uuidString)"] = try? JSONEncoder().encode(value) }
+            for value in values { result["entity/cloud-model/\(value.id.uuidString)"] = try? Self.encodeCanonicalJSON(value) }
         }
         if let data = domain["customAIProviders"] as? Data,
             let values = try? JSONDecoder().decode([CustomAIProviderConfig].self, from: data)
         {
-            for value in values { result["entity/ai-provider/\(value.id.uuidString)"] = try? JSONEncoder().encode(value) }
+            for value in values { result["entity/ai-provider/\(value.id.uuidString)"] = try? Self.encodeCanonicalJSON(value) }
         }
     }
 
-    private func applyConfiguration(_ values: [String: Data]) {
-        isApplyingRemoteState = true
-        defer { isApplyingRemoteState = false }
-
+    private nonisolated func applyConfiguration(_ values: [String: Data]) -> Bool {
+        let before = makeLocalConfiguration()
         let remotePreferenceKeys = Set(values.keys.compactMap { key -> String? in
             guard key.hasPrefix("preference/") else { return nil }
             return String(key.dropFirst("preference/".count))
@@ -467,20 +658,19 @@ final class CloudConfigurationSyncService: ObservableObject {
         for (path, data) in values where path.hasPrefix("preference/") {
             let key = String(path.dropFirst("preference/".count))
             guard Self.isEligiblePreferenceKey(key), let value = Self.decodePreferenceValue(data) else { continue }
-            defaults.set(value, forKey: key)
+            if !Self.preferenceValuesEqual(defaults.object(forKey: key), value) {
+                defaults.set(value, forKey: key)
+            }
         }
 
         applyEntities(values, prefix: "entity/mode/", key: "modeConfigurationsV2", as: ModeConfig.self)
         applyEntities(values, prefix: "entity/prompt/", key: "customPrompts", as: CustomPrompt.self)
         applyEntities(values, prefix: "entity/cloud-model/", key: "customCloudModels", as: CustomCloudModel.self)
         applyEntities(values, prefix: "entity/ai-provider/", key: "customAIProviders", as: CustomAIProviderConfig.self)
-
-        onRemoteConfigurationApplied?()
-        NotificationCenter.default.post(name: .cloudConfigurationDidChange, object: nil)
-        NotificationCenter.default.post(name: .AppSettingsDidChange, object: nil)
+        return makeLocalConfiguration() != before
     }
 
-    private func applyEntities<T: Codable & Identifiable>(
+    private nonisolated func applyEntities<T: Codable & Identifiable>(
         _ values: [String: Data],
         prefix: String,
         key: String,
@@ -492,12 +682,12 @@ final class CloudConfigurationSyncService: ObservableObject {
             .compactMap { try? JSONDecoder().decode(type, from: $0.value) }
         if entities.isEmpty {
             defaults.removeObject(forKey: key)
-        } else if let data = try? JSONEncoder().encode(entities) {
+        } else if let data = try? Self.encodeCanonicalJSON(entities), defaults.data(forKey: key) != data {
             defaults.set(data, forKey: key)
         }
     }
 
-    private func makeLocalDictionary() -> [String: Data] {
+    private nonisolated func makeLocalDictionary(modelContext: ModelContext?) -> [String: Data] {
         guard let modelContext else { return [:] }
         var result: [String: Data] = [:]
         if let words = try? modelContext.fetch(FetchDescriptor<VocabularyWord>()) {
@@ -532,7 +722,8 @@ final class CloudConfigurationSyncService: ObservableObject {
         return result
     }
 
-    private func applyDictionary(_ values: [String: Data], context: ModelContext) throws {
+    private nonisolated func applyDictionary(_ values: [String: Data], context: ModelContext) throws -> Bool {
+        let before = makeLocalDictionary(modelContext: context)
         let remoteVocabulary = values
             .filter { $0.key.hasPrefix("vocabulary/") }
             .compactMap { try? PropertyListDecoder().decode(VocabularyItem.self, from: $0.value) }
@@ -586,10 +777,11 @@ final class CloudConfigurationSyncService: ObservableObject {
             }
         }
         try context.save()
-        DictionaryService.removeExactDuplicateContent(context: context, source: "iCloud Drive Sync v3")
+        _ = DictionaryService.removeExactDuplicateContent(context: context, source: "iCloud Drive Sync v3")
+        return makeLocalDictionary(modelContext: context) != before
     }
 
-    private func migrateLegacyConfigurationIfNeeded() throws {
+    private nonisolated func migrateLegacyConfigurationIfNeeded() throws {
         guard !defaults.bool(forKey: Self.configurationMigrationCompletedKey) else { return }
         let snapshots = try legacySnapshots()
         guard !snapshots.isEmpty else {
@@ -612,7 +804,7 @@ final class CloudConfigurationSyncService: ObservableObject {
         defaults.set(true, forKey: Self.configurationMigrationCompletedKey)
     }
 
-    private func migrateLegacyDictionaryIfNeeded() throws {
+    private nonisolated func migrateLegacyDictionaryIfNeeded() throws {
         guard !defaults.bool(forKey: Self.dictionaryMigrationCompletedKey) else { return }
         let snapshots = try legacySnapshots()
         guard !snapshots.isEmpty else {
@@ -651,7 +843,7 @@ final class CloudConfigurationSyncService: ObservableObject {
         defaults.set(true, forKey: Self.dictionaryMigrationCompletedKey)
     }
 
-    private func bootstrapConfigurationIfNeeded() throws {
+    private nonisolated func bootstrapConfigurationIfNeeded() throws {
         guard !defaults.bool(forKey: Self.configurationBootstrapCompletedKey) else { return }
         let remote = try syncCore.readAll(in: .configuration, mergeIntoLocalFrontier: false)
         let current = makeLocalConfiguration()
@@ -662,17 +854,17 @@ final class CloudConfigurationSyncService: ObservableObject {
         defaults.set(true, forKey: Self.configurationBootstrapCompletedKey)
     }
 
-    private func bootstrapDictionaryIfNeeded() throws {
+    private nonisolated func bootstrapDictionaryIfNeeded(modelContext: ModelContext?) throws {
         guard !defaults.bool(forKey: Self.dictionaryBootstrapCompletedKey) else { return }
         let remote = try syncCore.readAll(in: .dictionary, mergeIntoLocalFrontier: false)
-        let current = makeLocalDictionary()
+        let current = makeLocalDictionary(modelContext: modelContext)
         if remote.isEmpty || !current.isEmpty {
             try appendBootstrap(current, domain: .dictionary)
         }
         defaults.set(true, forKey: Self.dictionaryBootstrapCompletedKey)
     }
 
-    private func appendBootstrap(_ values: [String: Data], domain: VoiceInkSyncDomain) throws {
+    private nonisolated func appendBootstrap(_ values: [String: Data], domain: VoiceInkSyncDomain) throws {
         guard !values.isEmpty else { return }
         try appendMutations(
             values.sorted { $0.key < $1.key }.map {
@@ -682,14 +874,14 @@ final class CloudConfigurationSyncService: ObservableObject {
         )
     }
 
-    private func appendMutations(
+    private nonisolated func appendMutations(
         _ mutations: [VoiceInkSyncMutation],
         domain: VoiceInkSyncDomain
     ) throws {
         _ = try syncCore.appendChunked(mutations, domain: domain)
     }
 
-    private func mergeLegacyPreferences(_ preferences: [String: Data], into result: inout [String: Data]) {
+    private nonisolated func mergeLegacyPreferences(_ preferences: [String: Data], into result: inout [String: Data]) {
         var structuredDomain: [String: Any] = [:]
         for (key, encoded) in preferences where Self.isEligiblePreferenceKey(key) {
             guard let value = Self.decodePreferenceValue(encoded) else { continue }
@@ -702,28 +894,33 @@ final class CloudConfigurationSyncService: ObservableObject {
         addStructuredEntities(from: structuredDomain, to: &result)
     }
 
-    private func legacySnapshots() throws -> [Snapshot] {
+    private nonisolated func legacySnapshots() throws -> [Snapshot] {
         guard let root = iCloudDriveRootOverride ?? Self.defaultICloudDriveRoot(fileManager: fileManager) else { return [] }
         let url = root.appendingPathComponent("VoiceInk/Configuration/VoiceInkConfig.plist")
         let candidateURLs = (fileManager.fileExists(atPath: url.path) ? [url] : [])
             + (NSFileVersion.unresolvedConflictVersionsOfItem(at: url) ?? []).map(\.url)
-        return try candidateURLs.map { candidate in
+        var snapshots: [Snapshot] = []
+        var hasPendingDownload = false
+        for candidate in candidateURLs {
             let values = try? candidate.resourceValues(forKeys: [
                 .isUbiquitousItemKey, .ubiquitousItemDownloadingStatusKey,
             ])
             if values?.isUbiquitousItem == true, values?.ubiquitousItemDownloadingStatus != .current {
                 try? fileManager.startDownloadingUbiquitousItem(at: candidate)
-                throw CocoaError(.fileReadNoSuchFile)
+                hasPendingDownload = true
+                continue
             }
             let data = try coordinatedRead(from: candidate)
             guard let snapshot = try? PropertyListDecoder().decode(Snapshot.self, from: data) else {
                 throw CocoaError(.fileReadCorruptFile)
             }
-            return snapshot
+            snapshots.append(snapshot)
         }
+        if hasPendingDownload { throw CocoaError(.fileReadNoSuchFile) }
+        return snapshots
     }
 
-    private func coordinatedRead(from url: URL) throws -> Data {
+    private nonisolated func coordinatedRead(from url: URL) throws -> Data {
         var coordinationError: NSError?
         var result: Result<Data, Error>?
         NSFileCoordinator().coordinate(readingItemAt: url, options: [], error: &coordinationError) { itemURL in
@@ -740,8 +937,8 @@ final class CloudConfigurationSyncService: ObservableObject {
             forName: UserDefaults.didChangeNotification, object: defaults, queue: .main
         ) { [weak self] _ in
             Task { @MainActor in
-                guard let self, !self.isApplyingRemoteState else { return }
-                self.scheduleSync()
+                guard let self else { return }
+                self.scheduleLocalConfigurationCheck()
             }
         })
         observers.append(NotificationCenter.default.addObserver(
@@ -749,27 +946,48 @@ final class CloudConfigurationSyncService: ObservableObject {
         ) { [weak self] _ in Task { @MainActor in self?.scheduleSync() } })
         observers.append(NotificationCenter.default.addObserver(
             forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
-        ) { [weak self] _ in Task { @MainActor in self?.syncNow() } })
+        ) { [weak self] _ in Task { @MainActor in self?.scheduleCatchUpSyncIfDue() } })
         observers.append(NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
-        ) { [weak self] _ in Task { @MainActor in self?.syncNow() } })
+        ) { [weak self] _ in Task { @MainActor in self?.scheduleCatchUpSyncIfDue() } })
+    }
+
+    private func scheduleCatchUpSyncIfDue(now: Date = Date()) {
+        guard Self.shouldRunCatchUpSync(lastSyncedAt: lastSyncedAt, now: now) else { return }
+        scheduleSync()
+    }
+
+    nonisolated static func shouldRunCatchUpSync(lastSyncedAt: Date?, now: Date) -> Bool {
+        guard let lastSyncedAt else { return false }
+        return now.timeIntervalSince(lastSyncedAt) >= reconciliationInterval
     }
 
     private func startMonitoring() {
         if timer == nil {
             timer = Timer.scheduledTimer(withTimeInterval: Self.reconciliationInterval, repeats: true) { [weak self] _ in
-                Task { @MainActor in self?.syncNow() }
+                Task { @MainActor in self?.scheduleSync() }
             }
-            timer?.tolerance = 60
+            timer?.tolerance = 5 * 60
         }
         guard iCloudDriveRootOverride == nil, metadataQuery == nil, let root = syncCore.rootURL else { return }
         let query = NSMetadataQuery()
         query.searchScopes = [NSMetadataQueryUbiquitousDataScope]
-        query.predicate = NSPredicate(format: "%K BEGINSWITH %@", NSMetadataItemPathKey, root.path)
+        let configurationOperations = root.appendingPathComponent(
+            "Operations/configuration", isDirectory: true)
+        let dictionaryOperations = root.appendingPathComponent(
+            "Operations/dictionary", isDirectory: true)
+        query.predicate = NSCompoundPredicate(orPredicateWithSubpredicates: [
+            NSPredicate(
+                format: "%K BEGINSWITH %@", NSMetadataItemPathKey, configurationOperations.path),
+            NSPredicate(
+                format: "%K BEGINSWITH %@", NSMetadataItemPathKey, dictionaryOperations.path),
+        ])
         for name in [Notification.Name.NSMetadataQueryDidFinishGathering, .NSMetadataQueryDidUpdate] {
             metadataQueryObservers.append(NotificationCenter.default.addObserver(
                 forName: name, object: query, queue: .main
-            ) { [weak self] _ in Task { @MainActor in self?.scheduleSync() } })
+            ) { [weak self] notification in
+                Task { @MainActor in self?.handleMetadataQueryEvent(notification) }
+            })
         }
         metadataQuery = query
         query.start()
@@ -778,6 +996,8 @@ final class CloudConfigurationSyncService: ObservableObject {
     private func stopMonitoring() {
         timer?.invalidate()
         timer = nil
+        localChangeCheckTask?.cancel()
+        localChangeCheckTask = nil
         metadataQuery?.stop()
         metadataQuery = nil
         for observer in metadataQueryObservers { NotificationCenter.default.removeObserver(observer) }
@@ -785,13 +1005,52 @@ final class CloudConfigurationSyncService: ObservableObject {
     }
 
     private func scheduleSync() {
-        guard isEnabled, !isApplyingRemoteState else { return }
-        pendingSyncTask?.cancel()
-        pendingSyncTask = Task { @MainActor [weak self] in
+        guard isEnabled else { return }
+        debounceTask?.cancel()
+        debounceTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .milliseconds(800))
             guard !Task.isCancelled else { return }
-            self?.synchronize(applyDictionary: self?.modelContext != nil, recordLocalChanges: true)
+            guard let self else { return }
+            self.debounceTask = nil
+            self.requestSync(applyDictionary: self.modelContainer != nil, recordLocalChanges: true)
         }
+    }
+
+    private func scheduleLocalConfigurationCheck() {
+        guard isEnabled else { return }
+        localChangeCheckTask?.cancel()
+        localChangeCheckTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(800))
+            guard let self, !Task.isCancelled else { return }
+            self.localChangeCheckTask = nil
+            let executionCoordinator = self.executionCoordinator
+            let hasChanges = (try? await executionCoordinator.run { [self] in
+                dispatchPrecondition(condition: .notOnQueue(.main))
+                return self.makeLocalConfiguration() != self.lastKnownConfiguration
+            }) ?? false
+            if hasChanges { self.scheduleSync() }
+        }
+    }
+
+    private func handleMetadataQueryEvent(_ notification: Notification) {
+        guard isEnabled else { return }
+        if notification.name == .NSMetadataQueryDidFinishGathering {
+            // The explicit enable/start reconciliation already covers the initial query
+            // snapshot. Only subsequent remote operation updates should wake this domain.
+            return
+        }
+        guard let userInfo = notification.userInfo else { return }
+        let keys = [NSMetadataQueryUpdateAddedItemsKey, NSMetadataQueryUpdateChangedItemsKey]
+        let urls = keys.flatMap { key in
+            (userInfo[key] as? [NSMetadataItem] ?? []).compactMap { item in
+                item.value(forAttribute: NSMetadataItemURLKey) as? URL
+            }
+        }
+        let shouldConsume = urls.contains { url in
+            syncCore.shouldConsumeRemoteOperation(
+                at: url, domains: [.configuration, .dictionary])
+        }
+        if shouldConsume { scheduleSync() }
     }
 
     private var shouldSkipAutomaticSyncInTests: Bool {
@@ -799,7 +1058,7 @@ final class CloudConfigurationSyncService: ObservableObject {
             && ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
     }
 
-    private static func defaultICloudDriveRoot(fileManager: FileManager) -> URL? {
+    nonisolated private static func defaultICloudDriveRoot(fileManager: FileManager) -> URL? {
         let root = fileManager.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Mobile Documents/com~apple~CloudDocs", isDirectory: true)
         var isDirectory: ObjCBool = false
@@ -809,7 +1068,7 @@ final class CloudConfigurationSyncService: ObservableObject {
         return root
     }
 
-    private static func normalizedDictionaryText(_ value: String) -> String {
+    nonisolated private static func normalizedDictionaryText(_ value: String) -> String {
         value.precomposedStringWithCanonicalMapping
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .split(whereSeparator: \.isWhitespace)
@@ -817,13 +1076,13 @@ final class CloudConfigurationSyncService: ObservableObject {
             .folding(options: [.caseInsensitive], locale: Locale(identifier: "en_US_POSIX"))
     }
 
-    private static func replacementTokens(_ value: String) -> [String] {
+    nonisolated private static func replacementTokens(_ value: String) -> [String] {
         value.split(separator: ",")
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
     }
 
-    private static func encodePreferenceValue(_ value: Any) -> Data? {
+    nonisolated private static func encodePreferenceValue(_ value: Any) -> Data? {
         let normalized: Any
         if let data = value as? Data,
             let json = try? JSONSerialization.jsonObject(with: data),
@@ -839,10 +1098,21 @@ final class CloudConfigurationSyncService: ObservableObject {
         return try? PropertyListSerialization.data(fromPropertyList: wrapper, format: .binary, options: 0)
     }
 
-    private static func decodePreferenceValue(_ data: Data) -> Any? {
+    nonisolated private static func decodePreferenceValue(_ data: Data) -> Any? {
         guard let wrapper = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
         else { return nil }
         return wrapper["value"]
+    }
+
+    nonisolated private static func encodeCanonicalJSON<T: Encodable>(_ value: T) throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return try encoder.encode(value)
+    }
+
+    nonisolated private static func preferenceValuesEqual(_ lhs: Any?, _ rhs: Any) -> Bool {
+        guard let lhs else { return false }
+        return encodePreferenceValue(lhs) == encodePreferenceValue(rhs)
     }
 }
 

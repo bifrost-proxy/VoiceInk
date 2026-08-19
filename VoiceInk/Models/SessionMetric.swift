@@ -18,6 +18,9 @@ final class SessionMetric {
     var enhancementDuration: TimeInterval?
     var enhancementEstimatedTokenCount: Int?
     var performanceData: Data?
+    var syncOriginDeviceID: String?
+    var syncModifiedAt: Date?
+    var syncRevisionID: UUID?
 
     init(
         transcriptionId: UUID,
