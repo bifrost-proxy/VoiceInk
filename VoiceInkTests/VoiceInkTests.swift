@@ -10,6 +10,31 @@ import SwiftData
 import Testing
 @testable import VoiceInk
 
+private final class ICloudSyncConcurrencyProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var activeCount = 0
+    private var maximumActiveCount = 0
+    private var blockerStarted = false
+
+    func enter() {
+        lock.withLock {
+            activeCount += 1
+            maximumActiveCount = max(maximumActiveCount, activeCount)
+        }
+    }
+
+    func leave() {
+        lock.withLock { activeCount -= 1 }
+    }
+
+    func markBlockerStarted() {
+        lock.withLock { blockerStarted = true }
+    }
+
+    var maximumActive: Int { lock.withLock { maximumActiveCount } }
+    var hasBlockerStarted: Bool { lock.withLock { blockerStarted } }
+}
+
 struct VoiceInkTests {
     @Test func whisperPCMReaderConvertsSamplesWithoutPerSampleDataAllocations() throws {
         let url = FileManager.default.temporaryDirectory
@@ -195,7 +220,6 @@ struct VoiceInkTests {
         #expect(register.conflictCount == 1)
     }
 
-    @MainActor
     @Test func syncCoreRejectsOversizedOperationsWithoutWritingPartialFiles() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("VoiceInkOversizedSync-\(UUID().uuidString)", isDirectory: true)
@@ -220,7 +244,6 @@ struct VoiceInkTests {
         #expect(!FileManager.default.fileExists(atPath: operations.path))
     }
 
-    @MainActor
     @Test func syncCoreSplitsLargeMutationSetsIntoValidImmutableOperations() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("VoiceInkChunkedSync-\(UUID().uuidString)", isDirectory: true)
@@ -251,6 +274,42 @@ struct VoiceInkTests {
         let retried = try core.appendChunked(mutations, domain: .configuration)
         #expect(retried.map(\.envelope.operationID) == written.map(\.envelope.operationID))
         #expect(try core.readAll(in: .configuration).count == 2)
+    }
+
+    @Test func iCloudSyncCoordinatorRunsOffMainAndSerializesWork() async throws {
+        let coordinator = ICloudSyncExecutionCoordinator(
+            label: "VoiceInkTests.SyncCoordinator.\(UUID().uuidString)"
+        )
+        let probe = ICloudSyncConcurrencyProbe()
+        let wasOffMain = try await coordinator.run {
+            probe.enter()
+            defer { probe.leave() }
+            Thread.sleep(forTimeInterval: 0.02)
+            return !Thread.isMainThread && ICloudSyncExecutionCoordinator.isExecutingOnSyncQueue
+        }
+        async let first: Void = coordinator.run {
+            probe.enter()
+            Thread.sleep(forTimeInterval: 0.03)
+            probe.leave()
+        }
+        async let second: Void = coordinator.run {
+            probe.enter()
+            Thread.sleep(forTimeInterval: 0.03)
+            probe.leave()
+        }
+        _ = try await (first, second)
+
+        #expect(wasOffMain)
+        #expect(probe.maximumActive == 1)
+    }
+
+    @Test func iCloudSyncRetryPolicyUsesBoundedExponentialDelays() {
+        #expect(ICloudSyncRetryPolicy.baseDelay(afterFailureCount: 1) == 5)
+        #expect(ICloudSyncRetryPolicy.baseDelay(afterFailureCount: 2) == 15)
+        #expect(ICloudSyncRetryPolicy.baseDelay(afterFailureCount: 3) == 30)
+        #expect(ICloudSyncRetryPolicy.baseDelay(afterFailureCount: 4) == 60)
+        #expect(ICloudSyncRetryPolicy.baseDelay(afterFailureCount: 5) == 300)
+        #expect(ICloudSyncRetryPolicy.baseDelay(afterFailureCount: 100) == 300)
     }
 
     @Test func audioDescriptorRejectsUnsafeCloudPaths() {
@@ -622,6 +681,80 @@ struct VoiceInkTests {
     }
 
     @MainActor
+    @Test func disablingUsageSyncWhileQueuedDoesNotPublishStaleCompletion() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("VoiceInkUsageDisableGeneration-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let suite = "VoiceInkTests.UsageDisableGeneration.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(true, forKey: CloudSyncSettingsKeys.usageDataSyncEnabled)
+
+        let coordinator = ICloudSyncExecutionCoordinator(
+            label: "VoiceInkTests.UsageDisableGeneration.\(UUID().uuidString)"
+        )
+        let probe = ICloudSyncConcurrencyProbe()
+        let release = DispatchSemaphore(value: 0)
+        let blocker = Task.detached {
+            try await coordinator.run {
+                probe.markBlockerStarted()
+                release.wait()
+            }
+        }
+        let blockerTimeout = Date().addingTimeInterval(5)
+        while !probe.hasBlockerStarted && Date() < blockerTimeout {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(probe.hasBlockerStarted)
+
+        let container = try ModelContainer(
+            for: Schema([Transcription.self, SessionMetric.self]),
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        let service = CloudUsageDataSyncService(
+            defaults: defaults, iCloudDriveRootURL: root, executionCoordinator: coordinator
+        )
+        service.start(modelContext: container.mainContext)
+        #expect(service.isSyncRunningForTesting)
+        service.setEnabled(false)
+        release.signal()
+        try await blocker.value
+
+        let completionTimeout = Date().addingTimeInterval(5)
+        while service.isSyncRunningForTesting && Date() < completionTimeout {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(!service.isSyncRunningForTesting)
+        #expect(service.state == .disabled)
+        #expect(service.lastSyncedAt == nil)
+    }
+
+    @MainActor
+    private func waitForConfigurationSync(
+        _ service: CloudConfigurationSyncService,
+        after date: Date = .distantPast
+    ) async throws {
+        let timeout = Date().addingTimeInterval(20)
+        while (service.lastSyncedAt ?? .distantPast) <= date && Date() < timeout {
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        #expect(service.state == .synced)
+        #expect((service.lastSyncedAt ?? .distantPast) > date)
+    }
+
+    @MainActor
+    private func synchronizeConfigurationServices(
+        _ services: [CloudConfigurationSyncService]
+    ) async throws {
+        for service in services {
+            let start = service.lastSyncedAt ?? .distantPast
+            service.syncNow()
+            try await waitForConfigurationSync(service, after: start)
+        }
+    }
+
+    @MainActor
     @Test func cloudUsageV3SyncsEveryMetricAudioAndGlobalDeletion() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("VoiceInkUsageV3-\(UUID().uuidString)", isDirectory: true)
@@ -720,6 +853,7 @@ struct VoiceInkTests {
             for: schema, configurations: [ModelConfiguration(isStoredInMemoryOnly: true)])
         let record = Transcription(text: "restore me", duration: 1)
         sourceContainer.mainContext.insert(record)
+        try sourceContainer.mainContext.save()
         let sourceSuite = "VoiceInkTests.UsageLocalCleanup.Source.\(UUID().uuidString)"
         let sourceDefaults = try #require(UserDefaults(suiteName: sourceSuite))
         defer { sourceDefaults.removePersistentDomain(forName: sourceSuite) }
@@ -804,22 +938,66 @@ struct VoiceInkTests {
             defaults: defaultsB, iCloudDriveRootURL: root, preferencesDomainName: suiteB)
         serviceA.start(modelContext: containerA.mainContext, onRemoteConfigurationApplied: {})
         serviceB.start(modelContext: containerB.mainContext, onRemoteConfigurationApplied: {})
+        try await waitForConfigurationSync(serviceA)
+        try await waitForConfigurationSync(serviceB)
+        try await synchronizeConfigurationServices([serviceA, serviceB])
         #expect(defaultsB.string(forKey: "SelectedLanguage") == "en")
         #expect(try syncOperationFiles(root: root, domain: .configuration).count == 1)
 
         defaultsB.set("zh-Hans", forKey: "SelectedLanguage")
+        let editStartB = try #require(serviceB.lastSyncedAt)
         serviceB.syncNow()
+        try await waitForConfigurationSync(serviceB, after: editStartB)
+        let pullStartA = try #require(serviceA.lastSyncedAt)
         serviceA.syncNow()
+        try await waitForConfigurationSync(serviceA, after: pullStartA)
         #expect(defaultsA.string(forKey: "SelectedLanguage") == "zh-Hans")
         let operationCount = try syncOperationFiles(root: root, domain: .configuration).count
         #expect(operationCount == 2)
+        let steadyStartA = try #require(serviceA.lastSyncedAt)
         serviceA.syncNow()
+        try await waitForConfigurationSync(serviceA, after: steadyStartA)
+        let steadyStartB = try #require(serviceB.lastSyncedAt)
         serviceB.syncNow()
+        try await waitForConfigurationSync(serviceB, after: steadyStartB)
         #expect(try syncOperationFiles(root: root, domain: .configuration).count == operationCount)
         #expect(serviceA.configurationConflictCount == 0)
         #expect(serviceB.configurationConflictCount == 0)
         serviceA.setEnabled(false)
         serviceB.setEnabled(false)
+    }
+
+    @MainActor
+    @Test func cloudConfigurationStructuredEntitiesUseStableEncodingWithoutEchoWrites() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("VoiceInkStableConfig-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let suite = "VoiceInkTests.StableConfig.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(true, forKey: CloudSyncSettingsKeys.configurationSyncEnabled)
+        defaults.set(try JSONEncoder().encode([
+            CustomPrompt(title: "Stable", promptText: "Keep semantic JSON stable")
+        ]), forKey: "customPrompts")
+        let container = try ModelContainer(
+            for: VocabularyWord.self, WordReplacement.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true)
+        )
+        let service = CloudConfigurationSyncService(
+            defaults: defaults, iCloudDriveRootURL: root, preferencesDomainName: suite
+        )
+        service.start(modelContext: container.mainContext, onRemoteConfigurationApplied: {})
+        try await waitForConfigurationSync(service)
+        let initialCount = try syncOperationFiles(root: root, domain: .configuration).count
+        #expect(initialCount == 1)
+
+        for _ in 0..<3 {
+            let start = try #require(service.lastSyncedAt)
+            service.syncNow()
+            try await waitForConfigurationSync(service, after: start)
+        }
+        #expect(try syncOperationFiles(root: root, domain: .configuration).count == initialCount)
+        service.setEnabled(false)
     }
 
     @MainActor
@@ -894,7 +1072,7 @@ struct VoiceInkTests {
     }
 
     @MainActor
-    @Test func cloudDictionaryV3NormalizesDuplicatesAndPreservesConcurrentEdits() throws {
+    @Test func cloudDictionaryV3NormalizesDuplicatesAndPreservesConcurrentEdits() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("VoiceInkDictionaryV3-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -922,15 +1100,24 @@ struct VoiceInkTests {
             defaults: defaultsB, iCloudDriveRootURL: root, preferencesDomainName: suiteB)
         serviceA.start(modelContext: containerA.mainContext, onRemoteConfigurationApplied: {})
         serviceB.start(modelContext: containerB.mainContext, onRemoteConfigurationApplied: {})
+        try await waitForConfigurationSync(serviceA)
+        try await waitForConfigurationSync(serviceB)
+        try await synchronizeConfigurationServices([serviceA, serviceB])
         let wordA = try #require(containerA.mainContext.fetch(FetchDescriptor<VocabularyWord>()).first)
         let wordB = try #require(containerB.mainContext.fetch(FetchDescriptor<VocabularyWord>()).first)
         wordA.word = " VOICEINK "
         try containerA.mainContext.save()
+        let editStartA = try #require(serviceA.lastSyncedAt)
         serviceA.syncNow()
+        try await waitForConfigurationSync(serviceA, after: editStartA)
         wordB.word = "voiceink"
         try containerB.mainContext.save()
+        let editStartB = try #require(serviceB.lastSyncedAt)
         serviceB.syncNow()
+        try await waitForConfigurationSync(serviceB, after: editStartB)
+        let pullStartA = try #require(serviceA.lastSyncedAt)
         serviceA.syncNow()
+        try await waitForConfigurationSync(serviceA, after: pullStartA)
 
         #expect(serviceA.dictionaryConflictCount == 1)
         #expect(serviceB.dictionaryConflictCount == 1)

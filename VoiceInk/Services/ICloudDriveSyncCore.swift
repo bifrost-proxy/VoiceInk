@@ -168,8 +168,7 @@ struct VoiceInkSyncRegisterState: Equatable, Sendable {
 
 /// Shared append-only transport for every VoiceInk iCloud Drive sync domain.
 /// iCloud Drive copies immutable operation files; domain reducers own merge semantics.
-@MainActor
-final class ICloudDriveSyncCore {
+final class ICloudDriveSyncCore: @unchecked Sendable {
     static let shared = ICloudDriveSyncCore()
     static let maximumPayloadBytes = 7 * 1_024 * 1_024
     private static let maximumEnvelopeBytes = 8 * 1_024 * 1_024
@@ -341,6 +340,8 @@ final class ICloudDriveSyncCore {
 
         var envelopes: [VoiceInkSyncEnvelope] = []
         var envelopesByOperationID: [UUID: VoiceInkSyncEnvelope] = [:]
+        var cached = loadIndex(for: domain)
+        var refreshed: [String: CachedEnvelope] = [:]
         var hasPendingDownload = false
         for case let url as URL in enumerator where url.pathExtension == "syncop" {
             let values = try? url.resourceValues(forKeys: Set(keys))
@@ -350,11 +351,26 @@ final class ICloudDriveSyncCore {
                 hasPendingDownload = true
                 continue
             }
-            let data = try coordinatedRead(from: url)
-            guard data.count <= Self.maximumEnvelopeBytes,
-                let envelope = try? PropertyListDecoder().decode(VoiceInkSyncEnvelope.self, from: data),
-                envelope.domain == domain, envelope.isValid
-            else { throw CocoaError(.fileReadCorruptFile) }
+            let attributes = try? fileManager.attributesOfItem(atPath: url.path)
+            let byteCount = (attributes?[.size] as? NSNumber)?.int64Value ?? -1
+            let modifiedAt = (attributes?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? -1
+            let relativePath = String(url.path.dropFirst(domainURL.path.count))
+            let envelope: VoiceInkSyncEnvelope
+            if let entry = cached.removeValue(forKey: relativePath),
+                entry.byteCount == byteCount, entry.modifiedAt == modifiedAt,
+                entry.envelope.domain == domain, entry.envelope.isValid
+            {
+                envelope = entry.envelope
+            } else {
+                let data = try coordinatedRead(from: url)
+                guard data.count <= Self.maximumEnvelopeBytes,
+                    let decoded = try? PropertyListDecoder().decode(VoiceInkSyncEnvelope.self, from: data),
+                    decoded.domain == domain, decoded.isValid
+                else { throw CocoaError(.fileReadCorruptFile) }
+                envelope = decoded
+            }
+            refreshed[relativePath] = CachedEnvelope(
+                byteCount: byteCount, modifiedAt: modifiedAt, envelope: envelope)
             if let existing = envelopesByOperationID[envelope.operationID] {
                 guard existing == envelope else {
                     throw CocoaError(.fileReadCorruptFile)
@@ -365,6 +381,7 @@ final class ICloudDriveSyncCore {
             envelopes.append(envelope)
         }
         if hasPendingDownload { throw CocoaError(.fileReadNoSuchFile) }
+        saveIndex(refreshed, for: domain)
         envelopes.sort { lhs, rhs in
             if lhs.authorDeviceID != rhs.authorDeviceID { return lhs.authorDeviceID < rhs.authorDeviceID }
             if lhs.authorSequence != rhs.authorSequence { return lhs.authorSequence < rhs.authorSequence }
@@ -374,6 +391,42 @@ final class ICloudDriveSyncCore {
             for envelope in envelopes { mergeIntoFrontier(envelope) }
         }
         return envelopes
+    }
+
+    private struct CachedEnvelope: Codable {
+        let byteCount: Int64
+        let modifiedAt: TimeInterval
+        let envelope: VoiceInkSyncEnvelope
+    }
+
+    private func loadIndex(for domain: VoiceInkSyncDomain) -> [String: CachedEnvelope] {
+        guard let url = indexURL(for: domain),
+            let data = try? Data(contentsOf: url),
+            let index = try? PropertyListDecoder().decode([String: CachedEnvelope].self, from: data)
+        else { return [:] }
+        return index
+    }
+
+    private func saveIndex(_ index: [String: CachedEnvelope], for domain: VoiceInkSyncDomain) {
+        guard let url = indexURL(for: domain),
+            let data = try? PropertyListEncoder.voiceInkSync.encode(index)
+        else { return }
+        try? fileManager.createDirectory(
+            at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? data.write(to: url, options: .atomic)
+    }
+
+    /// The operation index is a disposable local acceleration cache. It must
+    /// never live in iCloud Drive or UserDefaults because payloads can be large.
+    private func indexURL(for domain: VoiceInkSyncDomain) -> URL? {
+        guard let rootURL else { return nil }
+        guard let caches = fileManager.urls(for: .cachesDirectory, in: .userDomainMask).first else {
+            return nil
+        }
+        let cacheRoot = caches.appendingPathComponent(
+            "com.prakashjoshipax.VoiceInk/ICloudSyncIndex", isDirectory: true)
+        let rootDigest = VoiceInkSyncEnvelope.sha256(Data(rootURL.standardizedFileURL.path.utf8))
+        return cacheRoot.appendingPathComponent("\(rootDigest)-\(domain.rawValue).plist")
     }
 
     func decodeBatch(from envelope: VoiceInkSyncEnvelope) throws -> VoiceInkSyncMutationBatch {
