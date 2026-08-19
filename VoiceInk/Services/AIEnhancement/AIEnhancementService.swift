@@ -211,9 +211,16 @@ class AIEnhancementService: ObservableObject {
                 ""
             }
 
-        return [prompt.finalPromptText, customVocabularySection, environmentSection, contextSection]
-            .filter { !$0.isEmpty }
-            .joined(separator: "\n\n")
+        var sections = [
+            prompt.finalPromptText,
+            customVocabularySection,
+            environmentSection,
+            contextSection,
+        ]
+        if prompt.useSystemInstructions {
+            sections.append(AIPrompts.finalNonTranslationReminder)
+        }
+        return sections.filter { !$0.isEmpty }.joined(separator: "\n\n")
     }
 
     private static func contextElement(name: String, value: String, maximumLength: Int) -> String {
@@ -225,6 +232,19 @@ class AIEnhancementService: ObservableObject {
             .replacingOccurrences(of: "\"", with: "&quot;")
             .replacingOccurrences(of: "'", with: "&apos;")
         return "<\(name)>\n\(escaped)\n</\(name)>"
+    }
+
+    static func formattedUserMessage(text: String, prompt: CustomPrompt) -> String {
+        var message = """
+
+            <TRANSCRIPT>
+            \(text)
+            </TRANSCRIPT>
+            """
+        if prompt.useSystemInstructions {
+            message += "\n\n\(AIPrompts.finalUserNonTranslationReminder)"
+        }
+        return message
     }
 
     private func makeRequest(
@@ -249,7 +269,7 @@ class AIEnhancementService: ObservableObject {
             return ""
         }
 
-        let formattedText = "\n<TRANSCRIPT>\n\(text)\n</TRANSCRIPT>"
+        let formattedText = Self.formattedUserMessage(text: text, prompt: prompt)
         let systemMessage = await getSystemMessage(
             prompt: prompt,
             configuration: configuration,
