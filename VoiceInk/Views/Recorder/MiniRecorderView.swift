@@ -171,12 +171,9 @@ struct MiniRecorderView<S: RecorderStateProvider & ObservableObject>: View {
                     .fixedSize()
             }
         }
-        .background {
-            GeometryReader { proxy in
-                Color.clear.preference(key: RecorderContentSizePreferenceKey.self, value: proxy.size)
-            }
-        }
-        .onPreferenceChange(RecorderContentSizePreferenceKey.self) { size in
+        .onGeometryChange(for: CGSize.self) { proxy in
+            proxy.size
+        } action: { size in
             guard !usesFixedCanvas, size.width > 0, size.height > 0 else { return }
             onContentSizeChange?(size)
         }
@@ -196,13 +193,5 @@ struct MiniRecorderView<S: RecorderStateProvider & ObservableObject>: View {
                 isTranscriptContentVisible = true
             }
         }
-    }
-}
-
-private struct RecorderContentSizePreferenceKey: PreferenceKey {
-    static var defaultValue = CGSize.zero
-
-    static func reduce(value: inout CGSize, nextValue: () -> CGSize) {
-        value = nextValue()
     }
 }
