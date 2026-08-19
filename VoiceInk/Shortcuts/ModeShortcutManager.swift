@@ -57,11 +57,13 @@ class ModeShortcutManager {
         }
     }
 
-    func refreshAfterAccessibilityAuthorization() {
+    @discardableResult
+    func refreshAfterAccessibilityAuthorization() -> Bool {
         refreshModeShortcuts()
     }
 
-    private func refreshModeShortcuts() {
+    @discardableResult
+    private func refreshModeShortcuts() -> Bool {
         let shortcuts = ModeManager.shared.enabledConfigurations.reduce(into: [ShortcutAction: Shortcut]()) {
             result, config in
             let action = ShortcutAction.mode(config.id)
@@ -70,7 +72,7 @@ class ModeShortcutManager {
             }
         }
 
-        shortcutMonitor.start(
+        return shortcutMonitor.start(
             shortcuts: shortcuts,
             interruptibleActions: Set(shortcuts.keys),
             onKeyDown: { [weak self] action, eventTime in

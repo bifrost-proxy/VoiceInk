@@ -2,46 +2,74 @@ import AppKit
 import Foundation
 import OSLog
 
+/// Polls only while Accessibility recovery is needed. Two successful rebuilds
+/// avoid treating the first TCC transition callback as a fully settled event tap.
 @MainActor
 final class AccessibilityAuthorizationMonitor {
     private let pollingIntervalNanoseconds: UInt64
+    private let maximumRetryIntervalNanoseconds: UInt64
+    private let requiredConsecutiveSuccesses: Int
     private let isAuthorized: @MainActor () -> Bool
-    private let onAuthorizationGranted: @MainActor () -> Void
+    private let onRecoveryAttempt: @MainActor () -> Bool
     private var pollingTask: Task<Void, Never>?
 
     init(
         pollingIntervalNanoseconds: UInt64 = 500_000_000,
+        maximumRetryIntervalNanoseconds: UInt64 = 30_000_000_000,
+        requiredConsecutiveSuccesses: Int = 2,
         isAuthorized: @escaping @MainActor () -> Bool,
-        onAuthorizationGranted: @escaping @MainActor () -> Void
+        onRecoveryAttempt: @escaping @MainActor () -> Bool
     ) {
         self.pollingIntervalNanoseconds = pollingIntervalNanoseconds
+        self.maximumRetryIntervalNanoseconds = max(
+            pollingIntervalNanoseconds,
+            maximumRetryIntervalNanoseconds
+        )
+        self.requiredConsecutiveSuccesses = max(1, requiredConsecutiveSuccesses)
         self.isAuthorized = isAuthorized
-        self.onAuthorizationGranted = onAuthorizationGranted
+        self.onRecoveryAttempt = onRecoveryAttempt
     }
 
     func start() {
         guard pollingTask == nil else { return }
 
-        if isAuthorized() {
-            onAuthorizationGranted()
-            return
-        }
-
         let pollingIntervalNanoseconds = pollingIntervalNanoseconds
+        let maximumRetryIntervalNanoseconds = maximumRetryIntervalNanoseconds
+        let requiredConsecutiveSuccesses = requiredConsecutiveSuccesses
         pollingTask = Task { @MainActor [weak self] in
+            var consecutiveSuccesses = 0
+            var retryIntervalNanoseconds = pollingIntervalNanoseconds
+
             while !Task.isCancelled {
+                guard let self else { return }
+
+                if self.isAuthorized() {
+                    if self.onRecoveryAttempt() {
+                        consecutiveSuccesses += 1
+                        retryIntervalNanoseconds = pollingIntervalNanoseconds
+                        if consecutiveSuccesses >= requiredConsecutiveSuccesses {
+                            self.pollingTask = nil
+                            return
+                        }
+                    } else {
+                        consecutiveSuccesses = 0
+                        retryIntervalNanoseconds = min(
+                            maximumRetryIntervalNanoseconds,
+                            retryIntervalNanoseconds > maximumRetryIntervalNanoseconds / 2
+                                ? maximumRetryIntervalNanoseconds
+                                : retryIntervalNanoseconds * 2
+                        )
+                    }
+                } else {
+                    consecutiveSuccesses = 0
+                    retryIntervalNanoseconds = pollingIntervalNanoseconds
+                }
+
                 do {
-                    try await Task.sleep(nanoseconds: pollingIntervalNanoseconds)
+                    try await Task.sleep(nanoseconds: retryIntervalNanoseconds)
                 } catch {
                     return
                 }
-
-                guard let self else { return }
-                guard self.isAuthorized() else { continue }
-
-                self.pollingTask = nil
-                self.onAuthorizationGranted()
-                return
             }
         }
     }
@@ -53,6 +81,10 @@ final class AccessibilityAuthorizationMonitor {
 
     deinit {
         pollingTask?.cancel()
+    }
+
+    var isRunning: Bool {
+        pollingTask != nil
     }
 }
 
@@ -110,10 +142,13 @@ class RecordingShortcutManager: ObservableObject {
     }
     private lazy var accessibilityAuthorizationMonitor = AccessibilityAuthorizationMonitor(
         isAuthorized: { AXIsProcessTrusted() },
-        onAuthorizationGranted: { [weak self] in
-            guard let self else { return }
-            self.logger.notice("Accessibility authorization granted; rebuilding global shortcut monitors")
-            self.refreshShortcutMonitoringAfterAccessibilityAuthorization()
+        onRecoveryAttempt: { [weak self] in
+            guard let self else { return true }
+            let succeeded = self.refreshShortcutMonitoringAfterAccessibilityAuthorization()
+            self.logger.notice(
+                "Accessibility shortcut recovery attempt completed. succeeded=\(succeeded, privacy: .public)"
+            )
+            return succeeded
         }
     )
     private var shortcutChangeObserver: NSObjectProtocol?
@@ -262,8 +297,9 @@ class RecordingShortcutManager: ObservableObject {
         }
     }
 
-    private func refreshShortcutMonitoring() {
-        removeAllMonitoring()
+    @discardableResult
+    private func refreshShortcutMonitoring() -> Bool {
+        removeActiveShortcutMonitoring()
 
         guard AXIsProcessTrusted() else {
             accessibilityAuthorizationMonitor.start()
@@ -284,17 +320,23 @@ class RecordingShortcutManager: ObservableObject {
             case .standalonePrompt:
                 AccessibilityShortcutPermissionPrompt.showIfNeeded()
             }
-            return
+            return false
         }
 
-        refreshShortcutMonitor()
+        let started = refreshShortcutMonitor()
         setupMiddleClickMonitoring()
+        if !started {
+            accessibilityAuthorizationMonitor.start()
+        }
+        return started
     }
 
-    private func refreshShortcutMonitoringAfterAccessibilityAuthorization() {
-        refreshShortcutMonitoring()
-        modeShortcutManager.refreshAfterAccessibilityAuthorization()
-        recorderPanelShortcutManager.refreshAfterAccessibilityAuthorization()
+    @discardableResult
+    private func refreshShortcutMonitoringAfterAccessibilityAuthorization() -> Bool {
+        let recordingShortcutsStarted = refreshShortcutMonitoring()
+        let modeShortcutsStarted = modeShortcutManager.refreshAfterAccessibilityAuthorization()
+        let recorderPanelShortcutsStarted = recorderPanelShortcutManager.refreshAfterAccessibilityAuthorization()
+        return recordingShortcutsStarted && modeShortcutsStarted && recorderPanelShortcutsStarted
     }
 
     private func setupMiddleClickMonitoring() {
@@ -331,7 +373,7 @@ class RecordingShortcutManager: ObservableObject {
         middleClickMonitors = [downMonitor, upMonitor]
     }
 
-    private func refreshShortcutMonitor() {
+    private func refreshShortcutMonitor() -> Bool {
         let primaryShortcut = primaryRecordingShortcut == .custom ? ShortcutStore.shortcut(for: .primaryRecording) : nil
         let secondaryShortcut =
             secondaryRecordingShortcut == .custom ? ShortcutStore.shortcut(for: .secondaryRecording) : nil
@@ -387,6 +429,7 @@ class RecordingShortcutManager: ObservableObject {
         if !started {
             AccessibilityShortcutPermissionPrompt.showIfNeeded()
         }
+        return started
     }
 
     private func configuredShortcutsForAccessibilityFallback() -> [Shortcut] {
@@ -482,10 +525,9 @@ class RecordingShortcutManager: ObservableObject {
         }
     }
 
-    private func removeAllMonitoring() {
+    private func removeActiveShortcutMonitoring() {
         shortcutMonitor.stop()
         accessibilityFallbackMonitor.stop()
-        accessibilityAuthorizationMonitor.stop()
 
         for monitor in middleClickMonitors {
             if let monitor = monitor {
@@ -496,6 +538,11 @@ class RecordingShortcutManager: ObservableObject {
         middleClickTask?.cancel()
 
         shortcutModeHandler.reset()
+    }
+
+    private func removeAllMonitoring() {
+        removeActiveShortcutMonitoring()
+        accessibilityAuthorizationMonitor.stop()
     }
 
     var isShortcutConfigured: Bool {

@@ -120,6 +120,14 @@ final class ShortcutMonitor {
         eventTapRunLoopSource = source
         CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
         CGEvent.tapEnable(tap: eventTap, enable: true)
+
+        guard CGEvent.tapIsEnabled(tap: eventTap) else {
+            logger.error("Global shortcut event tap was created but is not enabled")
+            stop()
+            return false
+        }
+
+        logger.debug("Global shortcut event tap is enabled. shortcutCount=\(self.shortcuts.count, privacy: .public)")
         return true
     }
 
