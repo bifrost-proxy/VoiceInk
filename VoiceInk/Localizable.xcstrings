@@ -10251,6 +10251,22 @@
         }
       }
     },
+    "Follow" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Folgen"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "跟随"
+          }
+        }
+      }
+    },
     "Minimum words" : {
       "localizations" : {
         "de" : {
