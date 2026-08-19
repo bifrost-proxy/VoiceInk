@@ -87,4 +87,54 @@ struct RecorderWindowGeometryTests {
 
         #expect(frame == NSRect(x: -1230, y: 54, width: 540, height: 430))
     }
+
+    @Test("Places the follow recorder below and to the right of the pointer by default")
+    func placesFollowRecorderAtPreferredCorner() {
+        let placement = RecorderWindowGeometry.followPlacement(
+            anchor: NSPoint(x: 500, y: 500),
+            panelSize: NSSize(width: 184, height: 40),
+            visibleFrame: NSRect(x: 0, y: 0, width: 1_000, height: 800)
+        )
+
+        #expect(placement.corner == .topLeft)
+        #expect(placement.frame == NSRect(x: 512, y: 448, width: 184, height: 40))
+        #expect(!placement.isConstrained)
+    }
+
+    @Test("Flips the follow recorder left when the pointer is near the right edge")
+    func flipsFollowRecorderAtRightEdge() {
+        let placement = RecorderWindowGeometry.followPlacement(
+            anchor: NSPoint(x: 980, y: 500),
+            panelSize: NSSize(width: 184, height: 40),
+            visibleFrame: NSRect(x: 0, y: 0, width: 1_000, height: 800)
+        )
+
+        #expect(placement.corner == .topRight)
+        #expect(placement.frame == NSRect(x: 784, y: 448, width: 184, height: 40))
+    }
+
+    @Test("Flips the follow recorder above when the pointer is near the bottom edge")
+    func flipsFollowRecorderAtBottomEdge() {
+        let placement = RecorderWindowGeometry.followPlacement(
+            anchor: NSPoint(x: 500, y: 25),
+            panelSize: NSSize(width: 184, height: 40),
+            visibleFrame: NSRect(x: 0, y: 0, width: 1_000, height: 800)
+        )
+
+        #expect(placement.corner == .bottomLeft)
+        #expect(placement.frame == NSRect(x: 512, y: 37, width: 184, height: 40))
+    }
+
+    @Test("Constrains an oversized follow recorder to the visible frame")
+    func constrainsOversizedFollowRecorder() {
+        let visibleFrame = NSRect(x: -400, y: 20, width: 300, height: 180)
+        let placement = RecorderWindowGeometry.followPlacement(
+            anchor: NSPoint(x: -150, y: 100),
+            panelSize: NSSize(width: 600, height: 400),
+            visibleFrame: visibleFrame
+        )
+
+        #expect(placement.isConstrained)
+        #expect(visibleFrame.insetBy(dx: 8, dy: 8).contains(placement.frame))
+    }
 }

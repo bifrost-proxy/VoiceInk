@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import SwiftUI
 import os
@@ -5,6 +6,7 @@ import os
 enum RecorderPanelStyle: String, CaseIterable, Identifiable {
     case notch
     case mini
+    case follow
 
     var id: String { rawValue }
 
@@ -14,6 +16,8 @@ enum RecorderPanelStyle: String, CaseIterable, Identifiable {
             return String(localized: "Notch")
         case .mini:
             return String(localized: "Mini")
+        case .follow:
+            return String(localized: "Follow")
         }
     }
 
@@ -62,6 +66,8 @@ class RecorderUIManager: ObservableObject, RecorderPanelPresenting {
 
     private var notchWindowManager: NotchWindowManager?
     private var miniWindowManager: MiniWindowManager?
+    private var followWindowManager: FollowWindowManager?
+    private var followAnchor: NSPoint?
 
     private weak var engine: VoiceInkEngine?
     private var recorder: Recorder?
@@ -131,6 +137,30 @@ class RecorderUIManager: ObservableObject, RecorderPanelPresenting {
                 )
             }
             miniWindowManager?.show()
+        case .follow:
+            if followWindowManager == nil {
+                followWindowManager = FollowWindowManager(
+                    engine: engine,
+                    recorder: recorder,
+                    assistantSession: engine.assistantSession,
+                    onRecordButtonTapped: { [weak self] in
+                        Task { @MainActor in
+                            await self?.toggleRecorderPanel()
+                        }
+                    },
+                    onCloseTapped: { [weak self] in
+                        Task { @MainActor in
+                            await self?.dismissRecorderPanel()
+                        }
+                    },
+                    onAssistantFollowUp: { [weak engine] text in
+                        Task { @MainActor in
+                            await engine?.sendAssistantFollowUp(text)
+                        }
+                    }
+                )
+            }
+            followWindowManager?.show(anchor: followAnchor ?? NSEvent.mouseLocation)
         }
     }
 
@@ -140,6 +170,8 @@ class RecorderUIManager: ObservableObject, RecorderPanelPresenting {
             notchWindowManager?.hide()
         case .mini:
             miniWindowManager?.hide()
+        case .follow:
+            followWindowManager?.hide()
         }
     }
 
@@ -153,6 +185,9 @@ class RecorderUIManager: ObservableObject, RecorderPanelPresenting {
         case .mini:
             miniWindowManager?.destroyWindow()
             miniWindowManager = nil
+        case .follow:
+            followWindowManager?.destroyWindow()
+            followWindowManager = nil
         }
 
         Task { @MainActor in
@@ -206,6 +241,11 @@ class RecorderUIManager: ObservableObject, RecorderPanelPresenting {
         modeId: UUID?,
         isAssistantFollowUp: Bool = false
     ) async {
+        if recorderPanelStyle == .follow {
+            followAnchor = NSEvent.mouseLocation
+        } else {
+            followAnchor = nil
+        }
         // Preserve the existing pre-capture cue placement. Playback itself is
         // dispatched asynchronously and does not wait on panel construction.
         SoundManager.shared.playStartSound()
@@ -224,6 +264,7 @@ class RecorderUIManager: ObservableObject, RecorderPanelPresenting {
         isRecorderPanelVisible = false
         engine.clearRecordingPermissionGuidance()
         engine.assistantSession.reset()
+        followAnchor = nil
     }
 
     func presentRecordingPermissionGuidance(modeId: UUID? = nil) async {
@@ -245,6 +286,7 @@ class RecorderUIManager: ObservableObject, RecorderPanelPresenting {
         isRecorderPanelVisible = false
         engine.clearRecordingPermissionGuidance()
         engine.assistantSession.reset()
+        followAnchor = nil
     }
 
     func cancelRecording() async {
