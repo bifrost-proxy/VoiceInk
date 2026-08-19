@@ -52,7 +52,8 @@ final class RecorderPanelShortcutManager: ObservableObject {
         }
     }
 
-    func refreshAfterAccessibilityAuthorization() {
+    @discardableResult
+    func refreshAfterAccessibilityAuthorization() -> Bool {
         refreshVisibleShortcuts()
     }
 
@@ -66,11 +67,12 @@ final class RecorderPanelShortcutManager: ObservableObject {
         escapeTimeoutTask = nil
     }
 
-    private func refreshVisibleShortcuts() {
+    @discardableResult
+    private func refreshVisibleShortcuts() -> Bool {
         guard recorderUIManager.isRecorderPanelVisible else {
             visibleRecorderMonitor.stop()
             resetEscapeState()
-            return
+            return true
         }
 
         var shortcuts = ShortcutStore.shortcuts(for: ShortcutAction.recorderPanelStoredActions)
@@ -88,7 +90,7 @@ final class RecorderPanelShortcutManager: ObservableObject {
             }
         }
 
-        visibleRecorderMonitor.start(
+        return visibleRecorderMonitor.start(
             shortcuts: shortcuts,
             onKeyDown: { [weak self] action, _ in
                 Task { @MainActor in
