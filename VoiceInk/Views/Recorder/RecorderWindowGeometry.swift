@@ -18,6 +18,10 @@ struct RecorderFollowPlacement: Equatable {
 }
 
 enum RecorderWindowGeometry {
+    /// Keeps the floating recorder visually separated from physical display edges,
+    /// including when a full-screen app expands `visibleFrame` to the whole screen.
+    static let followEdgePadding: CGFloat = 24
+
     static func screenIndex(
         containing point: NSPoint,
         in frames: [NSRect],
@@ -67,7 +71,7 @@ enum RecorderWindowGeometry {
         visibleFrame: NSRect,
         preferredCorner: RecorderFollowCorner = .topLeft,
         gap: CGFloat = 12,
-        edgePadding: CGFloat = 8
+        edgePadding: CGFloat = followEdgePadding
     ) -> RecorderFollowPlacement {
         let safeFrame = visibleFrame.insetBy(dx: edgePadding, dy: edgePadding)
         let fittingSize = NSSize(

@@ -125,6 +125,39 @@ struct RecorderWindowGeometryTests {
         #expect(placement.frame == NSRect(x: 512, y: 37, width: 184, height: 40))
     }
 
+    @Test("Keeps the follow recorder away from every screen edge")
+    func keepsFollowRecorderAwayFromScreenEdges() {
+        let visibleFrame = NSRect(x: 0, y: 0, width: 1_000, height: 800)
+        let panelSize = NSSize(width: 184, height: 40)
+
+        let bottomPlacement = RecorderWindowGeometry.followPlacement(
+            anchor: NSPoint(x: 500, y: visibleFrame.minY),
+            panelSize: panelSize,
+            visibleFrame: visibleFrame
+        )
+        let topPlacement = RecorderWindowGeometry.followPlacement(
+            anchor: NSPoint(x: 500, y: visibleFrame.maxY),
+            panelSize: panelSize,
+            visibleFrame: visibleFrame
+        )
+        let leftPlacement = RecorderWindowGeometry.followPlacement(
+            anchor: NSPoint(x: visibleFrame.minX, y: 400),
+            panelSize: panelSize,
+            visibleFrame: visibleFrame
+        )
+        let rightPlacement = RecorderWindowGeometry.followPlacement(
+            anchor: NSPoint(x: visibleFrame.maxX, y: 400),
+            panelSize: panelSize,
+            visibleFrame: visibleFrame
+        )
+
+        let edgePadding = RecorderWindowGeometry.followEdgePadding
+        #expect(bottomPlacement.frame.minY == visibleFrame.minY + edgePadding)
+        #expect(topPlacement.frame.maxY == visibleFrame.maxY - edgePadding)
+        #expect(leftPlacement.frame.minX == visibleFrame.minX + edgePadding)
+        #expect(rightPlacement.frame.maxX == visibleFrame.maxX - edgePadding)
+    }
+
     @Test("Reserves expansion space before placing a compact follow recorder near the bottom")
     func reservesExpansionSpaceBeforeShowingCompactFollowRecorder() {
         let visibleFrame = NSRect(x: 0, y: 0, width: 1_000, height: 800)
@@ -156,6 +189,7 @@ struct RecorderWindowGeometryTests {
         )
 
         #expect(placement.isConstrained)
-        #expect(visibleFrame.insetBy(dx: 8, dy: 8).contains(placement.frame))
+        let edgePadding = RecorderWindowGeometry.followEdgePadding
+        #expect(visibleFrame.insetBy(dx: edgePadding, dy: edgePadding).contains(placement.frame))
     }
 }
