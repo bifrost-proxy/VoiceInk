@@ -53,7 +53,9 @@ class FluidAudioTranscriptionService: TranscriptionService {
     private var parakeetCtcZhCnLoadingTask: Task<ParakeetCtcZhCnManager, Error>?
     private var activeVersion: AsrModelVersion?
     private var activeNemotronModelName: String?
+    private var activeModelName: String?
     private var cachedModels: AsrModels?
+    private var cachedModelNames: Set<String> = []
     private var loadingTask: (version: AsrModelVersion, task: Task<AsrModels, Error>)?
     private let audioConverter = AudioConverter()
     private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "FluidAudioTranscriptionService")
@@ -92,22 +94,25 @@ class FluidAudioTranscriptionService: TranscriptionService {
         parakeetCtcZhCnManager = nil
         activeVersion = nil
         activeNemotronModelName = nil
+        activeModelName = nil
     }
 
-    private func ensureModelsLoaded(for version: AsrModelVersion) async throws {
+    private func ensureModelsLoaded(for version: AsrModelVersion, modelName: String) async throws {
         if asrManager != nil, activeVersion == version {
+            activeModelName = modelName
             return
         }
 
         // Clean up existing manager but preserve cachedModels for reuse
         await cleanupLoadedManagers()
 
-        let models = try await getOrLoadModels(for: version)
+        let models = try await getOrLoadModels(for: version, modelName: modelName)
 
         let manager = AsrManager(config: .default)
         try await manager.loadModels(models)
         self.asrManager = manager
         self.activeVersion = version
+        self.activeModelName = modelName
     }
 
     private func ensureUnifiedModelsLoaded() async throws {
@@ -203,14 +208,17 @@ class FluidAudioTranscriptionService: TranscriptionService {
     }
 
     // Returns cached models or loads from disk; deduplicates concurrent loads
-    func getOrLoadModels(for version: AsrModelVersion) async throws -> AsrModels {
+    func getOrLoadModels(for version: AsrModelVersion, modelName: String) async throws -> AsrModels {
         if let cached = cachedModels, cached.version == version {
+            cachedModelNames.insert(modelName)
             return cached
         }
 
         // Deduplicate concurrent loads for the same version
         if let (existingVersion, existingTask) = loadingTask, existingVersion == version {
-            return try await existingTask.value
+            let models = try await existingTask.value
+            cachedModelNames.insert(modelName)
+            return models
         }
 
         let task = Task {
@@ -232,6 +240,7 @@ class FluidAudioTranscriptionService: TranscriptionService {
         do {
             let models = try await task.value
             self.cachedModels = models
+            self.cachedModelNames = [modelName]
             // Only clear if we're still the current loading task
             if loadingTask?.version == version {
                 self.loadingTask = nil
@@ -249,14 +258,17 @@ class FluidAudioTranscriptionService: TranscriptionService {
     func loadModel(for model: FluidAudioModel) async throws {
         if FluidAudioModelManager.isParakeetCtcZhCnModel(named: model.name) {
             try await ensureParakeetCtcZhCnLoaded()
+            activeModelName = model.name
             return
         }
         if FluidAudioModelManager.isSenseVoiceModel(named: model.name) {
             try await ensureSenseVoiceLoaded()
+            activeModelName = model.name
             return
         }
         if FluidAudioModelManager.isParaformerZhModel(named: model.name) {
             try await ensureParaformerLoaded()
+            activeModelName = model.name
             return
         }
         if FluidAudioModelManager.isNemotronModel(named: model.name) {
@@ -266,10 +278,11 @@ class FluidAudioTranscriptionService: TranscriptionService {
 
         if FluidAudioModelManager.isParakeetUnifiedModel(named: model.name) {
             try await ensureUnifiedModelsLoaded()
+            activeModelName = model.name
             return
         }
 
-        try await ensureModelsLoaded(for: version(for: model))
+        try await ensureModelsLoaded(for: version(for: model), modelName: model.name)
     }
 
     func transcribe(audioURL: URL, model: any TranscriptionModel, context: TranscriptionRequestContext) async throws
@@ -277,12 +290,14 @@ class FluidAudioTranscriptionService: TranscriptionService {
     {
         if FluidAudioModelManager.isParakeetCtcZhCnModel(named: model.name) {
             try await ensureParakeetCtcZhCnLoaded()
+            activeModelName = model.name
             let samples = try loadAudioSamples(from: audioURL)
             return try await transcribeParakeetCtcZhCnLongForm(samples)
         }
 
         if FluidAudioModelManager.isSenseVoiceModel(named: model.name) {
             try await ensureSenseVoiceLoaded()
+            activeModelName = model.name
             guard let senseVoiceManager else { throw ASRError.notInitialized }
             let samples = try loadAudioSamples(from: audioURL)
             let preparedSamples = Self.prepareSenseVoiceSamples(samples)
@@ -294,6 +309,7 @@ class FluidAudioTranscriptionService: TranscriptionService {
 
         if FluidAudioModelManager.isParaformerZhModel(named: model.name) {
             try await ensureParaformerLoaded()
+            activeModelName = model.name
             guard let paraformerManager else { throw ASRError.notInitialized }
             let text = try await Self.funASRInferenceGate.perform {
                 try await paraformerManager.transcribe(audioURL: audioURL)
@@ -303,6 +319,7 @@ class FluidAudioTranscriptionService: TranscriptionService {
 
         if FluidAudioModelManager.isParakeetUnifiedModel(named: model.name) {
             try await ensureUnifiedModelsLoaded()
+            activeModelName = model.name
             guard let unifiedAsrManager else {
                 throw ASRError.notInitialized
             }
@@ -314,6 +331,7 @@ class FluidAudioTranscriptionService: TranscriptionService {
 
         if FluidAudioModelManager.isNemotronModel(named: model.name) {
             try await ensureNemotronModelsLoaded(named: model.name)
+            activeModelName = model.name
             guard let nemotronAsrManager else {
                 throw ASRError.notInitialized
             }
@@ -333,7 +351,7 @@ class FluidAudioTranscriptionService: TranscriptionService {
         }
 
         let targetVersion = version(for: model)
-        try await ensureModelsLoaded(for: targetVersion)
+        try await ensureModelsLoaded(for: targetVersion, modelName: model.name)
 
         guard let asrManager = asrManager else {
             throw ASRError.notInitialized
@@ -364,14 +382,17 @@ class FluidAudioTranscriptionService: TranscriptionService {
     func prepareBufferedStreamingPreview(named modelName: String) async throws {
         if FluidAudioModelManager.isParakeetCtcZhCnModel(named: modelName) {
             try await ensureParakeetCtcZhCnLoaded()
+            activeModelName = modelName
             return
         }
         if FluidAudioModelManager.isSenseVoiceModel(named: modelName) {
             try await ensureSenseVoiceLoaded()
+            activeModelName = modelName
             return
         }
         if FluidAudioModelManager.isParaformerZhModel(named: modelName) {
             try await ensureParaformerLoaded()
+            activeModelName = modelName
             return
         }
         throw ASRError.processingFailed("Unsupported buffered FluidAudio model: \(modelName)")
@@ -380,10 +401,12 @@ class FluidAudioTranscriptionService: TranscriptionService {
     func transcribeBufferedStreamingPreview(samples: [Float], modelName: String) async throws -> String {
         if FluidAudioModelManager.isParakeetCtcZhCnModel(named: modelName) {
             try await ensureParakeetCtcZhCnLoaded()
+            activeModelName = modelName
             return try await transcribeParakeetCtcZhCnLongForm(samples)
         }
         if FluidAudioModelManager.isSenseVoiceModel(named: modelName) {
             try await ensureSenseVoiceLoaded()
+            activeModelName = modelName
             guard let senseVoiceManager else { throw ASRError.notInitialized }
             let preparedSamples = Self.prepareSenseVoiceSamples(samples)
             let text = try await Self.funASRInferenceGate.perform {
@@ -393,6 +416,7 @@ class FluidAudioTranscriptionService: TranscriptionService {
         }
         if FluidAudioModelManager.isParaformerZhModel(named: modelName) {
             try await ensureParaformerLoaded()
+            activeModelName = modelName
             guard let paraformerManager else { throw ASRError.notInitialized }
             let text = try await Self.funASRInferenceGate.perform {
                 try await paraformerManager.transcribe(audio: samples)
@@ -437,6 +461,25 @@ class FluidAudioTranscriptionService: TranscriptionService {
     // Releases ASR resources but preserves cached models for reuse
     func cleanup() async {
         await cleanupLoadedManagers()
+    }
+
+    func releaseResourcesIfUnbound(boundModelNames: Set<String>) async -> Set<String> {
+        var releasedModelNames: Set<String> = []
+
+        if let activeModelName, !boundModelNames.contains(activeModelName) {
+            releasedModelNames.insert(activeModelName)
+            await cleanupLoadedManagers()
+        }
+
+        if cachedModelNames.isDisjoint(with: boundModelNames) {
+            releasedModelNames.formUnion(cachedModelNames)
+            loadingTask?.task.cancel()
+            loadingTask = nil
+            cachedModels = nil
+            cachedModelNames.removeAll()
+        }
+
+        return releasedModelNames
     }
 
 }

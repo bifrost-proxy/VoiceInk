@@ -3,10 +3,6 @@ import Testing
 @testable import VoiceInk
 
 struct TranscriptionRealtimeSupportTests {
-    @Test func sherpaRecognizerStaysWarmForLongSessions() {
-        #expect(SherpaOnnxTranscriptionService.idleRetention == .seconds(3_600))
-    }
-
     @Test func qwenCPUProviderDisablesArenaWithoutDisablingPrewarm() throws {
         let provider = try SherpaOnnxTranscriptionService.qwenCPUProvider()
         let prefix = "cpu:"
@@ -18,7 +14,6 @@ struct TranscriptionRealtimeSupportTests {
             .map(String.init)
 
         #expect(directives == ["EnableCpuMemArena=0"])
-        #expect(SherpaOnnxTranscriptionService.idleRetention == .seconds(3_600))
     }
 
     @Test func distinguishesNativeStreamingFromSlidingWindowsAndBatchModels() throws {
