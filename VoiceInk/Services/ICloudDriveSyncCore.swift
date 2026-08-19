@@ -116,18 +116,47 @@ struct VoiceInkSyncMutationBatch: Codable, Equatable, Sendable {
     let mutations: [VoiceInkSyncMutation]
 }
 
-struct VoiceInkSyncCandidate: Equatable, Sendable {
-    let envelope: VoiceInkSyncEnvelope
+struct VoiceInkSyncOperationMetadata: Codable, Equatable, Sendable {
+    let operationID: UUID
+    let authorDeviceID: String
+    let authorDeviceName: String?
+    let authorSequence: UInt64
+    let createdAt: Date
+
+    init(envelope: VoiceInkSyncEnvelope) {
+        operationID = envelope.operationID
+        authorDeviceID = envelope.authorDeviceID
+        authorDeviceName = envelope.authorDeviceName
+        authorSequence = envelope.authorSequence
+        createdAt = envelope.createdAt
+    }
+
+    var authorDisplayName: String {
+        if let name = authorDeviceName?.trimmingCharacters(in: .whitespacesAndNewlines),
+            !name.isEmpty
+        {
+            return name
+        }
+        return String(authorDeviceID.prefix(8))
+    }
+}
+
+struct VoiceInkSyncCandidate: Codable, Equatable, Sendable {
+    let envelope: VoiceInkSyncOperationMetadata
     let mutation: VoiceInkSyncMutation
 }
 
-struct VoiceInkSyncRegisterState: Equatable, Sendable {
+struct VoiceInkSyncRegisterState: Codable, Equatable, Sendable {
     private(set) var candidatesByKey: [String: [VoiceInkSyncCandidate]] = [:]
     private(set) var supersededOperationIDsByKey: [String: Set<UUID>] = [:]
 
-    mutating func apply(_ envelope: VoiceInkSyncEnvelope, batch: VoiceInkSyncMutationBatch) {
+    @discardableResult
+    mutating func apply(_ envelope: VoiceInkSyncEnvelope, batch: VoiceInkSyncMutationBatch) -> Set<String> {
+        let metadata = VoiceInkSyncOperationMetadata(envelope: envelope)
+        var affectedKeys = Set<String>()
         for mutation in batch.mutations {
             guard !mutation.key.isEmpty else { continue }
+            affectedKeys.insert(mutation.key)
             var superseded = supersededOperationIDsByKey[mutation.key, default: []]
             superseded.formUnion(mutation.supersededOperationIDs)
             supersededOperationIDsByKey[mutation.key] = superseded
@@ -141,11 +170,12 @@ struct VoiceInkSyncRegisterState: Equatable, Sendable {
                 continue
             }
 
-            let candidate = VoiceInkSyncCandidate(envelope: envelope, mutation: mutation)
+            let candidate = VoiceInkSyncCandidate(envelope: metadata, mutation: mutation)
             candidates.append(candidate)
             candidates.sort(by: Self.candidatePrecedes)
             candidatesByKey[mutation.key] = candidates
         }
+        return affectedKeys
     }
 
     func operationIDs(for key: String) -> [UUID] {
@@ -189,8 +219,8 @@ struct VoiceInkSyncRegisterState: Equatable, Sendable {
     func latestRemoteEnvelope(
         excludingDeviceID localDeviceID: String,
         knownOperationIDs: Set<UUID>
-    ) -> VoiceInkSyncEnvelope? {
-        var envelopesByID: [UUID: VoiceInkSyncEnvelope] = [:]
+    ) -> VoiceInkSyncOperationMetadata? {
+        var envelopesByID: [UUID: VoiceInkSyncOperationMetadata] = [:]
         for candidates in candidatesByKey.values {
             for candidate in candidates {
                 let envelope = candidate.envelope
@@ -235,6 +265,9 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
     let deviceID: String
     let deviceName: String
     private(set) var frontierWriteCountForTesting = 0
+    private(set) var registerCheckpointWriteCountForTesting = 0
+    private(set) var decodedOperationCountForTesting = 0
+    private var registerCheckpoints: [VoiceInkSyncDomain: RegisterCheckpoint] = [:]
 
     init(
         defaults: UserDefaults = .standard,
@@ -257,6 +290,9 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
             ? normalizedName!
             : Host.current().localizedName ?? "Mac"
         self.deviceName = String(resolvedName.prefix(120))
+        if iCloudDriveRootURL == nil {
+            pruneOrphanedSyncCaches()
+        }
     }
 
     var rootURL: URL? {
@@ -455,6 +491,191 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
         return envelopes
     }
 
+    struct IncrementalReadResult: Sendable {
+        let register: VoiceInkSyncRegisterState
+        let affectedKeys: Set<String>
+        let newEnvelopes: [VoiceInkSyncEnvelope]
+        let performedFullScan: Bool
+    }
+
+    /// Loads the materialized register and applies only operation files that were not
+    /// present in the last local checkpoint. Metadata events pass exact operation URLs;
+    /// startup and periodic reconciliation use a full directory scan as a repair path.
+    func readIncrementally(
+        in domain: VoiceInkSyncDomain,
+        hintedOperationURLs: Set<URL> = [],
+        fullScan: Bool
+    ) throws -> IncrementalReadResult {
+        var checkpoint = loadRegisterCheckpoint(for: domain)
+        let mustScanAll = fullScan || checkpoint == nil
+        if checkpoint == nil {
+            checkpoint = RegisterCheckpoint(domain: domain)
+        }
+        guard var checkpoint else {
+            throw CocoaError(.fileReadUnknown)
+        }
+
+        let candidateURLs: [URL]
+        if mustScanAll {
+            candidateURLs = try operationURLs(in: domain)
+        } else {
+            candidateURLs = hintedOperationURLs.filter {
+                operationLocation(for: $0)?.domain == domain
+            }.sorted { $0.path < $1.path }
+        }
+
+        var affectedKeys = Set<String>()
+        var newEnvelopes: [VoiceInkSyncEnvelope] = []
+        for url in candidateURLs {
+            let relativePath = try relativeOperationPath(for: url, domain: domain)
+            // Operation paths are immutable and include their UUID. Once reduced into the
+            // checkpoint, a File Provider metadata refresh must not make us reopen the payload.
+            if checkpoint.operationFiles[relativePath] != nil { continue }
+            let stamp = try operationFileStamp(at: url)
+            let envelope = try readEnvelope(at: url, domain: domain)
+            affectedKeys.formUnion(
+                checkpoint.register.apply(envelope, batch: try decodeBatch(from: envelope)))
+            checkpoint.operationFiles[relativePath] = stamp
+            newEnvelopes.append(envelope)
+        }
+
+        // The operation log is append-only. Keep already materialized entries when iCloud
+        // temporarily omits an item from a directory enumeration; deletions are represented by
+        // tombstone operations, never by removing immutable operation files.
+
+        if !newEnvelopes.isEmpty || loadRegisterCheckpoint(for: domain) == nil {
+            saveRegisterCheckpoint(checkpoint, for: domain)
+        }
+        mergeIntoFrontier(newEnvelopes)
+        return IncrementalReadResult(
+            register: checkpoint.register,
+            affectedKeys: affectedKeys,
+            newEnvelopes: newEnvelopes,
+            performedFullScan: mustScanAll
+        )
+    }
+
+    /// Commits the already-reduced register after locally appended immutable operations.
+    /// If no checkpoint exists yet, the next read performs the authoritative full rebuild.
+    func updateIncrementalCheckpoint(
+        register: VoiceInkSyncRegisterState,
+        incorporating envelopes: [VoiceInkSyncEnvelope],
+        domain: VoiceInkSyncDomain
+    ) throws {
+        guard var checkpoint = loadRegisterCheckpoint(for: domain) else { return }
+        checkpoint.register = register
+        for envelope in envelopes where envelope.domain == domain {
+            guard let url = operationURL(
+                operationID: envelope.operationID,
+                domain: domain,
+                authorDeviceID: envelope.authorDeviceID
+            ) else { continue }
+            checkpoint.operationFiles[try relativeOperationPath(for: url, domain: domain)] =
+                try operationFileStamp(at: url)
+        }
+        saveRegisterCheckpoint(checkpoint, for: domain)
+    }
+
+    private struct OperationFileStamp: Codable, Equatable {
+        let byteCount: Int64
+        let modifiedAt: TimeInterval
+    }
+
+    private struct RegisterCheckpoint: Codable, Equatable {
+        static let currentSchemaVersion = 1
+
+        let schemaVersion: Int
+        let domain: VoiceInkSyncDomain
+        var operationFiles: [String: OperationFileStamp]
+        var register: VoiceInkSyncRegisterState
+
+        init(domain: VoiceInkSyncDomain) {
+            schemaVersion = Self.currentSchemaVersion
+            self.domain = domain
+            operationFiles = [:]
+            register = VoiceInkSyncRegisterState()
+        }
+
+    }
+
+    private func operationURLs(in domain: VoiceInkSyncDomain) throws -> [URL] {
+        guard let domainURL = operationsURL(for: domain),
+            fileManager.fileExists(atPath: domainURL.path)
+        else { return [] }
+        let keys: [URLResourceKey] = [
+            .isRegularFileKey, .isUbiquitousItemKey, .ubiquitousItemDownloadingStatusKey,
+        ]
+        guard let enumerator = fileManager.enumerator(
+            at: domainURL,
+            includingPropertiesForKeys: keys,
+            options: [.skipsHiddenFiles]
+        ) else { return [] }
+        var urls: [URL] = []
+        for case let url as URL in enumerator where url.pathExtension == "syncop" {
+            let values = try? url.resourceValues(forKeys: Set(keys))
+            guard values?.isRegularFile == true else { continue }
+            if values?.isUbiquitousItem == true,
+                values?.ubiquitousItemDownloadingStatus != .current
+            {
+                try? fileManager.startDownloadingUbiquitousItem(at: url)
+                throw CocoaError(.fileReadNoSuchFile)
+            }
+            urls.append(url)
+        }
+        return urls.sorted { $0.path < $1.path }
+    }
+
+    private func relativeOperationPath(for url: URL, domain: VoiceInkSyncDomain) throws -> String {
+        guard let domainURL = operationsURL(for: domain) else { throw CocoaError(.fileNoSuchFile) }
+        let root = domainURL.standardizedFileURL.path + "/"
+        let path = url.standardizedFileURL.path
+        guard path.hasPrefix(root) else { throw CocoaError(.fileReadInvalidFileName) }
+        return String(path.dropFirst(root.count))
+    }
+
+    private func operationFileStamp(at url: URL) throws -> OperationFileStamp {
+        let attributes = try fileManager.attributesOfItem(atPath: url.path)
+        guard let byteCount = (attributes[.size] as? NSNumber)?.int64Value,
+            let modifiedAt = (attributes[.modificationDate] as? Date)?.timeIntervalSince1970
+        else { throw CocoaError(.fileReadUnknown) }
+        return OperationFileStamp(byteCount: byteCount, modifiedAt: modifiedAt)
+    }
+
+    private func readEnvelope(at url: URL, domain: VoiceInkSyncDomain) throws -> VoiceInkSyncEnvelope {
+        decodedOperationCountForTesting += 1
+        let data = try coordinatedRead(from: url)
+        guard data.count <= Self.maximumEnvelopeBytes,
+            let envelope = try? PropertyListDecoder().decode(VoiceInkSyncEnvelope.self, from: data),
+            envelope.domain == domain,
+            envelope.isValid
+        else { throw CocoaError(.fileReadCorruptFile) }
+        return envelope
+    }
+
+    private func loadRegisterCheckpoint(for domain: VoiceInkSyncDomain) -> RegisterCheckpoint? {
+        if let checkpoint = registerCheckpoints[domain] { return checkpoint }
+        guard let url = registerCheckpointURL(for: domain),
+            let data = try? Data(contentsOf: url),
+            let checkpoint = try? PropertyListDecoder().decode(RegisterCheckpoint.self, from: data),
+            checkpoint.schemaVersion == RegisterCheckpoint.currentSchemaVersion,
+            checkpoint.domain == domain
+        else { return nil }
+        registerCheckpoints[domain] = checkpoint
+        return checkpoint
+    }
+
+    private func saveRegisterCheckpoint(_ checkpoint: RegisterCheckpoint, for domain: VoiceInkSyncDomain) {
+        registerCheckpoints[domain] = checkpoint
+        guard let url = registerCheckpointURL(for: domain),
+            let data = try? PropertyListEncoder.voiceInkSync.encode(checkpoint)
+        else { return }
+        try? fileManager.createDirectory(
+            at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if (try? data.write(to: url, options: .atomic)) != nil {
+            registerCheckpointWriteCountForTesting += 1
+        }
+    }
+
     private struct CachedEnvelope: Codable {
         let byteCount: Int64
         let modifiedAt: TimeInterval
@@ -489,6 +710,47 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
             "com.prakashjoshipax.VoiceInk/ICloudSyncIndex", isDirectory: true)
         let rootDigest = VoiceInkSyncEnvelope.sha256(Data(rootURL.standardizedFileURL.path.utf8))
         return cacheRoot.appendingPathComponent("\(rootDigest)-\(domain.rawValue).plist")
+    }
+
+    private func registerCheckpointURL(for domain: VoiceInkSyncDomain) -> URL? {
+        guard let rootURL else { return nil }
+        guard let caches = fileManager.urls(for: .cachesDirectory, in: .userDomainMask).first else {
+            return nil
+        }
+        let cacheRoot = caches.appendingPathComponent(
+            "com.prakashjoshipax.VoiceInk/ICloudSyncIndex", isDirectory: true)
+        let rootDigest = VoiceInkSyncEnvelope.sha256(Data(rootURL.standardizedFileURL.path.utf8))
+        return cacheRoot.appendingPathComponent(
+            "\(rootDigest)-\(deviceID)-\(domain.rawValue)-register-v1.plist")
+    }
+
+    private func pruneOrphanedSyncCaches() {
+        guard let rootURL,
+            let caches = fileManager.urls(for: .cachesDirectory, in: .userDomainMask).first
+        else { return }
+        let cacheRoot = caches.appendingPathComponent(
+            "com.prakashjoshipax.VoiceInk/ICloudSyncIndex", isDirectory: true)
+        guard let urls = try? fileManager.contentsOfDirectory(
+            at: cacheRoot,
+            includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        ) else { return }
+        let activePrefix = VoiceInkSyncEnvelope.sha256(
+            Data(rootURL.standardizedFileURL.path.utf8)) + "-"
+        var entries: [(url: URL, size: Int, modifiedAt: Date)] = []
+        for url in urls {
+            let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+            entries.append((url, values?.fileSize ?? 0, values?.contentModificationDate ?? .distantPast))
+        }
+        let maximumCacheBytes = 64 * 1_024 * 1_024
+        var totalBytes = entries.reduce(0) { $0 + $1.size }
+        guard totalBytes > maximumCacheBytes else { return }
+        for entry in entries.sorted(by: { $0.modifiedAt < $1.modifiedAt })
+        where !entry.url.lastPathComponent.hasPrefix(activePrefix) {
+            try? fileManager.removeItem(at: entry.url)
+            totalBytes -= entry.size
+            if totalBytes <= maximumCacheBytes { break }
+        }
     }
 
     func decodeBatch(from envelope: VoiceInkSyncEnvelope) throws -> VoiceInkSyncMutationBatch {
@@ -558,6 +820,14 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
             .appendingPathComponent(authorDeviceID, isDirectory: true)
             .appendingPathComponent(shard, isDirectory: true)
             .appendingPathComponent(operationID.uuidString + ".syncop")
+    }
+
+    func operationURL(for envelope: VoiceInkSyncEnvelope) -> URL? {
+        operationURL(
+            operationID: envelope.operationID,
+            domain: envelope.domain,
+            authorDeviceID: envelope.authorDeviceID
+        )
     }
 
     private func write(_ envelope: VoiceInkSyncEnvelope) throws {

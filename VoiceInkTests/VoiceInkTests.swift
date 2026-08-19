@@ -322,6 +322,58 @@ struct VoiceInkTests {
         #expect(local.frontierWriteCountForTesting == 1)
     }
 
+    @Test func incrementalRegisterDecodesAndPersistsOnlyNewOperations() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("VoiceInkIncrementalRegister-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let localSuite = "VoiceInkTests.IncrementalRegister.Local.\(UUID().uuidString)"
+        let remoteSuite = "VoiceInkTests.IncrementalRegister.Remote.\(UUID().uuidString)"
+        let localDefaults = try #require(UserDefaults(suiteName: localSuite))
+        let remoteDefaults = try #require(UserDefaults(suiteName: remoteSuite))
+        defer {
+            localDefaults.removePersistentDomain(forName: localSuite)
+            remoteDefaults.removePersistentDomain(forName: remoteSuite)
+        }
+        let local = ICloudDriveSyncCore(defaults: localDefaults, iCloudDriveRootURL: root)
+        let remote = ICloudDriveSyncCore(defaults: remoteDefaults, iCloudDriveRootURL: root)
+        _ = try remote.append(VoiceInkSyncMutationBatch(mutations: [
+            VoiceInkSyncMutation(key: "preference/first", value: Data("one".utf8))
+        ]), domain: .configuration)
+
+        let first = try local.readIncrementally(in: .configuration, fullScan: true)
+        #expect(first.affectedKeys == ["preference/first"])
+        #expect(local.decodedOperationCountForTesting == 1)
+        #expect(local.registerCheckpointWriteCountForTesting == 1)
+
+        let second = try local.readIncrementally(in: .configuration, fullScan: true)
+        #expect(second.affectedKeys.isEmpty)
+        #expect(local.decodedOperationCountForTesting == 1)
+        #expect(local.registerCheckpointWriteCountForTesting == 1)
+
+        let appended = try remote.append(VoiceInkSyncMutationBatch(mutations: [
+            VoiceInkSyncMutation(key: "preference/second", value: Data("two".utf8))
+        ]), domain: .configuration)
+        let appendedURL = try #require(remote.operationURL(for: appended))
+        let third = try local.readIncrementally(
+            in: .configuration,
+            hintedOperationURLs: [appendedURL],
+            fullScan: false
+        )
+        #expect(third.affectedKeys == ["preference/second"])
+        #expect(third.register.selectedValues().count == 2)
+        #expect(local.decodedOperationCountForTesting == 2)
+        #expect(local.registerCheckpointWriteCountForTesting == 2)
+
+        // File Provider enumeration can temporarily omit an already-consumed immutable item.
+        // The materialized checkpoint must remain usable instead of entering a retry loop.
+        try FileManager.default.removeItem(at: appendedURL)
+        let fourth = try local.readIncrementally(in: .configuration, fullScan: true)
+        #expect(fourth.affectedKeys.isEmpty)
+        #expect(fourth.register.selectedValues().count == 2)
+        #expect(local.decodedOperationCountForTesting == 2)
+        #expect(local.registerCheckpointWriteCountForTesting == 2)
+    }
+
     @Test func syncEnvelopeCarriesDeviceNameAndDecodesLegacyOperations() throws {
         let deviceID = UUID().uuidString
         let batch = VoiceInkSyncMutationBatch(mutations: [
@@ -1421,11 +1473,15 @@ struct VoiceInkTests {
         #expect(service.lastSyncUsedLegacyScan)
         let operationCount = try syncOperationFiles(root: root, domain: .usage).count
         #expect(operationCount == 1)
+        let hashCountAfterImport = service.audioHashCountForTesting
+        #expect(hashCountAfterImport > 0)
         let firstSync = try #require(service.lastSyncedAt)
         service.syncNow()
         try await waitForUsageSync(service, after: firstSync)
         #expect(!service.lastSyncUsedLegacyScan)
         #expect(try syncOperationFiles(root: root, domain: .usage).count == operationCount)
+        #expect(service.audioHashCountForTesting == hashCountAfterImport)
+        #expect(defaults.data(forKey: "CloudUsageDataSyncV3.appliedOperationIDs") == nil)
         service.setEnabled(false)
     }
 
