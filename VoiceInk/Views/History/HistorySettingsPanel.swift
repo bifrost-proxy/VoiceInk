@@ -12,7 +12,8 @@ struct HistorySettingsPanel: View {
     @AppStorage(CleanupSettingsKeys.isAudioCleanupEnabled) private var isAudioCleanupEnabled = false
     @AppStorage(CleanupSettingsKeys.audioRetentionPeriod) private var audioRetentionPeriod = 7
     @AppStorage(CleanupSettingsKeys.maximumHistoryRecordCount) private var maximumHistoryRecordCount = 0
-    @AppStorage(CleanupSettingsKeys.maximumHistoryStorageMegabytes) private var maximumHistoryStorageMegabytes = 0
+    @AppStorage(CleanupSettingsKeys.maximumHistoryStorageMegabytes) private var maximumHistoryStorageMegabytes =
+        HistoryStorageSettings.defaultMegabytes
 
     @State private var isPerformingAudioCleanup = false
     @State private var isShowingAudioConfirmation = false
@@ -74,17 +75,25 @@ struct HistorySettingsPanel: View {
                     }
 
                     Picker("Maximum Storage", selection: $maximumHistoryStorageMegabytes) {
-                        Text("Unlimited").tag(0)
+                        Text("100 MB").tag(100)
                         Text("500 MB").tag(500)
                         Text("1 GB").tag(1_024)
                         Text("5 GB").tag(5_120)
                         Text("10 GB").tag(10_240)
+                        Text("25 GB").tag(25_600)
                         Text("50 GB").tag(51_200)
+                        Text("100 GB").tag(102_400)
+                    }
+
+                    if storageManager.pendingCapacityActivationDate != nil {
+                        Label("The new storage limit will take effect 30 seconds after your last change.", systemImage: "clock")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
                 } header: {
                     sectionHeader(
                         "Capacity Limits",
-                        tip: "When either limit is exceeded, VoiceInk deletes the oldest local records first. The newest record is always retained. Defaults are unlimited."
+                        tip: "VoiceInk checks at most once per hour. When either limit is exceeded, it deletes the oldest local history and audio first. The newest record is always retained. Storage defaults to 500 MB."
                     )
                 }
 
@@ -209,10 +218,10 @@ struct HistorySettingsPanel: View {
             }
         }
         .onChange(of: maximumHistoryRecordCount) { _, _ in
-            Task { _ = await storageManager.enforceLimits(modelContext: modelContext) }
+            storageManager.scheduleLimitUpdate(modelContext: modelContext)
         }
         .onChange(of: maximumHistoryStorageMegabytes) { _, _ in
-            Task { _ = await storageManager.enforceLimits(modelContext: modelContext) }
+            storageManager.scheduleCapacityUpdate(maximumHistoryStorageMegabytes, modelContext: modelContext)
         }
         .task {
             await storageManager.refresh(modelContext: modelContext)
