@@ -113,6 +113,14 @@ struct RecordingPermissionPreflightTests {
                 registeredFallbackCount: 1
             ) == .standalonePrompt
         )
+        #expect(
+            RecordingShortcutManager.missingAccessibilityPresentation(
+                isRecorderGuidancePresented: false,
+                recordingShortcuts: [keyShortcut],
+                configuredShortcutCount: 1,
+                registeredFallbackCount: 0
+            ) == .recorderGuidance
+        )
     }
 
     @Test func accessibilityAuthorizationMonitorRefreshesWithoutAppActivation() async throws {

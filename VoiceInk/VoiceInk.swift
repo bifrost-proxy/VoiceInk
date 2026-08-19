@@ -185,6 +185,9 @@ struct VoiceInkApp: App {
         // Ensure no lingering recording state from previous runs
         Task {
             await recorderUIManager.resetOnLaunch()
+            await MainActor.run {
+                recordingShortcutManager.refreshAfterLaunchReset()
+            }
         }
 
         AppShortcuts.updateAppShortcutParameters()
