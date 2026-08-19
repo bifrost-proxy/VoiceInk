@@ -313,7 +313,8 @@ struct DashboardContent: View {
 
     private func openAccessibilitySettings() {
         Task { @MainActor in
-            _ = await PrivacyPermissionResetService.requestAccessibilityAuthorization()
+            _ = await PrivacyPermissionAuthorizationService.requestAccessibilityAuthorization()
+            refreshAccessibilityStatus()
         }
     }
 

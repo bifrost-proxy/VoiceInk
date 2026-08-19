@@ -232,8 +232,9 @@ enum PrivacyPermissionResetService {
         )
     }
 
-    /// Removes only VoiceInk's stale TCC entry. The system permission request
-    /// that follows registers the currently installed ad-hoc-signed build.
+    /// Explicit recovery for a stale TCC entry. Normal permission requests must
+    /// never call this because resetting an existing decision removes VoiceInk
+    /// from System Settings until macOS registers it again.
     static func resetAuthorization(for pane: PrivacySettingsPane) async -> String? {
         guard let command = command(for: pane) else { return nil }
 
@@ -268,11 +269,51 @@ enum PrivacyPermissionResetService {
             return nil
         }.value
     }
+}
+
+enum PrivacyPermissionAuthorizationAction: Equatable {
+    case alreadyGranted
+    case request
+    case openSettings
+}
+
+enum PrivacyPermissionAuthorizationService {
+    static func microphoneAction(
+        for status: AVAuthorizationStatus
+    ) -> PrivacyPermissionAuthorizationAction {
+        switch status {
+        case .authorized:
+            return .alreadyGranted
+        case .notDetermined:
+            return .request
+        case .denied, .restricted:
+            return .openSettings
+        @unknown default:
+            return .openSettings
+        }
+    }
+
+    static func accessibilityAction(isTrusted: Bool) -> PrivacyPermissionAuthorizationAction {
+        isTrusted ? .alreadyGranted : .request
+    }
+
+    static func screenRecordingAction(hasAccess: Bool) -> PrivacyPermissionAuthorizationAction {
+        hasAccess ? .alreadyGranted : .request
+    }
 
     @MainActor
-    static func requestMicrophoneAuthorization(openSettingsWhenNeeded: Bool = true) async -> String? {
-        let resetError = await resetAuthorization(for: .microphone)
-        let isGranted = await AVCaptureDevice.requestAccess(for: .audio)
+    static func requestMicrophoneAuthorization(openSettingsWhenNeeded: Bool = true) async -> Bool {
+        let action = microphoneAction(for: AVCaptureDevice.authorizationStatus(for: .audio))
+        let isGranted: Bool
+
+        switch action {
+        case .alreadyGranted:
+            return true
+        case .request:
+            isGranted = await AVCaptureDevice.requestAccess(for: .audio)
+        case .openSettings:
+            isGranted = false
+        }
 
         if !isGranted,
             openSettingsWhenNeeded,
@@ -281,29 +322,36 @@ enum PrivacyPermissionResetService {
             NSWorkspace.shared.open(url)
         }
 
-        return resetError
+        return isGranted
     }
 
     @MainActor
-    static func requestAccessibilityAuthorization(openSettings: Bool = true) async -> String? {
-        let resetError = await resetAuthorization(for: .accessibility)
+    static func requestAccessibilityAuthorization(openSettings: Bool = true) async -> Bool {
+        guard accessibilityAction(isTrusted: AXIsProcessTrusted()) == .request else {
+            return true
+        }
+
         let options: NSDictionary = [
             kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true
         ]
-        AXIsProcessTrustedWithOptions(options)
+        let isGranted = AXIsProcessTrustedWithOptions(options)
 
-        if openSettings,
+        if !isGranted,
+            openSettings,
             let url = URL(string: PrivacySettingsPane.accessibility.urlString)
         {
             NSWorkspace.shared.open(url)
         }
 
-        return resetError
+        return isGranted
     }
 
     @MainActor
-    static func requestScreenRecordingAuthorization(openSettingsWhenNeeded: Bool = true) async -> String? {
-        let resetError = await resetAuthorization(for: .screenRecording)
+    static func requestScreenRecordingAuthorization(openSettingsWhenNeeded: Bool = true) async -> Bool {
+        guard screenRecordingAction(hasAccess: CGPreflightScreenCaptureAccess()) == .request else {
+            return true
+        }
+
         let isGranted = await ScreenCaptureService.requestScreenCapturePermissionRegistration()
 
         if !isGranted,
@@ -313,6 +361,6 @@ enum PrivacyPermissionResetService {
             NSWorkspace.shared.open(url)
         }
 
-        return resetError
+        return isGranted
     }
 }

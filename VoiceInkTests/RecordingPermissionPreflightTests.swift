@@ -178,6 +178,40 @@ struct RecordingPermissionPreflightTests {
         #expect(await permissionTask.value)
     }
 
+    @Test func existingPermissionDecisionsArePreserved() {
+        #expect(
+            PrivacyPermissionAuthorizationService.microphoneAction(for: .authorized)
+                == .alreadyGranted
+        )
+        #expect(
+            PrivacyPermissionAuthorizationService.accessibilityAction(isTrusted: true)
+                == .alreadyGranted
+        )
+        #expect(
+            PrivacyPermissionAuthorizationService.screenRecordingAction(hasAccess: true)
+                == .alreadyGranted
+        )
+    }
+
+    @Test func onlyUndeterminedPermissionsRequestSystemAuthorization() {
+        #expect(
+            PrivacyPermissionAuthorizationService.microphoneAction(for: .notDetermined)
+                == .request
+        )
+        #expect(
+            PrivacyPermissionAuthorizationService.microphoneAction(for: .denied)
+                == .openSettings
+        )
+        #expect(
+            PrivacyPermissionAuthorizationService.accessibilityAction(isTrusted: false)
+                == .request
+        )
+        #expect(
+            PrivacyPermissionAuthorizationService.screenRecordingAction(hasAccess: false)
+                == .request
+        )
+    }
+
     @Test func recorderGuidanceAlwaysProvidesAnActionableNextStep() {
         let accessibility = RecorderPermissionGuidance.required(.accessibility)
         let requesting = RecorderPermissionGuidance.requesting(.screenRecording)

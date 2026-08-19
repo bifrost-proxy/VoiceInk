@@ -140,17 +140,11 @@ enum RecordingPermissionPreflight {
     static func requestAuthorization(for issue: RecordingPermissionIssue) async -> Bool {
         switch issue {
         case .microphone:
-            guard AVCaptureDevice.authorizationStatus(for: .audio) != .authorized else { return true }
-            _ = await PrivacyPermissionResetService.requestMicrophoneAuthorization()
-            return AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
+            return await PrivacyPermissionAuthorizationService.requestMicrophoneAuthorization()
         case .accessibility:
-            guard !AXIsProcessTrusted() else { return true }
-            _ = await PrivacyPermissionResetService.requestAccessibilityAuthorization()
-            return AXIsProcessTrusted()
+            return await PrivacyPermissionAuthorizationService.requestAccessibilityAuthorization()
         case .screenRecording:
-            guard !CGPreflightScreenCaptureAccess() else { return true }
-            _ = await PrivacyPermissionResetService.requestScreenRecordingAuthorization()
-            return CGPreflightScreenCaptureAccess()
+            return await PrivacyPermissionAuthorizationService.requestScreenRecordingAuthorization()
         }
     }
 }
