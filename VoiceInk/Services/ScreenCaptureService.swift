@@ -9,7 +9,7 @@ class ScreenCaptureService: ObservableObject {
     @Published var isCapturing = false
     @Published var lastCapturedText: String?
 
-    private nonisolated static let captureTimeout: TimeInterval = 3.0
+    private nonisolated static let captureTimeout: TimeInterval = 5.0
     private nonisolated static let maximumCaptureDimension: CGFloat = 2800
     private nonisolated static let focusedWindowFrameTolerance: CGFloat = 96
 
