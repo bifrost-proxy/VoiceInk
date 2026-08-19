@@ -14,6 +14,7 @@ struct VoiceInkSyncEnvelope: Codable, Equatable, Sendable {
     let operationID: UUID
     let domain: VoiceInkSyncDomain
     let authorDeviceID: String
+    let authorDeviceName: String?
     let authorSequence: UInt64
     let versionClock: [String: UInt64]
     let createdAt: Date
@@ -24,6 +25,7 @@ struct VoiceInkSyncEnvelope: Codable, Equatable, Sendable {
         operationID: UUID = UUID(),
         domain: VoiceInkSyncDomain,
         authorDeviceID: String,
+        authorDeviceName: String? = nil,
         authorSequence: UInt64,
         versionClock: [String: UInt64],
         createdAt: Date = Date(),
@@ -33,11 +35,31 @@ struct VoiceInkSyncEnvelope: Codable, Equatable, Sendable {
         self.operationID = operationID
         self.domain = domain
         self.authorDeviceID = authorDeviceID
+        self.authorDeviceName = authorDeviceName
         self.authorSequence = authorSequence
         self.versionClock = versionClock
         self.createdAt = createdAt
         self.payload = payload
         self.payloadSHA256 = Self.sha256(payload)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case protocolVersion, operationID, domain, authorDeviceID, authorDeviceName
+        case authorSequence, versionClock, createdAt, payload, payloadSHA256
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        protocolVersion = try container.decode(Int.self, forKey: .protocolVersion)
+        operationID = try container.decode(UUID.self, forKey: .operationID)
+        domain = try container.decode(VoiceInkSyncDomain.self, forKey: .domain)
+        authorDeviceID = try container.decode(String.self, forKey: .authorDeviceID)
+        authorDeviceName = try container.decodeIfPresent(String.self, forKey: .authorDeviceName)
+        authorSequence = try container.decode(UInt64.self, forKey: .authorSequence)
+        versionClock = try container.decode([String: UInt64].self, forKey: .versionClock)
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+        payload = try container.decode(Data.self, forKey: .payload)
+        payloadSHA256 = try container.decode(String.self, forKey: .payloadSHA256)
     }
 
     var isValid: Bool {
@@ -48,6 +70,15 @@ struct VoiceInkSyncEnvelope: Codable, Equatable, Sendable {
             && versionClock.values.allSatisfy { $0 > 0 }
             && versionClock[authorDeviceID] == authorSequence
             && payloadSHA256 == Self.sha256(payload)
+    }
+
+    var authorDisplayName: String {
+        if let name = authorDeviceName?.trimmingCharacters(in: .whitespacesAndNewlines),
+            !name.isEmpty
+        {
+            return name
+        }
+        return String(authorDeviceID.prefix(8))
     }
 
     static func sha256(_ data: Data) -> String {
@@ -155,6 +186,26 @@ struct VoiceInkSyncRegisterState: Equatable, Sendable {
         }
     }
 
+    func latestRemoteEnvelope(
+        excludingDeviceID localDeviceID: String,
+        knownOperationIDs: Set<UUID>
+    ) -> VoiceInkSyncEnvelope? {
+        var envelopesByID: [UUID: VoiceInkSyncEnvelope] = [:]
+        for candidates in candidatesByKey.values {
+            for candidate in candidates {
+                let envelope = candidate.envelope
+                guard envelope.authorDeviceID != localDeviceID,
+                    !knownOperationIDs.contains(envelope.operationID)
+                else { continue }
+                envelopesByID[envelope.operationID] = envelope
+            }
+        }
+        return envelopesByID.values.max { lhs, rhs in
+            if lhs.createdAt != rhs.createdAt { return lhs.createdAt < rhs.createdAt }
+            return lhs.operationID.uuidString < rhs.operationID.uuidString
+        }
+    }
+
     private static func candidatePrecedes(_ lhs: VoiceInkSyncCandidate, _ rhs: VoiceInkSyncCandidate) -> Bool {
         if lhs.envelope.authorDeviceID != rhs.envelope.authorDeviceID {
             return lhs.envelope.authorDeviceID < rhs.envelope.authorDeviceID
@@ -181,28 +232,35 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
     private let defaults: UserDefaults
     private let fileManager: FileManager
     private let iCloudDriveRootOverride: URL?
+    let deviceID: String
+    let deviceName: String
+    private(set) var frontierWriteCountForTesting = 0
 
     init(
         defaults: UserDefaults = .standard,
         fileManager: FileManager = .default,
-        iCloudDriveRootURL: URL? = nil
+        iCloudDriveRootURL: URL? = nil,
+        deviceName: String? = nil
     ) {
         self.defaults = defaults
         self.fileManager = fileManager
         self.iCloudDriveRootOverride = iCloudDriveRootURL
+        if let existing = defaults.string(forKey: Self.deviceIDKey), UUID(uuidString: existing) != nil {
+            self.deviceID = existing
+        } else {
+            let created = UUID().uuidString
+            defaults.set(created, forKey: Self.deviceIDKey)
+            self.deviceID = created
+        }
+        let normalizedName = deviceName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedName = normalizedName?.isEmpty == false
+            ? normalizedName!
+            : Host.current().localizedName ?? "Mac"
+        self.deviceName = String(resolvedName.prefix(120))
     }
 
     var rootURL: URL? {
         iCloudDriveRootURL?.appendingPathComponent("VoiceInk/Sync/v3", isDirectory: true)
-    }
-
-    var deviceID: String {
-        if let existing = defaults.string(forKey: Self.deviceIDKey), UUID(uuidString: existing) != nil {
-            return existing
-        }
-        let created = UUID().uuidString
-        defaults.set(created, forKey: Self.deviceIDKey)
-        return created
     }
 
     func append(_ batch: VoiceInkSyncMutationBatch, domain: VoiceInkSyncDomain) throws -> VoiceInkSyncEnvelope {
@@ -224,6 +282,7 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
             operationID: operationID,
             domain: domain,
             authorDeviceID: deviceID,
+            authorDeviceName: deviceName,
             authorSequence: sequence,
             versionClock: clock,
             payload: payload
@@ -241,40 +300,43 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
         domain: VoiceInkSyncDomain
     ) throws -> [(envelope: VoiceInkSyncEnvelope, mutations: [VoiceInkSyncMutation])] {
         var results: [(VoiceInkSyncEnvelope, [VoiceInkSyncMutation])] = []
-        var batch: [VoiceInkSyncMutation] = []
 
-        func encodedSize(_ candidate: [VoiceInkSyncMutation]) throws -> Int {
+        func encodedSize(_ candidate: ArraySlice<VoiceInkSyncMutation>) throws -> Int {
             try PropertyListEncoder.voiceInkSync.encode(
-                VoiceInkSyncMutationBatch(mutations: candidate)
+                VoiceInkSyncMutationBatch(mutations: Array(candidate))
             ).count
         }
 
-        func flush() throws {
-            guard !batch.isEmpty else { return }
-            let mutations = batch
-            let envelope = try append(
-                VoiceInkSyncMutationBatch(mutations: mutations),
-                domain: domain
-            )
-            results.append((envelope, mutations))
-            batch.removeAll(keepingCapacity: true)
-        }
-
-        for mutation in mutations {
-            let candidate = batch + [mutation]
-            if try encodedSize(candidate) <= Self.maximumPayloadBytes {
-                batch = candidate
-                continue
-            }
-
-            guard !batch.isEmpty else { throw POSIXError(.EFBIG) }
-            try flush()
-            guard try encodedSize([mutation]) <= Self.maximumPayloadBytes else {
+        var start = mutations.startIndex
+        while start < mutations.endIndex {
+            guard try encodedSize(mutations[start...start]) <= Self.maximumPayloadBytes else {
                 throw POSIXError(.EFBIG)
             }
-            batch = [mutation]
+
+            // Find the largest deterministic prefix that fits. Encoding the growing
+            // batch after every mutation is quadratic for a large first migration.
+            var lowerBound = start + 1
+            var upperBound = mutations.endIndex
+            var bestEnd = lowerBound
+            while lowerBound <= upperBound {
+                let candidateEnd = lowerBound + (upperBound - lowerBound) / 2
+                let fits = try encodedSize(mutations[start..<candidateEnd]) <= Self.maximumPayloadBytes
+                if fits {
+                    bestEnd = candidateEnd
+                    lowerBound = candidateEnd + 1
+                } else {
+                    upperBound = candidateEnd - 1
+                }
+            }
+
+            let batch = Array(mutations[start..<bestEnd])
+            let envelope = try append(
+                VoiceInkSyncMutationBatch(mutations: batch),
+                domain: domain
+            )
+            results.append((envelope, batch))
+            start = bestEnd
         }
-        try flush()
         return results
     }
 
@@ -388,7 +450,7 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
             return lhs.operationID.uuidString < rhs.operationID.uuidString
         }
         if mergeIntoLocalFrontier {
-            for envelope in envelopes { mergeIntoFrontier(envelope) }
+            mergeIntoFrontier(envelopes)
         }
         return envelopes
     }
@@ -453,6 +515,37 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
 
     private func operationsURL(for domain: VoiceInkSyncDomain) -> URL? {
         rootURL?.appendingPathComponent("Operations/\(domain.rawValue)", isDirectory: true)
+    }
+
+    struct OperationLocation: Equatable, Sendable {
+        let domain: VoiceInkSyncDomain
+        let authorDeviceID: String
+        let operationID: UUID
+    }
+
+    func operationLocation(for url: URL) -> OperationLocation? {
+        guard let operationsRoot = rootURL?.appendingPathComponent("Operations", isDirectory: true) else {
+            return nil
+        }
+        let rootPath = operationsRoot.standardizedFileURL.path + "/"
+        let path = url.standardizedFileURL.path
+        guard path.hasPrefix(rootPath), url.pathExtension == "syncop" else { return nil }
+        let components = path.dropFirst(rootPath.count).split(separator: "/")
+        guard components.count == 4,
+            let domain = VoiceInkSyncDomain(rawValue: String(components[0])),
+            UUID(uuidString: String(components[1])) != nil,
+            let operationID = UUID(uuidString: String(components[3].dropLast(".syncop".count)))
+        else { return nil }
+        return OperationLocation(
+            domain: domain, authorDeviceID: String(components[1]), operationID: operationID)
+    }
+
+    func shouldConsumeRemoteOperation(
+        at url: URL,
+        domains: Set<VoiceInkSyncDomain>
+    ) -> Bool {
+        guard let location = operationLocation(for: url) else { return false }
+        return domains.contains(location.domain) && location.authorDeviceID != deviceID
     }
 
     private func operationURL(
@@ -533,11 +626,23 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
     }
 
     private func mergeIntoFrontier(_ envelope: VoiceInkSyncEnvelope) {
+        mergeIntoFrontier([envelope])
+    }
+
+    private func mergeIntoFrontier(_ envelopes: [VoiceInkSyncEnvelope]) {
         var frontier = loadFrontier()
-        for (device, sequence) in envelope.versionClock {
-            frontier[device] = max(frontier[device, default: 0], sequence)
+        var didChange = false
+        for envelope in envelopes {
+            for (device, sequence) in envelope.versionClock
+                where sequence > frontier[device, default: 0]
+            {
+                frontier[device] = sequence
+                didChange = true
+            }
         }
+        guard didChange else { return }
         guard let data = try? PropertyListEncoder.voiceInkSync.encode(frontier) else { return }
+        frontierWriteCountForTesting += 1
         defaults.set(data, forKey: Self.frontierKey)
     }
 }

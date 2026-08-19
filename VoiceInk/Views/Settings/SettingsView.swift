@@ -317,6 +317,13 @@ struct SettingsView: View {
                         cloudSync.setEnabled(enabled)
                     }
 
+                if configurationSyncEnabled {
+                    LabeledContent("This Device") {
+                        Text(cloudSync.localDeviceName)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
                 LabeledContent("iCloud Sync") {
                     HStack(spacing: 8) {
                         if cloudSync.state == .syncing {
@@ -331,6 +338,13 @@ struct SettingsView: View {
                 if let lastSyncedAt = cloudSync.lastSyncedAt {
                     LabeledContent("Last Synced") {
                         Text(lastSyncedAt, format: .dateTime.year().month().day().hour().minute().second())
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                if let deviceName = cloudSync.lastRemoteDeviceName {
+                    LabeledContent("Last Remote Device") {
+                        Text(deviceName)
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -416,6 +430,13 @@ struct SettingsView: View {
                     if let lastSyncedAt = usageSync.lastSyncedAt {
                         LabeledContent("Usage Last Synced") {
                             Text(lastSyncedAt, format: .dateTime.year().month().day().hour().minute().second())
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+
+                    if let deviceName = usageSync.lastRemoteDeviceName {
+                        LabeledContent("Last Remote Device") {
+                            Text(deviceName)
                                 .foregroundStyle(.secondary)
                         }
                     }

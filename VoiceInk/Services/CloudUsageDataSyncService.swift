@@ -12,7 +12,7 @@ import SwiftData
 final class CloudUsageDataSyncService: ObservableObject {
     static let shared = CloudUsageDataSyncService()
 
-    struct AudioDescriptor: Codable, Equatable, Sendable {
+    struct AudioDescriptor: Codable, Equatable, Hashable, Sendable {
         let sha256: String
         let byteCount: Int64
         let fileExtension: String
@@ -127,6 +127,7 @@ final class CloudUsageDataSyncService: ObservableObject {
     @Published private(set) var lastImportCandidateCount = 0
     @Published private(set) var lastSyncUsedLegacyScan = false
     @Published private(set) var localDeviceName: String
+    @Published private(set) var lastRemoteDeviceName: String?
 
     var statusText: String { state.displayText }
     var errorText: String? {
@@ -144,7 +145,8 @@ final class CloudUsageDataSyncService: ObservableObject {
     nonisolated private static let localBootstrapCompletedKey = metadataPrefix + "localBootstrapCompleted"
     nonisolated private static let legacyMigrationCompletedKey = metadataPrefix + "legacyMigrationCompleted"
     nonisolated private static let legacyMigratedPathsKey = metadataPrefix + "legacyMigratedPaths"
-    private static let reconciliationInterval: TimeInterval = 5 * 60
+    nonisolated private static let legacyPendingAudioDescriptorsKey = metadataPrefix + "legacyPendingAudioDescriptors"
+    nonisolated private static let reconciliationInterval: TimeInterval = 30 * 60
 
     nonisolated(unsafe) private let defaults: UserDefaults
     nonisolated(unsafe) private let fileManager: FileManager
@@ -170,6 +172,7 @@ final class CloudUsageDataSyncService: ObservableObject {
     private var enqueueAllBeforeNextSync = false
     private var consecutiveFailureCount = 0
     private var syncGeneration = 0
+    private var hasPendingAudioDownloads = false
 
     private struct SyncOutcome: Sendable {
         let processedRecordIDs: Set<UUID>
@@ -180,6 +183,8 @@ final class CloudUsageDataSyncService: ObservableObject {
         let importCandidateCount: Int
         let usedLegacyScan: Bool
         let didChangeLocalStore: Bool
+        let pendingAudioDownloadCount: Int
+        let latestRemoteDeviceName: String?
     }
 
     init(
@@ -195,11 +200,13 @@ final class CloudUsageDataSyncService: ObservableObject {
         self.iCloudDriveRootOverride = iCloudDriveRootURL
         self.localRecordingsDirectoryOverride = localRecordingsDirectoryURL
         self.executionCoordinator = executionCoordinator
-        self.localDeviceName = Self.normalizedDeviceName(deviceName ?? Self.currentDeviceName())
+        let resolvedDeviceName = Self.normalizedDeviceName(deviceName ?? Self.currentDeviceName())
+        self.localDeviceName = resolvedDeviceName
         self.syncCore = ICloudDriveSyncCore(
             defaults: defaults,
             fileManager: fileManager,
-            iCloudDriveRootURL: iCloudDriveRootURL
+            iCloudDriveRootURL: iCloudDriveRootURL,
+            deviceName: resolvedDeviceName
         )
         self.appliedOperationIDs = Self.decodeOperationIDs(defaults.data(forKey: Self.appliedOperationIDsKey))
         self.locallySuppressedRecordCount = Set(
@@ -239,7 +246,7 @@ final class CloudUsageDataSyncService: ObservableObject {
         timer = Timer.scheduledTimer(withTimeInterval: Self.reconciliationInterval, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.syncNow() }
         }
-        timer?.tolerance = 60
+        timer?.tolerance = 5 * 60
         startMetadataQueryIfAvailable()
         syncNow()
     }
@@ -308,6 +315,10 @@ final class CloudUsageDataSyncService: ObservableObject {
                     self.lastExportCandidateCount = outcome.exportCandidateCount
                     self.lastImportCandidateCount = outcome.importCandidateCount
                     self.lastSyncUsedLegacyScan = outcome.usedLegacyScan
+                    self.hasPendingAudioDownloads = outcome.pendingAudioDownloadCount > 0
+                    if let deviceName = outcome.latestRemoteDeviceName {
+                        self.lastRemoteDeviceName = deviceName
+                    }
                     self.lastSyncedAt = Date()
                     self.state = .synced
                     self.consecutiveFailureCount = 0
@@ -330,8 +341,14 @@ final class CloudUsageDataSyncService: ObservableObject {
                     self.defaults.bool(forKey: CloudSyncSettingsKeys.usageDataSyncEnabled)
                 {
                     self.consecutiveFailureCount += 1
-                    self.state = .failed(error.localizedDescription)
-                    self.logger.error("Usage sync failed: \(error.localizedDescription, privacy: .public)")
+                    if Self.isPendingICloudDownload(error) {
+                        self.state = .waitingForICloud
+                        self.logger.notice(
+                            "Usage sync waiting for iCloud: \(error.localizedDescription, privacy: .public)")
+                    } else {
+                        self.state = .failed(error.localizedDescription)
+                        self.logger.error("Usage sync failed: \(error.localizedDescription, privacy: .public)")
+                    }
                     self.scheduleRetry(
                         after: ICloudSyncRetryPolicy.delay(afterFailureCount: self.consecutiveFailureCount)
                     )
@@ -421,10 +438,20 @@ final class CloudUsageDataSyncService: ObservableObject {
         })
         observers.append(NotificationCenter.default.addObserver(
             forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
-        ) { [weak self] _ in Task { @MainActor in self?.syncNow() } })
+        ) { [weak self] _ in Task { @MainActor in self?.scheduleCatchUpSyncIfDue() } })
         observers.append(NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
-        ) { [weak self] _ in Task { @MainActor in self?.syncNow() } })
+        ) { [weak self] _ in Task { @MainActor in self?.scheduleCatchUpSyncIfDue() } })
+    }
+
+    private func scheduleCatchUpSyncIfDue(now: Date = Date()) {
+        guard Self.shouldRunCatchUpSync(lastSyncedAt: lastSyncedAt, now: now) else { return }
+        scheduleEventDrivenSync()
+    }
+
+    nonisolated static func shouldRunCatchUpSync(lastSyncedAt: Date?, now: Date) -> Bool {
+        guard let lastSyncedAt else { return false }
+        return now.timeIntervalSince(lastSyncedAt) >= reconciliationInterval
     }
 
     private func enqueueAllLocalRecords(scheduleSync: Bool = true) {
@@ -485,8 +512,10 @@ final class CloudUsageDataSyncService: ObservableObject {
             pending.formUnion(allIDs)
             persistIDs(pending, forKey: Self.pendingRecordIDsKey)
         }
-        let usedLegacyScan = try migrateLegacyUsageIfNeeded()
-        var register = try loadRegister()
+        let legacyResult = try migrateLegacyUsageIfNeeded()
+        let knownOperationIDs = Set(appliedOperationIDs.values.flatMap { $0 })
+        var loaded = try loadRegister(knownOperationIDs: knownOperationIDs)
+        var register = loaded.register
         let isBootstrap = !defaults.bool(forKey: Self.localBootstrapCompletedKey)
         let pendingRecords = loadIDs(forKey: Self.pendingRecordIDsKey)
         let pendingDeletions = loadIDs(forKey: Self.pendingGlobalDeletionIDsKey)
@@ -498,7 +527,10 @@ final class CloudUsageDataSyncService: ObservableObject {
         )
         let deleted = try appendGlobalDeletions(pendingDeletions, register: register)
 
-        if exported > 0 || deleted > 0 || usedLegacyScan { register = try loadRegister() }
+        if exported > 0 || deleted > 0 || legacyResult.didScan {
+            loaded = try loadRegister(knownOperationIDs: knownOperationIDs)
+            register = loaded.register
+        }
         let applyResult = try apply(register: register, modelContext: modelContext)
         appliedOperationIDs = activeOperationIDs(in: register)
         persistAppliedOperationIDs()
@@ -509,8 +541,10 @@ final class CloudUsageDataSyncService: ObservableObject {
             conflictCount: register.conflictCount,
             exportCandidateCount: pendingRecords.count + pendingDeletions.count,
             importCandidateCount: applyResult.importCount,
-            usedLegacyScan: usedLegacyScan,
-            didChangeLocalStore: applyResult.didChange
+            usedLegacyScan: legacyResult.didScan,
+            didChangeLocalStore: applyResult.didChange,
+            pendingAudioDownloadCount: legacyResult.pendingAudioCount + applyResult.pendingAudioCount,
+            latestRemoteDeviceName: loaded.latestRemoteEnvelope?.authorDisplayName
         )
     }
 
@@ -522,10 +556,14 @@ final class CloudUsageDataSyncService: ObservableObject {
     ) throws -> Int {
         guard !recordIDs.isEmpty else { return 0 }
         let transcriptions = try fetchTranscriptions(ids: recordIDs, modelContext: modelContext)
-        let transcriptionByID = Dictionary(uniqueKeysWithValues: transcriptions.map { ($0.id, $0) })
+        let transcriptionByID = Dictionary(grouping: transcriptions, by: \.id).compactMapValues {
+            Self.preferredTranscription(in: $0)
+        }
         let metrics = try fetchSessionMetrics(transcriptionIDs: recordIDs, modelContext: modelContext)
         let metricsByRecord = Dictionary(grouping: metrics, by: \.transcriptionId)
-        var writeCount = 0
+        var allMutations: [VoiceInkSyncMutation] = []
+        var transcriptionsByKey: [String: Transcription] = [:]
+        var metricsByKey: [String: SessionMetric] = [:]
 
         for recordID in recordIDs.sorted(by: { $0.uuidString < $1.uuidString }) {
             guard let transcription = transcriptionByID[recordID] else { continue }
@@ -550,7 +588,9 @@ final class CloudUsageDataSyncService: ObservableObject {
                 ))
             }
 
-            let localMetrics = metricsByRecord[recordID] ?? []
+            let localMetrics = Dictionary(
+                grouping: metricsByRecord[recordID] ?? [], by: \.id
+            ).compactMapValues { Self.preferredMetric(in: $0) }.values
             for metric in localMetrics.sorted(by: { $0.id.uuidString < $1.id.uuidString }) {
                 let key = Self.metricKey(recordID: recordID, metricID: metric.id)
                 let data = try Self.encode(Self.payload(from: metric))
@@ -565,22 +605,33 @@ final class CloudUsageDataSyncService: ObservableObject {
                         value: data,
                         supersededOperationIDs: isBootstrap ? [] : appliedOperationIDs[key] ?? []
                     ))
+                    metricsByKey[key] = metric
                 }
             }
 
             guard !mutations.isEmpty else { continue }
-            let batches = try syncCore.appendChunked(mutations, domain: .usage)
-            if let envelope = batches.first(where: { batch in
-                batch.mutations.contains(where: { $0.key == transcriptionKey })
-            })?.envelope {
-                transcription.syncOriginDeviceID = envelope.authorDeviceID
-                transcription.syncModifiedAt = envelope.createdAt
-                transcription.syncRevisionID = envelope.operationID
+            allMutations.append(contentsOf: mutations)
+            if mutations.contains(where: { $0.key == transcriptionKey }) {
+                transcriptionsByKey[transcriptionKey] = transcription
             }
-            writeCount += batches.count
         }
-        if writeCount > 0 { try modelContext.save() }
-        return writeCount
+        guard !allMutations.isEmpty else { return 0 }
+        let batches = try syncCore.appendChunked(allMutations, domain: .usage)
+        for batch in batches {
+            for mutation in batch.mutations {
+                if let transcription = transcriptionsByKey[mutation.key] {
+                    transcription.syncOriginDeviceID = batch.envelope.authorDeviceID
+                    transcription.syncModifiedAt = batch.envelope.createdAt
+                    transcription.syncRevisionID = batch.envelope.operationID
+                } else if let metric = metricsByKey[mutation.key] {
+                    metric.syncOriginDeviceID = batch.envelope.authorDeviceID
+                    metric.syncModifiedAt = batch.envelope.createdAt
+                    metric.syncRevisionID = batch.envelope.operationID
+                }
+            }
+        }
+        try modelContext.save()
+        return batches.count
     }
 
     private nonisolated func shouldWrite(
@@ -597,13 +648,13 @@ final class CloudUsageDataSyncService: ObservableObject {
         _ recordIDs: Set<UUID>,
         register: VoiceInkSyncRegisterState
     ) throws -> Int {
-        var count = 0
+        var mutations: [VoiceInkSyncMutation] = []
         for recordID in recordIDs.sorted(by: { $0.uuidString < $1.uuidString }) {
             let transcriptionKey = Self.transcriptionKey(recordID)
-            var mutations = [VoiceInkSyncMutation(
+            mutations.append(VoiceInkSyncMutation(
                 key: transcriptionKey, value: nil,
                 supersededOperationIDs: appliedOperationIDs[transcriptionKey] ?? []
-            )]
+            ))
             for key in appliedOperationIDs.keys
                 .filter({ $0.hasPrefix(Self.metricPrefix(recordID)) }).sorted()
             {
@@ -611,33 +662,39 @@ final class CloudUsageDataSyncService: ObservableObject {
                     key: key, value: nil, supersededOperationIDs: appliedOperationIDs[key] ?? []
                 ))
             }
-            count += try syncCore.appendChunked(mutations, domain: .usage).count
         }
-        return count
+        return try syncCore.appendChunked(mutations, domain: .usage).count
     }
 
     private nonisolated func apply(
         register: VoiceInkSyncRegisterState,
         modelContext: ModelContext
-    ) throws -> (importCount: Int, didChange: Bool) {
+    ) throws -> (importCount: Int, didChange: Bool, pendingAudioCount: Int) {
         let suppressed = loadIDs(forKey: Self.locallySuppressedRecordIDsKey)
         let audioEnabled = defaults.bool(forKey: CloudSyncSettingsKeys.usageAudioSyncEnabled)
         let localTranscriptions = try modelContext.fetch(FetchDescriptor<Transcription>())
-        var transcriptionByID = Dictionary(uniqueKeysWithValues: localTranscriptions.map { ($0.id, $0) })
+        var transcriptionsByID = Dictionary(grouping: localTranscriptions, by: \.id)
         let localMetrics = try modelContext.fetch(FetchDescriptor<SessionMetric>())
-        var metricByID = Dictionary(uniqueKeysWithValues: localMetrics.map { ($0.id, $0) })
+        var metricsByLogicalID = Dictionary(grouping: localMetrics) {
+            MetricLogicalID(transcriptionID: $0.transcriptionId, metricID: $0.id)
+        }
         var activeRecordIDs = Set<UUID>()
         var changed = false
         var importCount = 0
+        var pendingAudioCount = 0
 
         for key in register.candidatesByKey.keys.filter({ $0.hasPrefix("transcription/") }).sorted() {
             guard let recordID = Self.recordID(fromTranscriptionKey: key),
                 let candidate = register.selectedCandidate(for: key, deleteWins: true)
             else { continue }
             guard let data = candidate.mutation.value else {
-                if let existing = transcriptionByID.removeValue(forKey: recordID) {
-                    deleteMetrics(for: recordID, metricByID: &metricByID, context: modelContext)
-                    modelContext.delete(existing)
+                let existingRows = transcriptionsByID.removeValue(forKey: recordID) ?? []
+                let deletedMetrics = deleteMetrics(
+                    for: recordID, metricsByLogicalID: &metricsByLogicalID, context: modelContext)
+                if !existingRows.isEmpty {
+                    for existing in existingRows { modelContext.delete(existing) }
+                }
+                if !existingRows.isEmpty || deletedMetrics {
                     changed = true
                     importCount += 1
                 }
@@ -647,19 +704,24 @@ final class CloudUsageDataSyncService: ObservableObject {
                 let value = try? PropertyListDecoder().decode(TranscriptionValue.self, from: data)
             else { continue }
             activeRecordIDs.insert(recordID)
-            let existing = transcriptionByID[recordID]
+            let existing = Self.preferredTranscription(in: transcriptionsByID[recordID] ?? [])
             let transcription = existing ?? Transcription(text: value.transcription.text, duration: value.transcription.duration)
             if existing == nil {
                 transcription.id = recordID
                 modelContext.insert(transcription)
-                transcriptionByID[recordID] = transcription
+                transcriptionsByID[recordID] = [transcription]
             }
             let needsApply = existing == nil
                 || Self.payload(from: transcription) != value.transcription
                 || transcription.syncRevisionID != candidate.envelope.operationID
             var materializedAudioURL: URL?
             if audioEnabled, let audio = value.audio {
-                materializedAudioURL = try materializeAudio(audio, transcriptionID: recordID)
+                switch try materializeAudio(audio, transcriptionID: recordID) {
+                case .available(let url):
+                    materializedAudioURL = url
+                case .pending:
+                    pendingAudioCount += 1
+                }
             }
             let audioNeedsApply = materializedAudioURL != nil
                 && transcription.audioFileURL != materializedAudioURL?.absoluteString
@@ -681,9 +743,11 @@ final class CloudUsageDataSyncService: ObservableObject {
                 let candidate = register.selectedCandidate(for: key, deleteWins: true)
             else { continue }
             guard activeRecordIDs.contains(ids.recordID), !suppressed.contains(ids.recordID) else { continue }
+            let logicalID = MetricLogicalID(
+                transcriptionID: ids.recordID, metricID: ids.metricID)
             guard let data = candidate.mutation.value else {
-                if let existing = metricByID.removeValue(forKey: ids.metricID) {
-                    modelContext.delete(existing)
+                if let existingRows = metricsByLogicalID.removeValue(forKey: logicalID) {
+                    for existing in existingRows { modelContext.delete(existing) }
                     changed = true
                 }
                 continue
@@ -691,8 +755,10 @@ final class CloudUsageDataSyncService: ObservableObject {
             guard let payload = try? PropertyListDecoder().decode(MetricPayload.self, from: data),
                 payload.transcriptionId == ids.recordID, payload.id == ids.metricID
             else { continue }
-            let existing = metricByID[ids.metricID]
-            if existing.map(Self.payload) == payload { continue }
+            let existing = Self.preferredMetric(in: metricsByLogicalID[logicalID] ?? [])
+            let needsApply = existing.map(Self.payload) != payload
+                || existing?.syncRevisionID != candidate.envelope.operationID
+            if !needsApply { continue }
             let metric = existing ?? SessionMetric(
                 transcriptionId: payload.transcriptionId,
                 wordCount: payload.wordCount,
@@ -704,28 +770,122 @@ final class CloudUsageDataSyncService: ObservableObject {
                 aiEnhancementModelName: payload.aiEnhancementModelName,
                 enhancementDuration: payload.enhancementDuration
             )
-            if existing == nil { modelContext.insert(metric); metricByID[ids.metricID] = metric }
+            if existing == nil {
+                modelContext.insert(metric)
+                metricsByLogicalID[logicalID] = [metric]
+            }
             Self.apply(payload, to: metric)
+            metric.syncOriginDeviceID = candidate.envelope.authorDeviceID
+            metric.syncModifiedAt = candidate.envelope.createdAt
+            metric.syncRevisionID = candidate.envelope.operationID
             changed = true
         }
 
         if changed {
             try modelContext.save()
         }
-        return (importCount, changed)
+        return (importCount, changed, pendingAudioCount)
     }
 
     private nonisolated func deleteMetrics(
         for recordID: UUID,
-        metricByID: inout [UUID: SessionMetric],
+        metricsByLogicalID: inout [MetricLogicalID: [SessionMetric]],
         context: ModelContext
-    ) {
-        let ids = metricByID.compactMap { id, metric in
-            metric.transcriptionId == recordID ? id : nil
-        }
+    ) -> Bool {
+        let ids = metricsByLogicalID.keys.filter { $0.transcriptionID == recordID }
         for id in ids {
-            if let metric = metricByID.removeValue(forKey: id) { context.delete(metric) }
+            for metric in metricsByLogicalID.removeValue(forKey: id) ?? [] {
+                context.delete(metric)
+            }
         }
+        return !ids.isEmpty
+    }
+
+    private struct MetricLogicalID: Hashable {
+        let transcriptionID: UUID
+        let metricID: UUID
+    }
+
+    /// Historical imports did not enforce uniqueness for business UUIDs. Keep
+    /// every physical row intact, but deterministically choose the most complete
+    /// row whenever the sync protocol needs one logical value.
+    private nonisolated static func preferredTranscription(
+        in values: [Transcription]
+    ) -> Transcription? {
+        values.max { lhs, rhs in
+            let lhsIsCanonical = lhs.syncRevisionID != nil
+            let rhsIsCanonical = rhs.syncRevisionID != nil
+            if lhsIsCanonical != rhsIsCanonical { return !lhsIsCanonical }
+            if lhsIsCanonical {
+                let lhsModifiedAt = lhs.syncModifiedAt ?? .distantPast
+                let rhsModifiedAt = rhs.syncModifiedAt ?? .distantPast
+                if lhsModifiedAt != rhsModifiedAt { return lhsModifiedAt < rhsModifiedAt }
+            }
+            let lhsScore = transcriptionCompleteness(lhs)
+            let rhsScore = transcriptionCompleteness(rhs)
+            if lhsScore != rhsScore { return lhsScore < rhsScore }
+            if lhs.timestamp != rhs.timestamp { return lhs.timestamp < rhs.timestamp }
+            return transcriptionTieBreaker(lhs) < transcriptionTieBreaker(rhs)
+        }
+    }
+
+    private nonisolated static func preferredMetric(in values: [SessionMetric]) -> SessionMetric? {
+        values.max { lhs, rhs in
+            let lhsIsCanonical = lhs.syncRevisionID != nil
+            let rhsIsCanonical = rhs.syncRevisionID != nil
+            if lhsIsCanonical != rhsIsCanonical { return !lhsIsCanonical }
+            if lhsIsCanonical {
+                let lhsModifiedAt = lhs.syncModifiedAt ?? .distantPast
+                let rhsModifiedAt = rhs.syncModifiedAt ?? .distantPast
+                if lhsModifiedAt != rhsModifiedAt { return lhsModifiedAt < rhsModifiedAt }
+            }
+            let lhsScore = metricCompleteness(lhs)
+            let rhsScore = metricCompleteness(rhs)
+            if lhsScore != rhsScore { return lhsScore < rhsScore }
+            if lhs.timestamp != rhs.timestamp { return lhs.timestamp < rhs.timestamp }
+            return metricTieBreaker(lhs) < metricTieBreaker(rhs)
+        }
+    }
+
+    private nonisolated static func transcriptionCompleteness(_ value: Transcription) -> Int {
+        var score = value.text.utf8.count
+        score += value.enhancedText?.utf8.count ?? 0
+        score += value.performanceData?.count ?? 0
+        score += value.audioFileURL == nil ? 0 : 1
+        score += value.transcriptionModelName == nil ? 0 : 1
+        score += value.aiEnhancementModelName == nil ? 0 : 1
+        score += value.promptName == nil ? 0 : 1
+        score += value.transcriptionDuration == nil ? 0 : 1
+        score += value.enhancementDuration == nil ? 0 : 1
+        score += value.modeName == nil ? 0 : 1
+        score += value.modeEmoji == nil ? 0 : 1
+        score += value.transcriptionStatus == nil ? 0 : 1
+        return score
+    }
+
+    private nonisolated static func metricCompleteness(_ value: SessionMetric) -> Int {
+        var score = value.performanceData?.count ?? 0
+        score += value.source == nil ? 0 : 1
+        score += value.transcriptionModelName == nil ? 0 : 1
+        score += value.transcriptionDuration == nil ? 0 : 1
+        score += value.speedFactor == nil ? 0 : 1
+        score += value.modeName == nil ? 0 : 1
+        score += value.aiEnhancementModelName == nil ? 0 : 1
+        score += value.enhancementDuration == nil ? 0 : 1
+        score += value.enhancementEstimatedTokenCount == nil ? 0 : 1
+        return score
+    }
+
+    private nonisolated static func transcriptionTieBreaker(_ value: Transcription) -> String {
+        let payloadHash = (try? encode(payload(from: value))).map(VoiceInkSyncEnvelope.sha256) ?? ""
+        return [
+            payloadHash, value.audioFileURL ?? "", value.syncOriginDeviceID ?? "",
+            value.syncRevisionID?.uuidString ?? "",
+        ].joined(separator: "|")
+    }
+
+    private nonisolated static func metricTieBreaker(_ value: SessionMetric) -> String {
+        (try? encode(payload(from: value))).map(VoiceInkSyncEnvelope.sha256) ?? ""
     }
 
     nonisolated private static let bulkFetchChunkSize = 500
@@ -769,12 +929,18 @@ final class CloudUsageDataSyncService: ObservableObject {
         return values
     }
 
-    private nonisolated func loadRegister() throws -> VoiceInkSyncRegisterState {
+    private nonisolated func loadRegister(
+        knownOperationIDs: Set<UUID>
+    ) throws -> (register: VoiceInkSyncRegisterState, latestRemoteEnvelope: VoiceInkSyncEnvelope?) {
         var register = VoiceInkSyncRegisterState()
         for envelope in try syncCore.readAll(in: .usage) {
             register.apply(envelope, batch: try syncCore.decodeBatch(from: envelope))
         }
-        return register
+        return (
+            register,
+            register.latestRemoteEnvelope(
+                excludingDeviceID: syncCore.deviceID, knownOperationIDs: knownOperationIDs)
+        )
     }
 
     private nonisolated func activeOperationIDs(in register: VoiceInkSyncRegisterState) -> [String: [UUID]] {
@@ -804,11 +970,21 @@ final class CloudUsageDataSyncService: ObservableObject {
         return strings.mapValues { $0.compactMap(UUID.init(uuidString:)) }
     }
 
-    private nonisolated func migrateLegacyUsageIfNeeded() throws -> Bool {
-        guard !defaults.bool(forKey: Self.legacyMigrationCompletedKey) else { return false }
+    private nonisolated func migrateLegacyUsageIfNeeded(
+    ) throws -> (didScan: Bool, pendingAudioCount: Int) {
+        var pendingAudio = loadPendingLegacyAudioDescriptors()
+        for audio in pendingAudio {
+            if try copyLegacyAudioBlob(audio, from: legacyUsageDataDirectoryURL) {
+                pendingAudio.remove(audio)
+            }
+        }
+        persistPendingLegacyAudioDescriptors(pendingAudio)
+        guard !defaults.bool(forKey: Self.legacyMigrationCompletedKey) else {
+            return (false, pendingAudio.count)
+        }
         guard let root = legacyUsageDataDirectoryURL, fileManager.fileExists(atPath: root.path) else {
             defaults.set(true, forKey: Self.legacyMigrationCompletedKey)
-            return true
+            return (true, 0)
         }
         let recordsRoot = root.appendingPathComponent("Records", isDirectory: true)
         let keys: [URLResourceKey] = [
@@ -818,7 +994,7 @@ final class CloudUsageDataSyncService: ObservableObject {
             at: recordsRoot, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles]
         ) else {
             defaults.set(true, forKey: Self.legacyMigrationCompletedKey)
-            return true
+            return (true, 0)
         }
         var seen = Set<UUID>()
         var snapshots: [(path: String, snapshot: Snapshot)] = []
@@ -847,29 +1023,38 @@ final class CloudUsageDataSyncService: ObservableObject {
             }
             return lhs.snapshot.revisionID.uuidString < rhs.snapshot.revisionID.uuidString
         }
+        var mutations: [VoiceInkSyncMutation] = []
         for entry in snapshots {
             let snapshot = entry.snapshot
-            if let audio = snapshot.audio { try copyLegacyAudioBlob(audio, from: root) }
-            var mutations = [VoiceInkSyncMutation(
+            if let audio = snapshot.audio {
+                if try !copyLegacyAudioBlob(audio, from: root) { pendingAudio.insert(audio) }
+            }
+            mutations.append(VoiceInkSyncMutation(
                 key: Self.transcriptionKey(snapshot.transcription.id),
                 value: try Self.encode(TranscriptionValue(
                     transcription: snapshot.transcription, audio: snapshot.audio
                 ))
-            )]
+            ))
             if let metric = snapshot.metric {
                 mutations.append(VoiceInkSyncMutation(
                     key: Self.metricKey(recordID: metric.transcriptionId, metricID: metric.id),
                     value: try Self.encode(metric)
                 ))
             }
-            _ = try syncCore.append(VoiceInkSyncMutationBatch(mutations: mutations), domain: .usage)
-            migratedPaths.insert(entry.path)
+        }
+        if !mutations.isEmpty {
+            // appendChunked derives retry-stable operation IDs from each payload. If a later
+            // chunk fails, retrying the same sorted snapshot set reuses earlier files rather
+            // than creating duplicates. Advance progress only after every chunk is durable.
+            _ = try syncCore.appendChunked(mutations, domain: .usage)
+            migratedPaths.formUnion(snapshots.map(\.path))
             defaults.set(migratedPaths.sorted(), forKey: Self.legacyMigratedPathsKey)
         }
-        if hasPendingDownload { throw CocoaError(.fileReadNoSuchFile) }
+        persistPendingLegacyAudioDescriptors(pendingAudio)
+        if hasPendingDownload { return (true, pendingAudio.count) }
         defaults.set(true, forKey: Self.legacyMigrationCompletedKey)
         defaults.removeObject(forKey: Self.legacyMigratedPathsKey)
-        return true
+        return (true, pendingAudio.count)
     }
 
     private nonisolated func coordinatedRead(from url: URL) throws -> Data {
@@ -894,20 +1079,51 @@ final class CloudUsageDataSyncService: ObservableObject {
         return root.appendingPathComponent("VoiceInk/UsageData/v1", isDirectory: true)
     }
 
-    private nonisolated func copyLegacyAudioBlob(_ audio: AudioDescriptor, from legacyRoot: URL) throws {
+    private nonisolated func copyLegacyAudioBlob(
+        _ audio: AudioDescriptor,
+        from legacyRoot: URL?
+    ) throws -> Bool {
         guard audio.isValid else { throw CocoaError(.fileReadCorruptFile) }
+        guard let legacyRoot else { return false }
         let source = legacyRoot
             .appendingPathComponent("Blobs/Audio/\(String(audio.sha256.prefix(2)))", isDirectory: true)
             .appendingPathComponent("\(audio.sha256).\(audio.fileExtension)")
         guard fileManager.fileExists(atPath: source.path) else {
             try? fileManager.startDownloadingUbiquitousItem(at: source)
-            throw CocoaError(.fileReadNoSuchFile)
+            return false
         }
-        try requireCurrentUbiquitousItem(at: source)
+        guard try requireCurrentUbiquitousItem(at: source) else { return false }
         guard Self.fileSize(at: source) == audio.byteCount,
             try Self.sha256(of: source) == audio.sha256
         else { throw CocoaError(.fileReadCorruptFile) }
-        try installBlob(from: source, descriptor: audio)
+        do {
+            try installBlob(from: source, descriptor: audio)
+            return true
+        } catch {
+            if Self.isPendingICloudDownload(error) { return false }
+            throw error
+        }
+    }
+
+    private nonisolated func loadPendingLegacyAudioDescriptors() -> Set<AudioDescriptor> {
+        guard let data = defaults.data(forKey: Self.legacyPendingAudioDescriptorsKey),
+            let values = try? PropertyListDecoder().decode([AudioDescriptor].self, from: data)
+        else { return [] }
+        return Set(values)
+    }
+
+    private nonisolated func persistPendingLegacyAudioDescriptors(_ values: Set<AudioDescriptor>) {
+        guard !values.isEmpty else {
+            defaults.removeObject(forKey: Self.legacyPendingAudioDescriptorsKey)
+            return
+        }
+        let sorted = values.sorted { lhs, rhs in
+            if lhs.sha256 != rhs.sha256 { return lhs.sha256 < rhs.sha256 }
+            return lhs.fileExtension < rhs.fileExtension
+        }
+        if let data = try? PropertyListEncoder().encode(sorted) {
+            defaults.set(data, forKey: Self.legacyPendingAudioDescriptorsKey)
+        }
     }
 
     private nonisolated func prepareAudioDescriptor(for transcription: Transcription) throws -> AudioDescriptor? {
@@ -932,7 +1148,9 @@ final class CloudUsageDataSyncService: ObservableObject {
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         let destination = directory.appendingPathComponent("\(descriptor.sha256).\(descriptor.fileExtension)")
         if fileManager.fileExists(atPath: destination.path) {
-            try requireCurrentUbiquitousItem(at: destination)
+            guard try requireCurrentUbiquitousItem(at: destination) else {
+                throw CocoaError(.fileReadNoSuchFile)
+            }
             guard Self.fileSize(at: destination) == descriptor.byteCount,
                 try Self.sha256(of: destination) == descriptor.sha256
             else { throw CocoaError(.fileReadCorruptFile) }
@@ -954,17 +1172,25 @@ final class CloudUsageDataSyncService: ObservableObject {
         else { throw CocoaError(.fileReadCorruptFile) }
     }
 
-    private nonisolated func materializeAudio(_ audio: AudioDescriptor, transcriptionID: UUID) throws -> URL? {
+    private enum AudioMaterialization {
+        case available(URL)
+        case pending
+    }
+
+    private nonisolated func materializeAudio(
+        _ audio: AudioDescriptor,
+        transcriptionID: UUID
+    ) throws -> AudioMaterialization {
         guard audio.isValid else { throw CocoaError(.fileReadCorruptFile) }
-        guard let root = syncCore.rootURL else { return nil }
+        guard let root = syncCore.rootURL else { return .pending }
         let blob = root
             .appendingPathComponent("Blobs/Audio/\(String(audio.sha256.prefix(2)))", isDirectory: true)
             .appendingPathComponent("\(audio.sha256).\(audio.fileExtension)")
         guard fileManager.fileExists(atPath: blob.path) else {
             try? fileManager.startDownloadingUbiquitousItem(at: blob)
-            throw CocoaError(.fileReadNoSuchFile)
+            return .pending
         }
-        try requireCurrentUbiquitousItem(at: blob)
+        guard try requireCurrentUbiquitousItem(at: blob) else { return .pending }
         guard Self.fileSize(at: blob) == audio.byteCount, try Self.sha256(of: blob) == audio.sha256 else {
             throw CocoaError(.fileReadCorruptFile)
         }
@@ -975,7 +1201,7 @@ final class CloudUsageDataSyncService: ObservableObject {
             Self.fileSize(at: destination) == audio.byteCount,
             try Self.sha256(of: destination) == audio.sha256
         {
-            return destination
+            return .available(destination)
         }
         let temporary = directory.appendingPathComponent(".\(UUID().uuidString).download")
         try? fileManager.removeItem(at: temporary)
@@ -989,29 +1215,39 @@ final class CloudUsageDataSyncService: ObservableObject {
         } else {
             try fileManager.moveItem(at: temporary, to: destination)
         }
-        return destination
+        return .available(destination)
     }
 
-    private nonisolated func requireCurrentUbiquitousItem(at url: URL) throws {
+    private nonisolated func requireCurrentUbiquitousItem(at url: URL) throws -> Bool {
         let values = try? url.resourceValues(forKeys: [
             .isUbiquitousItemKey, .ubiquitousItemDownloadingStatusKey,
         ])
         guard values?.isUbiquitousItem == true,
             values?.ubiquitousItemDownloadingStatus != .current
-        else { return }
+        else { return true }
         try? fileManager.startDownloadingUbiquitousItem(at: url)
-        throw CocoaError(.fileReadNoSuchFile)
+        return false
     }
 
     private func startMetadataQueryIfAvailable() {
         guard iCloudDriveRootOverride == nil, metadataQuery == nil, let root = syncCore.rootURL else { return }
         let query = NSMetadataQuery()
         query.searchScopes = [NSMetadataQueryUbiquitousDataScope]
-        query.predicate = NSPredicate(format: "%K BEGINSWITH %@", NSMetadataItemPathKey, root.path)
+        let usageOperations = root.appendingPathComponent("Operations/usage", isDirectory: true)
+        let audioBlobs = root.appendingPathComponent("Blobs/Audio", isDirectory: true)
+        let legacyUsage = root.deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("UsageData/v1", isDirectory: true)
+        query.predicate = NSCompoundPredicate(orPredicateWithSubpredicates: [
+            NSPredicate(format: "%K BEGINSWITH %@", NSMetadataItemPathKey, usageOperations.path),
+            NSPredicate(format: "%K BEGINSWITH %@", NSMetadataItemPathKey, audioBlobs.path),
+            NSPredicate(format: "%K BEGINSWITH %@", NSMetadataItemPathKey, legacyUsage.path),
+        ])
         for name in [Notification.Name.NSMetadataQueryDidFinishGathering, .NSMetadataQueryDidUpdate] {
             metadataQueryObservers.append(NotificationCenter.default.addObserver(
                 forName: name, object: query, queue: .main
-            ) { [weak self] _ in Task { @MainActor in self?.scheduleEventDrivenSync() } })
+            ) { [weak self] notification in
+                Task { @MainActor in self?.handleMetadataQueryEvent(notification) }
+            })
         }
         metadataQuery = query
         query.start()
@@ -1022,6 +1258,42 @@ final class CloudUsageDataSyncService: ObservableObject {
         metadataQuery = nil
         for observer in metadataQueryObservers { NotificationCenter.default.removeObserver(observer) }
         metadataQueryObservers.removeAll()
+    }
+
+    private func handleMetadataQueryEvent(_ notification: Notification) {
+        guard defaults.bool(forKey: CloudSyncSettingsKeys.usageDataSyncEnabled) else { return }
+        if notification.name == .NSMetadataQueryDidFinishGathering {
+            // Enabling sync already performs the initial reconciliation. Gathering merely
+            // reports that same initial tree; it is not another remote change.
+            return
+        }
+        guard let userInfo = notification.userInfo else { return }
+        let keys = [NSMetadataQueryUpdateAddedItemsKey, NSMetadataQueryUpdateChangedItemsKey]
+        let urls = keys.flatMap { key in
+            (userInfo[key] as? [NSMetadataItem] ?? []).compactMap { item in
+                item.value(forAttribute: NSMetadataItemURLKey) as? URL
+            }
+        }
+        let legacyRoot = legacyUsageDataDirectoryURL?.standardizedFileURL.path
+        let shouldConsume = urls.contains { url in
+            if syncCore.operationLocation(for: url) != nil {
+                return syncCore.shouldConsumeRemoteOperation(at: url, domains: [.usage])
+            }
+            if hasPendingAudioDownloads, url.pathExtension != "syncop" { return true }
+            if !defaults.bool(forKey: Self.legacyMigrationCompletedKey),
+                let legacyRoot, url.standardizedFileURL.path.hasPrefix(legacyRoot + "/")
+            {
+                return true
+            }
+            return false
+        }
+        if shouldConsume { scheduleEventDrivenSync() }
+    }
+
+    private nonisolated static func isPendingICloudDownload(_ error: Error) -> Bool {
+        let error = error as NSError
+        return error.domain == NSCocoaErrorDomain
+            && (error.code == NSFileNoSuchFileError || error.code == NSFileReadNoSuchFileError)
     }
 
     private var shouldSkipAutomaticSyncInTests: Bool {
