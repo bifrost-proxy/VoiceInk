@@ -88,16 +88,24 @@ enum RecorderWindowGeometry {
             }
         }
 
-        let corner = corners[0]
-        let proposedFrame = followFrame(
-            anchor: anchor,
-            panelSize: fittingSize,
-            corner: corner,
-            gap: gap
-        )
+        let fallback = corners
+            .map { corner in
+                (
+                    corner: corner,
+                    frame: followFrame(
+                        anchor: anchor,
+                        panelSize: fittingSize,
+                        corner: corner,
+                        gap: gap
+                    )
+                )
+            }
+            .max { lhs, rhs in
+                visibleArea(of: lhs.frame, within: safeFrame) < visibleArea(of: rhs.frame, within: safeFrame)
+            }!
         return RecorderFollowPlacement(
-            frame: constrained(proposedFrame, to: safeFrame),
-            corner: corner,
+            frame: constrained(fallback.frame, to: safeFrame),
+            corner: fallback.corner,
             isConstrained: true
         )
     }
@@ -153,5 +161,10 @@ enum RecorderWindowGeometry {
             width: frame.width,
             height: frame.height
         )
+    }
+
+    private static func visibleArea(of frame: NSRect, within boundary: NSRect) -> CGFloat {
+        let intersection = frame.intersection(boundary)
+        return intersection.isNull ? 0 : intersection.width * intersection.height
     }
 }
