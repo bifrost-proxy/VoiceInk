@@ -89,6 +89,10 @@ final class OnboardingPermissionController {
     }
 
     func performAction(for permission: OnboardingPermissionKind) {
+        // Permission changes happen outside VoiceInk. Refresh before acting so
+        // a stale UI state cannot repeat an authorization request or overwrite
+        // a decision that the user just made in System Settings.
+        refreshPermissionStatuses()
         guard !isLocked(permission) else { return }
 
         setActivePermission(permission)
@@ -138,20 +142,14 @@ final class OnboardingPermissionController {
     }
 
     private func handleMicrophoneAction() {
-        if status(for: .microphone).requiresSettings {
-            Task { @MainActor [weak self] in
-                _ = await PrivacyPermissionResetService.requestMicrophoneAuthorization()
-                self?.refreshPermissionStatuses()
-                self?.startPollingPermissionStatus()
-            }
-            return
-        }
+        cancelRefreshTask()
 
-        AVCaptureDevice.requestAccess(for: .audio) { [weak self] _ in
-            DispatchQueue.main.async {
-                self?.refreshPermissionStatuses()
-                self?.startPollingPermissionStatus()
-            }
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+
+            _ = await PrivacyPermissionAuthorizationService.requestMicrophoneAuthorization()
+            refreshPermissionStatuses()
+            startPollingPermissionStatus()
         }
     }
 
@@ -161,7 +159,8 @@ final class OnboardingPermissionController {
         Task { @MainActor [weak self] in
             guard let self else { return }
 
-            _ = await PrivacyPermissionResetService.requestAccessibilityAuthorization()
+            _ = await PrivacyPermissionAuthorizationService.requestAccessibilityAuthorization()
+            refreshPermissionStatuses()
             startPollingPermissionStatus()
         }
     }
@@ -173,7 +172,7 @@ final class OnboardingPermissionController {
         Task { @MainActor [weak self] in
             guard let self else { return }
 
-            _ = await PrivacyPermissionResetService.requestScreenRecordingAuthorization()
+            _ = await PrivacyPermissionAuthorizationService.requestScreenRecordingAuthorization()
             refreshPermissionStatuses()
             startPollingPermissionStatus()
         }

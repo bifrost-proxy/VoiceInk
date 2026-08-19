@@ -113,6 +113,14 @@ struct RecordingPermissionPreflightTests {
                 registeredFallbackCount: 1
             ) == .standalonePrompt
         )
+        #expect(
+            RecordingShortcutManager.missingAccessibilityPresentation(
+                isRecorderGuidancePresented: false,
+                recordingShortcuts: [keyShortcut],
+                configuredShortcutCount: 1,
+                registeredFallbackCount: 0
+            ) == .recorderGuidance
+        )
     }
 
     @Test func accessibilityAuthorizationMonitorRefreshesWithoutAppActivation() async throws {
@@ -176,6 +184,40 @@ struct RecordingPermissionPreflightTests {
         try await Task.sleep(nanoseconds: 25_000_000)
         #expect(Date().timeIntervalSince(startedAt) < 0.15)
         #expect(await permissionTask.value)
+    }
+
+    @Test func existingPermissionDecisionsArePreserved() {
+        #expect(
+            PrivacyPermissionAuthorizationService.microphoneAction(for: .authorized)
+                == .alreadyGranted
+        )
+        #expect(
+            PrivacyPermissionAuthorizationService.accessibilityAction(isTrusted: true)
+                == .alreadyGranted
+        )
+        #expect(
+            PrivacyPermissionAuthorizationService.screenRecordingAction(hasAccess: true)
+                == .alreadyGranted
+        )
+    }
+
+    @Test func onlyUndeterminedPermissionsRequestSystemAuthorization() {
+        #expect(
+            PrivacyPermissionAuthorizationService.microphoneAction(for: .notDetermined)
+                == .request
+        )
+        #expect(
+            PrivacyPermissionAuthorizationService.microphoneAction(for: .denied)
+                == .openSettings
+        )
+        #expect(
+            PrivacyPermissionAuthorizationService.accessibilityAction(isTrusted: false)
+                == .request
+        )
+        #expect(
+            PrivacyPermissionAuthorizationService.screenRecordingAction(hasAccess: false)
+                == .request
+        )
     }
 
     @Test func recorderGuidanceAlwaysProvidesAnActionableNextStep() {

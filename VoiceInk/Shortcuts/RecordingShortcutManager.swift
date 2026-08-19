@@ -558,6 +558,10 @@ class RecordingShortcutManager: ObservableObject {
         refreshShortcutMonitoring()
     }
 
+    func refreshAfterLaunchReset() {
+        refreshShortcutMonitoring()
+    }
+
     deinit {
         if let shortcutChangeObserver {
             NotificationCenter.default.removeObserver(shortcutChangeObserver)
