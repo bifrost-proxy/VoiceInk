@@ -1,0 +1,130 @@
+import Foundation
+import Testing
+@testable import VoiceInk
+
+struct LocalModelResourceRetentionTests {
+    @Test func boundModelNamesIncludesEveryModeReference() {
+        let configurations = [
+            mode(name: "Default", modelName: "qwen-local"),
+            mode(name: "Disabled", modelName: "whisper-local", isEnabled: false),
+            mode(name: "Cloud", modelName: " cloud-model "),
+            mode(name: "Missing", modelName: nil),
+            mode(name: "Blank", modelName: "   "),
+        ]
+
+        #expect(
+            LocalModelResourceRetentionPolicy.boundModelNames(in: configurations)
+                == ["qwen-local", "whisper-local", "cloud-model"]
+        )
+    }
+
+    @MainActor
+    @Test func managedSessionReleasesItsResourceLeaseOnceAfterTranscription() async throws {
+        let baseSession = ResourceRetentionTestSession(result: "done")
+        var finishCount = 0
+        let session = ResourceManagedTranscriptionSession(session: baseSession) {
+            finishCount += 1
+        }
+
+        let result = try await session.transcribe(audioURL: URL(fileURLWithPath: "/tmp/test.wav"))
+        session.cancel()
+
+        #expect(result == "done")
+        #expect(baseSession.cancelCount == 1)
+        #expect(finishCount == 1)
+    }
+
+    @MainActor
+    @Test func managedSessionReleasesItsResourceLeaseOnceAfterCancellation() {
+        let baseSession = ResourceRetentionTestSession(result: "unused")
+        var finishCount = 0
+        let session = ResourceManagedTranscriptionSession(session: baseSession) {
+            finishCount += 1
+        }
+
+        session.cancel()
+        session.cancel()
+
+        #expect(baseSession.cancelCount == 2)
+        #expect(finishCount == 1)
+    }
+
+    @MainActor
+    @Test func managedSessionReleasesItsResourceLeaseWhenPreparationFails() async {
+        let baseSession = ResourceRetentionTestSession(
+            result: "unused",
+            preparationError: ResourceRetentionTestError.expected
+        )
+        var finishCount = 0
+        let session = ResourceManagedTranscriptionSession(session: baseSession) {
+            finishCount += 1
+        }
+        let configuration = TranscriptionRuntimeConfiguration(
+            mode: mode(name: "Test", modelName: "resource-retention-test"),
+            model: ResourceRetentionTestModel(),
+            language: "auto",
+            isRealtimeEnabled: false
+        )
+
+        await #expect(throws: ResourceRetentionTestError.self) {
+            _ = try await session.prepare(configuration: configuration)
+        }
+        #expect(finishCount == 1)
+    }
+
+    private func mode(
+        name: String,
+        modelName: String?,
+        isEnabled: Bool = true
+    ) -> ModeConfig {
+        ModeConfig(
+            name: name,
+            isAIEnhancementEnabled: false,
+            selectedTranscriptionModelName: modelName,
+            isEnabled: isEnabled
+        )
+    }
+}
+
+@MainActor
+private final class ResourceRetentionTestSession: TranscriptionSession {
+    let result: String
+    let preparationError: Error?
+    private(set) var cancelCount = 0
+
+    init(result: String, preparationError: Error? = nil) {
+        self.result = result
+        self.preparationError = preparationError
+    }
+
+    func prepare(configuration: TranscriptionRuntimeConfiguration) async throws -> ((Data) -> Void)? {
+        if let preparationError {
+            throw preparationError
+        }
+        return nil
+    }
+
+    func transcribe(audioURL: URL) async throws -> String {
+        result
+    }
+
+    func cancel() {
+        cancelCount += 1
+    }
+}
+
+private enum ResourceRetentionTestError: Error {
+    case expected
+}
+
+private struct ResourceRetentionTestModel: TranscriptionModel {
+    let id = UUID()
+    let name = "resource-retention-test"
+    let displayName = "Resource Retention Test"
+    let description = ""
+    let provider = ModelProvider.whisper
+    let isMultilingualModel = true
+    let supportedLanguages: [String: String] = [:]
+    let supportsStreaming = false
+    let officialSourceURL: URL? = nil
+}

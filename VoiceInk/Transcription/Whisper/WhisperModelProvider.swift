@@ -9,4 +9,6 @@ protocol WhisperModelProvider: AnyObject {
     var whisperContext: WhisperContext? { get }
     var loadedWhisperModel: WhisperModelFile? { get }
     var availableModels: [WhisperModelFile] { get }
+
+    func releaseResourcesIfUnbound(boundModelNames: Set<String>) async
 }

@@ -9,6 +9,8 @@ class TranscriptionServiceRegistry {
     private let modelsDirectory: URL
     private let modelContext: ModelContext
     private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "TranscriptionServiceRegistry")
+    private var modeConfigurationsObserver: NSObjectProtocol?
+    private var activeOperationCount = 0
 
     private(set) lazy var localTranscriptionService = WhisperTranscriptionService(
         modelsDirectory: modelsDirectory,
@@ -24,6 +26,21 @@ class TranscriptionServiceRegistry {
         self.modelProvider = modelProvider
         self.modelsDirectory = modelsDirectory
         self.modelContext = modelContext
+        modeConfigurationsObserver = NotificationCenter.default.addObserver(
+            forName: .modeConfigurationsDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                await self?.handleModeConfigurationsDidChange()
+            }
+        }
+    }
+
+    deinit {
+        if let modeConfigurationsObserver {
+            NotificationCenter.default.removeObserver(modeConfigurationsObserver)
+        }
     }
 
     func service(for provider: ModelProvider) -> TranscriptionService {
@@ -46,6 +63,8 @@ class TranscriptionServiceRegistry {
     func transcribe(
         audioURL: URL, model: any TranscriptionModel, context: TranscriptionRequestContext = .currentDefaults
     ) async throws -> String {
+        operationDidStart()
+        defer { operationDidFinish() }
         let service = service(for: model.provider)
         logger.debug(
             "Transcribing with \(model.displayName, privacy: .public) using \(String(describing: type(of: service)), privacy: .public)"
@@ -68,9 +87,11 @@ class TranscriptionServiceRegistry {
                 onPartialTranscript: onPartialTranscript
             )
             let fallback = service(for: model.provider)
-            return StreamingTranscriptionSession(streamingService: streamingService, fallbackService: fallback)
+            return managedSession(
+                StreamingTranscriptionSession(streamingService: streamingService, fallbackService: fallback)
+            )
         } else {
-            return FileTranscriptionSession(service: service(for: model.provider))
+            return managedSession(FileTranscriptionSession(service: service(for: model.provider)))
         }
     }
 
@@ -79,15 +100,59 @@ class TranscriptionServiceRegistry {
         configuration.isRealtimeEnabled
     }
 
-    func cleanup(preservingFluidAudioModelNamed modelName: String? = nil) async {
-        if let modelName,
-            FluidAudioModelManager.isSenseVoiceModel(named: modelName)
-                || FluidAudioModelManager.isParaformerZhModel(named: modelName)
-                || FluidAudioModelManager.isParakeetCtcZhCnModel(named: modelName)
-        {
-            logger.notice("Keeping realtime preview model loaded: \(modelName, privacy: .public)")
+    func releaseUnboundLocalModelResources() async {
+        guard activeOperationCount == 0, !AudioDeviceManager.shared.isRecordingActive else {
             return
         }
-        await fluidAudioTranscriptionService.cleanup()
+
+        let boundModelNames = LocalModelResourceRetentionPolicy.boundModelNames(
+            in: ModeManager.shared.configurations
+        )
+
+        await modelProvider?.releaseResourcesIfUnbound(boundModelNames: boundModelNames)
+
+        let releasedFluidModels = await fluidAudioTranscriptionService.releaseResourcesIfUnbound(
+            boundModelNames: boundModelNames
+        )
+        if !releasedFluidModels.isEmpty {
+            logger.notice(
+                "Released unbound FluidAudio models: \(releasedFluidModels.sorted().joined(separator: ","), privacy: .public)"
+            )
+        }
+
+        if let releasedSherpaModel = await sherpaOnnxTranscriptionService.releaseResourcesIfUnbound(
+            boundModelNames: boundModelNames
+        ) {
+            logger.notice("Released unbound sherpa-onnx model: \(releasedSherpaModel, privacy: .public)")
+        }
+
+        if let releasedQwenModel = await QwenMLXRuntime.shared.releaseResourcesIfUnbound(
+            boundModelNames: boundModelNames
+        ) {
+            logger.notice("Released unbound Qwen MLX model: \(releasedQwenModel, privacy: .public)")
+        }
+    }
+
+    private func managedSession(_ session: TranscriptionSession) -> TranscriptionSession {
+        operationDidStart()
+        return ResourceManagedTranscriptionSession(session: session) { [weak self] in
+            self?.operationDidFinish()
+        }
+    }
+
+    private func operationDidStart() {
+        activeOperationCount += 1
+    }
+
+    private func operationDidFinish() {
+        activeOperationCount = max(0, activeOperationCount - 1)
+        guard activeOperationCount == 0 else { return }
+        Task { @MainActor [weak self] in
+            await self?.releaseUnboundLocalModelResources()
+        }
+    }
+
+    private func handleModeConfigurationsDidChange() async {
+        await releaseUnboundLocalModelResources()
     }
 }

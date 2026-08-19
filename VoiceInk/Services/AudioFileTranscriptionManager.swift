@@ -277,7 +277,7 @@ class AudioTranscriptionManager: ObservableObject {
             }
         }
 
-        await serviceRegistry.cleanup()
+        await serviceRegistry.releaseUnboundLocalModelResources()
     }
 }
 

@@ -331,7 +331,20 @@ class WhisperModelManager: ObservableObject {
             await whisperContext?.releaseResources()
             whisperContext = nil
             isModelLoaded = false
+            loadedWhisperModel = nil
         }
+    }
+
+    func releaseResourcesIfUnbound(boundModelNames: Set<String>) async {
+        guard let loadedModelName = loadedWhisperModel?.name,
+            !boundModelNames.contains(loadedModelName)
+        else {
+            return
+        }
+
+        logger.notice("Releasing unbound Whisper model: \(loadedModelName, privacy: .public)")
+        await cleanupResources()
+        loadedWhisperModel = nil
     }
 
     func clearDownloadedModels() async {
@@ -348,7 +361,6 @@ class WhisperModelManager: ObservableObject {
     // MARK: - Resource Management
 
     /// Releases the WhisperContext and resets model-loaded state.
-    /// Does NOT call serviceRegistry.cleanup() — that is VoiceInkEngine's responsibility.
     func cleanupResources() async {
         logger.notice("WhisperModelManager.cleanupResources: releasing whisper context")
         await whisperContext?.releaseResources()

@@ -104,6 +104,14 @@ actor QwenMLXRuntime {
         stop()
     }
 
+    func releaseResourcesIfUnbound(boundModelNames: Set<String>) -> String? {
+        guard let loadedModelPath else { return nil }
+        let loadedModelName = URL(fileURLWithPath: loadedModelPath).lastPathComponent
+        guard !boundModelNames.contains(loadedModelName) else { return nil }
+        stop()
+        return loadedModelName
+    }
+
     private func launchProcess() throws {
         guard FileManager.default.isExecutableFile(atPath: QwenMLXPaths.pythonURL.path) else {
             throw QwenMLXRuntimeError.runtimeNotInstalled

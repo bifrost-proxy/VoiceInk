@@ -25,6 +25,57 @@ extension TranscriptionSession {
     func recordDroppedAudioChunks(_ count: Int) {}
 }
 
+@MainActor
+final class ResourceManagedTranscriptionSession: TranscriptionSession {
+    private let session: TranscriptionSession
+    private var onFinish: (() -> Void)?
+
+    init(session: TranscriptionSession, onFinish: @escaping () -> Void) {
+        self.session = session
+        self.onFinish = onFinish
+    }
+
+    func prepare(configuration: TranscriptionRuntimeConfiguration) async throws -> ((Data) -> Void)? {
+        do {
+            return try await session.prepare(configuration: configuration)
+        } catch {
+            finish()
+            throw error
+        }
+    }
+
+    func transcribe(audioURL: URL) async throws -> String {
+        defer { finish() }
+        return try await session.transcribe(audioURL: audioURL)
+    }
+
+    func cancel() {
+        session.cancel()
+        finish()
+    }
+
+    func recordDroppedAudioChunks(_ count: Int) {
+        session.recordDroppedAudioChunks(count)
+    }
+
+    var performanceSnapshot: TranscriptionPerformanceSnapshot? {
+        session.performanceSnapshot
+    }
+
+    private func finish() {
+        let completion = onFinish
+        onFinish = nil
+        completion?()
+    }
+
+    deinit {
+        let completion = onFinish
+        if let completion {
+            Task { @MainActor in completion() }
+        }
+    }
+}
+
 // MARK: - File-Based Session
 
 /// File-based session: records to file, uploads after stop.

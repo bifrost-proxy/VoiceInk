@@ -52,7 +52,7 @@ final class FluidAudioStreamingProvider: StreamingTranscriptionProvider {
 
     func connect(model: any TranscriptionModel, language: String?) async throws {
         let version: AsrModelVersion = FluidAudioModelManager.asrVersion(for: model.name)
-        let models = try await fluidAudioService.getOrLoadModels(for: version)
+        let models = try await fluidAudioService.getOrLoadModels(for: version, modelName: model.name)
 
         let manager = AsrManager(config: .default)
         try await manager.loadModels(models)

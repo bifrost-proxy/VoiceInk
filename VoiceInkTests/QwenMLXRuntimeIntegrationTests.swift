@@ -53,7 +53,12 @@ struct QwenMLXRuntimeIntegrationTests {
         }
 
         let final = try await runtime.finishStreaming()
-        await runtime.stop()
+        #expect(
+            await runtime.releaseResourcesIfUnbound(boundModelNames: [model.name]) == nil
+        )
+        #expect(
+            await runtime.releaseResourcesIfUnbound(boundModelNames: []) == model.name
+        )
         #expect(maximumChunksProcessed >= 2)
         #expect(!final.text.isEmpty)
         #expect(final.stableText == final.text)

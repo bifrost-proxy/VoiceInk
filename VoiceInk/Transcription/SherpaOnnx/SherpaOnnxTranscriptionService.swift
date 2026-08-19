@@ -7,8 +7,6 @@ actor SherpaOnnxTranscriptionService: TranscriptionService {
     private let audioConverter = AudioConverter(sampleRate: 16_000)
     private var recognizer: SherpaOnnxOfflineRecognizer?
     private var activeModelName: String?
-    private var idleReleaseTask: Task<Void, Never>?
-    nonisolated static let idleRetention: Duration = .seconds(3_600)
 
     nonisolated static func qwenCPUProvider(bundle: Bundle = .main) throws -> String {
         guard
@@ -35,9 +33,7 @@ actor SherpaOnnxTranscriptionService: TranscriptionService {
         }
         let recognizer = try await recognizer(for: model)
         let samples = try audioConverter.resampleAudioFile(audioURL)
-        let text = decode(samples: samples, using: recognizer)
-        scheduleIdleRelease()
-        return text
+        return decode(samples: samples, using: recognizer)
     }
 
     func prepareBufferedStreamingPreview(named modelName: String) async throws {
@@ -45,7 +41,6 @@ actor SherpaOnnxTranscriptionService: TranscriptionService {
             throw ASRError.processingFailed("Unsupported buffered sherpa-onnx model: \(modelName)")
         }
         _ = try await recognizer(for: model)
-        scheduleIdleRelease()
     }
 
     func transcribeBufferedStreamingPreview(samples: [Float], modelName: String) async throws -> String {
@@ -53,9 +48,7 @@ actor SherpaOnnxTranscriptionService: TranscriptionService {
             throw ASRError.processingFailed("Unsupported buffered sherpa-onnx model: \(modelName)")
         }
         let recognizer = try await recognizer(for: model)
-        let text = decode(samples: samples, using: recognizer)
-        scheduleIdleRelease()
-        return text
+        return decode(samples: samples, using: recognizer)
     }
 
     private func registeredModel(named modelName: String) -> SherpaOnnxModel? {
@@ -63,8 +56,6 @@ actor SherpaOnnxTranscriptionService: TranscriptionService {
     }
 
     private func recognizer(for model: SherpaOnnxModel) async throws -> SherpaOnnxOfflineRecognizer {
-        idleReleaseTask?.cancel()
-        idleReleaseTask = nil
         if let recognizer, activeModelName == model.name {
             return recognizer
         }
@@ -115,22 +106,13 @@ actor SherpaOnnxTranscriptionService: TranscriptionService {
         return loadedRecognizer
     }
 
-    private func scheduleIdleRelease() {
-        idleReleaseTask?.cancel()
-        idleReleaseTask = Task { [weak self] in
-            do {
-                try await Task.sleep(for: Self.idleRetention)
-            } catch {
-                return
-            }
-            await self?.releaseRecognizerAfterIdle()
+    func releaseResourcesIfUnbound(boundModelNames: Set<String>) -> String? {
+        guard let activeModelName, !boundModelNames.contains(activeModelName) else {
+            return nil
         }
-    }
-
-    private func releaseRecognizerAfterIdle() {
         recognizer = nil
-        activeModelName = nil
-        idleReleaseTask = nil
+        self.activeModelName = nil
+        return activeModelName
     }
 
     private func decode(samples: [Float], using recognizer: SherpaOnnxOfflineRecognizer) -> String {
