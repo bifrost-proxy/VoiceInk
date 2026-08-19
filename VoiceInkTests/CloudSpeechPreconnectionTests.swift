@@ -47,6 +47,7 @@ struct CloudSpeechPreconnectionTests {
 
         let leased = await pool.lease(for: target)
         #expect(leased != nil)
+        #expect(await connector.totalPingCount == 1)
         try await waitUntilReady(pool, key: target.key)
         #expect(await connector.openCount == 2)
 
@@ -57,6 +58,51 @@ struct CloudSpeechPreconnectionTests {
 
         await pool.shutdown()
         #expect(await connector.allConnectionsClosed)
+    }
+
+    @Test func failedLeaseValidationRejectsTheStaleConnectionAndBuildsAReplacement() async throws {
+        let connector = FakeCloudSpeechConnector()
+        let pool = CloudSpeechConnectionPool(connector: connector)
+        let target = CloudSpeechConnectionTarget.aliyun(
+            apiKey: "test-key",
+            endpoint: URL(string: "wss://example.com/api-ws/v1/inference")!
+        )
+
+        await pool.reconcile(targets: [target])
+        try await waitUntilReady(pool, key: target.key)
+        await connector.failLatestConnectionPing()
+
+        let leased = await pool.lease(for: target)
+        #expect(leased == nil)
+        try await waitUntilReady(pool, key: target.key)
+        #expect(await connector.openCount == 2)
+        #expect(await connector.connection(at: 0)?.isClosed == true)
+
+        await pool.shutdown()
+    }
+
+    @Test func overAgeStandbyConnectionIsNeverLeased() async throws {
+        let connector = FakeCloudSpeechConnector()
+        let pool = CloudSpeechConnectionPool(
+            connector: connector,
+            maxStandbyAge: .milliseconds(30)
+        )
+        let target = CloudSpeechConnectionTarget.aliyun(
+            apiKey: "test-key",
+            endpoint: URL(string: "wss://example.com/api-ws/v1/inference")!
+        )
+
+        await pool.reconcile(targets: [target])
+        try await waitUntilReady(pool, key: target.key)
+        try await Task.sleep(for: .milliseconds(40))
+
+        let leased = await pool.lease(for: target)
+        #expect(leased == nil)
+        #expect(await connector.totalPingCount == 0)
+        try await waitUntilReady(pool, key: target.key)
+        #expect(await connector.openCount == 2)
+
+        await pool.shutdown()
     }
 
     @Test func disablingATargetClosesItsStandbyConnection() async throws {
@@ -95,6 +141,19 @@ struct CloudSpeechPreconnectionTests {
 
         #expect(probe.completionCount == 1)
         #expect(probe.firstCompletionSucceeded)
+    }
+
+    @Test func pingCompletionFailsWhenTheValidationDeadlineExpires() async {
+        let probe = CloudSpeechPingCompletionProbe()
+        let completion = CloudSpeechPingCompletion { result in
+            probe.record(result)
+        }
+
+        completion.scheduleTimeout(after: .milliseconds(10))
+        try? await Task.sleep(for: .milliseconds(20))
+
+        #expect(probe.completionCount == 1)
+        #expect(!probe.firstCompletionSucceeded)
     }
 
     @Test func standbyHandshakeDoesNotSendBusinessFrames() async throws {
@@ -220,6 +279,16 @@ private actor FakeCloudSpeechConnector: CloudSpeechWebSocketConnecting {
     var openCount: Int { connections.count }
     var allConnectionsClosed: Bool { connections.allSatisfy(\.isClosed) }
     var totalSentMessages: Int { connections.reduce(0) { $0 + $1.sentMessageCount } }
+    var totalPingCount: Int { connections.reduce(0) { $0 + $1.pingCount } }
+
+    func connection(at index: Int) -> FakeCloudSpeechConnection? {
+        guard connections.indices.contains(index) else { return nil }
+        return connections[index]
+    }
+
+    func failLatestConnectionPing() {
+        connections.last?.failPing()
+    }
 
     func closeLatestConnection() {
         connections.last?.close()
@@ -240,9 +309,12 @@ private final class FakeCloudSpeechConnection: CloudSpeechWebSocketConnection, @
     private let onClosed: (@Sendable (Error?) -> Void)?
     private var storedIsClosed = false
     private var storedSentMessageCount = 0
+    private var storedPingCount = 0
+    private var shouldFailPing = false
 
     var isClosed: Bool { stateQueue.sync { storedIsClosed } }
     var sentMessageCount: Int { stateQueue.sync { storedSentMessageCount } }
+    var pingCount: Int { stateQueue.sync { storedPingCount } }
 
     init(onClosed: (@Sendable (Error?) -> Void)?) {
         self.onClosed = onClosed
@@ -258,7 +330,21 @@ private final class FakeCloudSpeechConnection: CloudSpeechWebSocketConnection, @
         throw StreamingTranscriptionError.notConnected
     }
 
-    func ping() async throws {}
+    func ping(timeout _: Duration) async throws {
+        let shouldFail = stateQueue.sync {
+            storedPingCount += 1
+            return shouldFailPing
+        }
+        if shouldFail {
+            throw URLError(.networkConnectionLost)
+        }
+    }
+
+    func failPing() {
+        stateQueue.sync {
+            shouldFailPing = true
+        }
+    }
 
     func close() {
         let shouldNotify = stateQueue.sync {
