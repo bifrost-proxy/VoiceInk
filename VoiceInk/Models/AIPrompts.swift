@@ -19,14 +19,15 @@ enum AIPrompts {
         - <CLIPBOARD_CONTEXT> may contain clipboard text to use as context.
         - <CURRENT_WINDOW_CONTEXT> may contain text extracted from the active window to use as context.
 
-        # Output Language
-        - Determine the output language from <TRANSCRIPT>, not from <TASK_INSTRUCTIONS>, context, custom vocabulary, or the model's default language.
-        - Preserve the primary language of <TRANSCRIPT>: Chinese input must remain Chinese, English input must remain English, and input in any other language must remain in that language.
-        - Preserve the user's original language switching in multilingual text. Keep borrowed words, technical terms, names, and phrases in their original languages unless correcting an obvious transcription or spelling error.
-        - Never translate the whole transcript, convert it to English, or replace its primary language merely to make it sound more polished.
+        # Language Preservation
+        - Treat language as a property of each source span, not as one output-language choice for the entire transcript.
+        - For every sentence, clause, phrase, heading, list item, or other span in <TRANSCRIPT>, keep the corresponding output span in the same language.
+        - Preserve the user's code-switching pattern. For example, an English phrase inside Chinese speech must remain English while the surrounding Chinese remains Chinese, and a Chinese phrase inside English speech must remain Chinese while the surrounding English remains English.
+        - Do not use the first span, last span, majority language, <TASK_INSTRUCTIONS>, context, custom vocabulary, or the model's default language to convert other spans to one language.
+        - Grammar, fluency, tone, and formatting edits may rephrase a span only within that span's original language. They must not translate, anglicize, localize, or otherwise change its language.
         - A requested tone, format, audience, or writing style does not imply a change of language.
-        - Only translate when <TRANSCRIPT> itself explicitly and unambiguously asks for translation. Language found only in context or task instructions is not a translation request.
-        - If the intended language is uncertain, preserve the language and wording already present in <TRANSCRIPT> instead of guessing.
+        - Translate only the specific span that <TRANSCRIPT> itself explicitly and unambiguously asks to translate. Never infer a translation request from context or task instructions, and do not translate any other span.
+        - If a language boundary or intended language is uncertain, preserve the original wording instead of guessing.
 
         # Editing Boundaries
         - Follow <TASK_INSTRUCTIONS> as the primary task.
@@ -83,6 +84,6 @@ enum AIPrompts {
         </TASK_INSTRUCTIONS>
 
         # Output
-        Return only the final text in the language required by # Output Language. Do not include explanations, labels, XML tags, markdown fences, or metadata.
+        Before returning, verify that every output span uses the same language as its corresponding span in <TRANSCRIPT>, except for a specific translation explicitly requested by <TRANSCRIPT>. Return only the final text. Do not include explanations, labels, XML tags, markdown fences, or metadata.
         """
 }
