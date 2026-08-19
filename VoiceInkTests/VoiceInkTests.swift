@@ -530,7 +530,7 @@ struct VoiceInkTests {
         )
     }
 
-    @Test func cloudAndRetentionDefaultsArePrivacyPreservingAndUnlimited() throws {
+    @Test func cloudAndRetentionDefaultsArePrivacyPreservingAndStorageBounded() throws {
         let suiteName = "VoiceInkTests.SyncDefaults"
         let defaults = try #require(UserDefaults(suiteName: suiteName))
         defaults.removePersistentDomain(forName: suiteName)
@@ -540,8 +540,83 @@ struct VoiceInkTests {
         #expect(!defaults.bool(forKey: CloudSyncSettingsKeys.usageDataSyncEnabled))
         #expect(!defaults.bool(forKey: CloudSyncSettingsKeys.usageAudioSyncEnabled))
         #expect(defaults.integer(forKey: CleanupSettingsKeys.maximumHistoryRecordCount) == 0)
-        #expect(defaults.integer(forKey: CleanupSettingsKeys.maximumHistoryStorageMegabytes) == 0)
+        #expect(
+            defaults.integer(forKey: CleanupSettingsKeys.maximumHistoryStorageMegabytes)
+                == HistoryStorageSettings.defaultMegabytes
+        )
         defaults.removePersistentDomain(forName: suiteName)
+    }
+
+    @Test func historyStorageCapacityUsesDefaultAndClampsSupportedRange() throws {
+        let suiteName = "VoiceInkTests.HistoryStorageCapacity.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        AppDefaults.registerDefaults(in: defaults)
+
+        #expect(HistoryStorageSettings.allowedMegabytes == 100...102_400)
+        #expect(HistoryStorageSettings.activationDelay == 30)
+        #expect(HistoryStorageSettings.cleanupCheckInterval == 3_600)
+        #expect(HistoryStorageSettings.currentMegabytes(in: defaults) == 500)
+
+        defaults.set(0, forKey: CleanupSettingsKeys.maximumHistoryStorageMegabytes)
+        #expect(HistoryStorageSettings.currentMegabytes(in: defaults) == 500)
+        #expect(defaults.integer(forKey: CleanupSettingsKeys.maximumHistoryStorageMegabytes) == 500)
+
+        defaults.set(99, forKey: CleanupSettingsKeys.maximumHistoryStorageMegabytes)
+        #expect(HistoryStorageSettings.currentMegabytes(in: defaults) == 100)
+
+        defaults.set(200_000, forKey: CleanupSettingsKeys.maximumHistoryStorageMegabytes)
+        #expect(HistoryStorageSettings.currentMegabytes(in: defaults) == 102_400)
+        #expect(defaults.integer(forKey: CleanupSettingsKeys.maximumHistoryStorageMegabytes) == 102_400)
+    }
+
+    @Test func historyStorageCleanupOnlyManagesAudioInsideRecordingsDirectory() {
+        let recordingsDirectory = URL(fileURLWithPath: "/tmp/VoiceInk/Recordings", isDirectory: true)
+
+        #expect(
+            HistoryStorageManager.isManagedAudioURL(
+                recordingsDirectory.appendingPathComponent("old.wav"),
+                recordingsDirectory: recordingsDirectory
+            )
+        )
+        #expect(
+            !HistoryStorageManager.isManagedAudioURL(
+                URL(fileURLWithPath: "/tmp/VoiceInk/Recordings-archive/old.wav"),
+                recordingsDirectory: recordingsDirectory
+            )
+        )
+        #expect(
+            !HistoryStorageManager.isManagedAudioURL(
+                URL(fileURLWithPath: "/tmp/user-owned.wav"),
+                recordingsDirectory: recordingsDirectory
+            )
+        )
+    }
+
+    @Test func historyStorageCleanupScheduleHonorsActivationDelayAndHourlyCadence() {
+        let now = Date(timeIntervalSince1970: 10_000)
+
+        #expect(
+            !HistoryStorageManager.isAutomaticCleanupDue(
+                now: now,
+                lastCheckDate: nil,
+                activationDate: now.addingTimeInterval(1)
+            )
+        )
+        #expect(
+            !HistoryStorageManager.isAutomaticCleanupDue(
+                now: now,
+                lastCheckDate: now.addingTimeInterval(-3_599),
+                activationDate: nil
+            )
+        )
+        #expect(
+            HistoryStorageManager.isAutomaticCleanupDue(
+                now: now,
+                lastCheckDate: now.addingTimeInterval(-3_600),
+                activationDate: nil
+            )
+        )
     }
 
     @Test func transcriptionStagePerformanceRoundTripsThroughPersistedData() throws {
@@ -622,13 +697,13 @@ struct VoiceInkTests {
         #expect(oversizedBuffer.byteCount == 8)
     }
 
-    @Test func historyCapacityLimitsUseEitherThresholdAndDefaultToUnlimited() {
+    @Test func historyCapacityLimitsUseEitherThreshold() {
         #expect(
-            !HistoryStorageManager.shouldDelete(
+            HistoryStorageManager.shouldDelete(
                 recordCount: 10_000,
                 managedBytes: 100_000_000_000,
                 maximumRecordCount: 0,
-                maximumBytes: 0
+                maximumBytes: Int64(HistoryStorageSettings.defaultMegabytes) * 1_024 * 1_024
             )
         )
         #expect(

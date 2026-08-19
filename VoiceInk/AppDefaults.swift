@@ -8,6 +8,32 @@ enum CleanupSettingsKeys {
     static let lastAutomaticAudioCleanupDate = "AudioCleanupLastAutomaticCleanupDate"
     static let maximumHistoryRecordCount = "MaximumHistoryRecordCount"
     static let maximumHistoryStorageMegabytes = "MaximumHistoryStorageMegabytes"
+    static let lastAutomaticHistoryCleanupDate = "HistoryCleanupLastAutomaticCheckDate"
+    static let historyStorageLimitActivationDate = "HistoryStorageLimitActivationDate"
+    static let historyStorageCapacityMigrationCompleted = "HistoryStorageCapacityMigrationCompleted"
+}
+
+enum HistoryStorageSettings {
+    static let defaultMegabytes = 500
+    static let allowedMegabytes = 100...102_400
+    static let cleanupCheckInterval: TimeInterval = 60 * 60
+    static let activationDelay: TimeInterval = 30
+
+    static func normalizedMegabytes(_ megabytes: Int) -> Int {
+        min(max(megabytes, allowedMegabytes.lowerBound), allowedMegabytes.upperBound)
+    }
+
+    @discardableResult
+    static func currentMegabytes(in defaults: UserDefaults = .standard) -> Int {
+        let storedMegabytes = defaults.integer(forKey: CleanupSettingsKeys.maximumHistoryStorageMegabytes)
+        let normalizedMegabytes = storedMegabytes <= 0
+            ? defaultMegabytes
+            : normalizedMegabytes(storedMegabytes)
+        if storedMegabytes != normalizedMegabytes {
+            defaults.set(normalizedMegabytes, forKey: CleanupSettingsKeys.maximumHistoryStorageMegabytes)
+        }
+        return normalizedMegabytes
+    }
 }
 
 enum CloudSyncSettingsKeys {
@@ -138,7 +164,7 @@ enum AppDefaults {
             CleanupSettingsKeys.isAudioCleanupEnabled: false,
             CleanupSettingsKeys.audioRetentionPeriod: 7,
             CleanupSettingsKeys.maximumHistoryRecordCount: 0,
-            CleanupSettingsKeys.maximumHistoryStorageMegabytes: 0,
+            CleanupSettingsKeys.maximumHistoryStorageMegabytes: HistoryStorageSettings.defaultMegabytes,
 
             // iCloud. Portable configuration keeps its existing opt-out
             // behavior; private usage history and audio require explicit opt-in.

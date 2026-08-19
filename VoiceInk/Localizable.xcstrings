@@ -20270,12 +20270,22 @@
         }
       }
     },
-    "When either limit is exceeded, VoiceInk deletes the oldest local records first. The newest record is always retained. Defaults are unlimited." : {
+    "The new storage limit will take effect 30 seconds after your last change." : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "超过任一上限后，VoiceInk 会优先删除最旧的本地记录，并始终保留最新一条。默认均为无限制。"
+            "value" : "新的存储上限将在最后一次调整 30 秒后生效。"
+          }
+        }
+      }
+    },
+    "VoiceInk checks at most once per hour. When either limit is exceeded, it deletes the oldest local history and audio first. The newest record is always retained. Storage defaults to 500 MB." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "VoiceInk 每小时最多检查一次。超过任一上限后，会优先删除最旧的本地历史记录和音频，并始终保留最新一条。存储上限默认为 500 MB。"
           }
         }
       }

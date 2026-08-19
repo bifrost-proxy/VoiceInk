@@ -29,34 +29,62 @@ final class HistoryStorageManager: ObservableObject {
     @Published private(set) var isCalculating = false
     @Published private(set) var lastCalculatedAt: Date?
     @Published private(set) var lastError: String?
+    @Published private(set) var pendingCapacityActivationDate: Date?
 
     private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "HistoryStorage")
     private var modelContext: ModelContext?
-    private var completionObserver: NSObjectProtocol?
+    private var cleanupTimer: Timer?
+    private var capacityActivationTask: Task<Void, Never>?
+    private var isEnforcingLimits = false
 
     private init() {}
 
     func startMonitoring(modelContext: ModelContext) {
         self.modelContext = modelContext
-        if completionObserver == nil {
-            completionObserver = NotificationCenter.default.addObserver(
-                forName: .transcriptionCompleted,
-                object: nil,
-                queue: .main
-            ) { [weak self] _ in
-                Task { @MainActor [weak self] in
-                    // Let completion observers persist/export the new case first.
-                    try? await Task.sleep(for: .seconds(1))
-                    guard let self, let context = self.modelContext else { return }
-                    _ = await self.enforceLimits(modelContext: context)
-                }
-            }
+        let defaults = UserDefaults.standard
+        _ = HistoryStorageSettings.currentMegabytes(in: defaults)
+
+        // Existing releases registered unlimited storage. Give the first run
+        // of this bounded policy the same grace period as an explicit settings
+        // change before enforcing the new 500 MB default.
+        if !defaults.bool(forKey: CleanupSettingsKeys.historyStorageCapacityMigrationCompleted) {
+            defaults.set(true, forKey: CleanupSettingsKeys.historyStorageCapacityMigrationCompleted)
+            let activationDate = Date().addingTimeInterval(HistoryStorageSettings.activationDelay)
+            defaults.set(activationDate, forKey: CleanupSettingsKeys.historyStorageLimitActivationDate)
         }
 
         Task { @MainActor [weak self] in
-            guard let self else { return }
-            _ = await self.enforceLimits(modelContext: modelContext)
+            await self?.runAutomaticCleanupIfNeeded()
         }
+
+        schedulePendingCapacityActivationIfNeeded()
+        cleanupTimer?.invalidate()
+        cleanupTimer = Timer.scheduledTimer(
+            withTimeInterval: HistoryStorageSettings.cleanupCheckInterval,
+            repeats: true
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                await self?.runAutomaticCleanupIfNeeded()
+            }
+        }
+    }
+
+    func scheduleCapacityUpdate(_ megabytes: Int, modelContext: ModelContext) {
+        self.modelContext = modelContext
+        let normalizedMegabytes = HistoryStorageSettings.normalizedMegabytes(megabytes)
+        UserDefaults.standard.set(
+            normalizedMegabytes,
+            forKey: CleanupSettingsKeys.maximumHistoryStorageMegabytes
+        )
+        scheduleLimitUpdate(modelContext: modelContext)
+    }
+
+    func scheduleLimitUpdate(modelContext: ModelContext) {
+        self.modelContext = modelContext
+        let activationDate = Date().addingTimeInterval(HistoryStorageSettings.activationDelay)
+        UserDefaults.standard.set(activationDate, forKey: CleanupSettingsKeys.historyStorageLimitActivationDate)
+        pendingCapacityActivationDate = activationDate
+        schedulePendingCapacityActivationIfNeeded()
     }
 
     func refresh(modelContext: ModelContext) async {
@@ -75,33 +103,37 @@ final class HistoryStorageManager: ObservableObject {
 
     @discardableResult
     func enforceLimits(modelContext: ModelContext) async -> HistoryStorageCleanupResult {
+        guard !isEnforcingLimits else { return HistoryStorageCleanupResult() }
+        isEnforcingLimits = true
+        defer { isEnforcingLimits = false }
+
         let defaults = UserDefaults.standard
         let maximumCount = max(0, defaults.integer(forKey: CleanupSettingsKeys.maximumHistoryRecordCount))
-        let maximumMegabytes = max(0, defaults.integer(forKey: CleanupSettingsKeys.maximumHistoryStorageMegabytes))
+        let maximumMegabytes = HistoryStorageSettings.currentMegabytes(in: defaults)
         let maximumBytes = Int64(maximumMegabytes) * 1_024 * 1_024
-
-        guard maximumCount > 0 || maximumBytes > 0 else {
-            return HistoryStorageCleanupResult()
-        }
 
         do {
             let descriptor = FetchDescriptor<Transcription>(
                 sortBy: [SortDescriptor(\Transcription.timestamp, order: .forward)]
             )
-            var records = try modelContext.fetch(descriptor)
-            var sizes = records.map(Self.managedSize)
-            var totalManagedBytes = sizes.reduce(Int64(0), +)
+            let records = try modelContext.fetch(descriptor)
+            var candidates = records.dropLast().map { ($0, Self.managedSize(for: $0)) }
+            var remainingRecordCount = records.count
+            var totalManagedBytes = records.map(Self.managedSize).reduce(Int64(0), +)
             var result = HistoryStorageCleanupResult()
             var locallyRemovedRecordIDs = Set<UUID>()
 
             // Keep the newest case even when one recording alone exceeds the
             // configured capacity. The UI reports the remaining overage.
-            while records.count > 1,
-                (maximumCount > 0 && records.count > maximumCount)
-                    || (maximumBytes > 0 && totalManagedBytes > maximumBytes)
+            while !candidates.isEmpty,
+                Self.shouldDelete(
+                    recordCount: remainingRecordCount,
+                    managedBytes: totalManagedBytes,
+                    maximumRecordCount: maximumCount,
+                    maximumBytes: maximumBytes
+                )
             {
-                let oldest = records.removeFirst()
-                let oldestSize = sizes.removeFirst()
+                let (oldest, oldestSize) = candidates.removeFirst()
                 let removedAudioBytes = Self.audioSize(for: oldest)
 
                 if let audioURL = Self.audioURL(for: oldest), FileManager.default.fileExists(atPath: audioURL.path) {
@@ -111,6 +143,9 @@ final class HistoryStorageManager: ObservableObject {
                         logger.error(
                             "Failed to remove history audio \(audioURL.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)"
                         )
+                        // Keep the database row so this managed file can be
+                        // retried on the next hourly check.
+                        continue
                     }
                 }
 
@@ -125,6 +160,7 @@ final class HistoryStorageManager: ObservableObject {
                 }
                 modelContext.delete(oldest)
                 locallyRemovedRecordIDs.insert(transcriptionID)
+                remainingRecordCount -= 1
                 totalManagedBytes -= oldestSize
                 result.deletedRecordCount += 1
                 result.deletedAudioBytes += removedAudioBytes
@@ -158,6 +194,73 @@ final class HistoryStorageManager: ObservableObject {
     ) -> Bool {
         (maximumRecordCount > 0 && recordCount > maximumRecordCount)
             || (maximumBytes > 0 && managedBytes > maximumBytes)
+    }
+
+    nonisolated static func isAutomaticCleanupDue(
+        now: Date,
+        lastCheckDate: Date?,
+        activationDate: Date?
+    ) -> Bool {
+        if let activationDate, now < activationDate {
+            return false
+        }
+        guard let lastCheckDate else { return true }
+        return now.timeIntervalSince(lastCheckDate) >= HistoryStorageSettings.cleanupCheckInterval
+    }
+
+    private func runAutomaticCleanupIfNeeded(now: Date = Date()) async {
+        let defaults = UserDefaults.standard
+        let lastCheckDate = defaults.object(
+            forKey: CleanupSettingsKeys.lastAutomaticHistoryCleanupDate
+        ) as? Date
+        let activationDate = defaults.object(
+            forKey: CleanupSettingsKeys.historyStorageLimitActivationDate
+        ) as? Date
+        pendingCapacityActivationDate = activationDate.flatMap { $0 > now ? $0 : nil }
+
+        guard Self.isAutomaticCleanupDue(
+            now: now,
+            lastCheckDate: lastCheckDate,
+            activationDate: activationDate
+        ), let modelContext
+        else { return }
+
+        defaults.set(now, forKey: CleanupSettingsKeys.lastAutomaticHistoryCleanupDate)
+        if activationDate != nil {
+            defaults.removeObject(forKey: CleanupSettingsKeys.historyStorageLimitActivationDate)
+            pendingCapacityActivationDate = nil
+        }
+        _ = await enforceLimits(modelContext: modelContext)
+    }
+
+    private func schedulePendingCapacityActivationIfNeeded(now: Date = Date()) {
+        capacityActivationTask?.cancel()
+        guard let activationDate = UserDefaults.standard.object(
+            forKey: CleanupSettingsKeys.historyStorageLimitActivationDate
+        ) as? Date
+        else {
+            pendingCapacityActivationDate = nil
+            return
+        }
+
+        pendingCapacityActivationDate = activationDate > now ? activationDate : nil
+        capacityActivationTask = Task { @MainActor [weak self] in
+            let delay = max(0, activationDate.timeIntervalSinceNow)
+            do {
+                try await Task.sleep(for: .seconds(delay))
+            } catch {
+                return
+            }
+            guard let self else { return }
+            // A settings change is applied once after its debounce window,
+            // independent of the regular hourly check cadence.
+            UserDefaults.standard.removeObject(forKey: CleanupSettingsKeys.historyStorageLimitActivationDate)
+            UserDefaults.standard.set(Date(), forKey: CleanupSettingsKeys.lastAutomaticHistoryCleanupDate)
+            self.pendingCapacityActivationDate = nil
+            if let modelContext = self.modelContext {
+                _ = await self.enforceLimits(modelContext: modelContext)
+            }
+        }
     }
 
     private func calculateSnapshot(modelContext: ModelContext) throws -> HistoryStorageSnapshot {
@@ -210,7 +313,19 @@ final class HistoryStorageManager: ObservableObject {
 
     private static func audioURL(for transcription: Transcription) -> URL? {
         guard let value = transcription.audioFileURL else { return nil }
-        return URL(string: value) ?? URL(fileURLWithPath: value)
+        let url = URL(string: value) ?? URL(fileURLWithPath: value)
+        let recordingsDirectory = appSupportDirectory.appendingPathComponent("Recordings", isDirectory: true)
+        return isManagedAudioURL(url, recordingsDirectory: recordingsDirectory) ? url : nil
+    }
+
+    nonisolated static func isManagedAudioURL(
+        _ url: URL,
+        recordingsDirectory: URL
+    ) -> Bool {
+        guard url.isFileURL else { return false }
+        let directoryPath = recordingsDirectory.standardizedFileURL.path
+        let filePath = url.standardizedFileURL.path
+        return filePath.hasPrefix(directoryPath + "/")
     }
 
     private static func audioSize(for transcription: Transcription) -> Int64 {
