@@ -22,7 +22,11 @@ struct RecorderGlassBackground: View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
 
         ZStack {
-            VisualEffectView(material: .popover, blendingMode: .behindWindow)
+            VisualEffectView(
+                material: .popover,
+                blendingMode: .behindWindow,
+                cornerRadius: cornerRadius
+            )
             tint
         }
         .clipShape(shape)
