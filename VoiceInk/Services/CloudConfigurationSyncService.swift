@@ -219,6 +219,12 @@ final class CloudConfigurationSyncService: ObservableObject {
     private var retryTask: Task<Void, Never>?
     private var syncIsRunning = false
     private var syncRequestedWhileRunning = false
+    private var pendingApplyDictionary = false
+    private var pendingRecordLocalChanges = false
+    private var pendingFullScan = false
+    private var pendingOperationURLs = Set<URL>()
+    private var scheduledFullScan = false
+    private var scheduledOperationURLs = Set<URL>()
     private var consecutiveFailureCount = 0
     private var syncGeneration = 0
     private var timer: Timer?
@@ -261,7 +267,7 @@ final class CloudConfigurationSyncService: ObservableObject {
             state = .disabled
             return
         }
-        requestSync(applyDictionary: false, recordLocalChanges: false)
+        requestSync(applyDictionary: false, recordLocalChanges: false, fullScan: true)
     }
 
     func start(modelContext: ModelContext, onRemoteConfigurationApplied: @escaping () -> Void) {
@@ -274,7 +280,7 @@ final class CloudConfigurationSyncService: ObservableObject {
         installObserversIfNeeded()
         if isEnabled {
             startMonitoring()
-            requestSync(applyDictionary: true, recordLocalChanges: true)
+            requestSync(applyDictionary: true, recordLocalChanges: true, fullScan: true)
         } else {
             state = .disabled
         }
@@ -288,7 +294,17 @@ final class CloudConfigurationSyncService: ObservableObject {
         localChangeCheckTask = nil
         retryTask?.cancel()
         retryTask = nil
-        requestSync(applyDictionary: modelContainer != nil, recordLocalChanges: true)
+        scheduledFullScan = false
+        scheduledOperationURLs.removeAll()
+        pendingApplyDictionary = false
+        pendingRecordLocalChanges = false
+        pendingFullScan = false
+        pendingOperationURLs.removeAll()
+        requestSync(
+            applyDictionary: modelContainer != nil,
+            recordLocalChanges: true,
+            fullScan: true
+        )
     }
 
     func setEnabled(_ enabled: Bool) {
@@ -298,6 +314,12 @@ final class CloudConfigurationSyncService: ObservableObject {
         debounceTask = nil
         retryTask?.cancel()
         retryTask = nil
+        scheduledFullScan = false
+        scheduledOperationURLs.removeAll()
+        pendingApplyDictionary = false
+        pendingRecordLocalChanges = false
+        pendingFullScan = false
+        pendingOperationURLs.removeAll()
         guard enabled else {
             stopMonitoring()
             state = .disabled
@@ -305,7 +327,11 @@ final class CloudConfigurationSyncService: ObservableObject {
         }
         startMonitoring()
         consecutiveFailureCount = 0
-        requestSync(applyDictionary: modelContainer != nil, recordLocalChanges: true)
+        requestSync(
+            applyDictionary: modelContainer != nil,
+            recordLocalChanges: true,
+            fullScan: true
+        )
     }
 
     func portableContentDidChange() {
@@ -330,13 +356,26 @@ final class CloudConfigurationSyncService: ObservableObject {
         current != lastKnown && current != pending
     }
 
-    private func requestSync(applyDictionary: Bool, recordLocalChanges: Bool) {
+    private func requestSync(
+        applyDictionary: Bool,
+        recordLocalChanges: Bool,
+        fullScan: Bool = false,
+        operationURLs: Set<URL> = []
+    ) {
         guard retryTask == nil else {
             syncRequestedWhileRunning = true
+            pendingApplyDictionary = pendingApplyDictionary || applyDictionary
+            pendingRecordLocalChanges = pendingRecordLocalChanges || recordLocalChanges
+            pendingFullScan = pendingFullScan || fullScan
+            pendingOperationURLs.formUnion(operationURLs)
             return
         }
         guard !syncIsRunning else {
             syncRequestedWhileRunning = true
+            pendingApplyDictionary = pendingApplyDictionary || applyDictionary
+            pendingRecordLocalChanges = pendingRecordLocalChanges || recordLocalChanges
+            pendingFullScan = pendingFullScan || fullScan
+            pendingOperationURLs.formUnion(operationURLs)
             return
         }
         guard !AudioDeviceManager.shared.isRecordingActive else {
@@ -356,7 +395,9 @@ final class CloudConfigurationSyncService: ObservableObject {
                     return try self.synchronize(
                         modelContext: context,
                         applyDictionary: applyDictionary,
-                        recordLocalChanges: recordLocalChanges
+                        recordLocalChanges: recordLocalChanges,
+                        fullScan: fullScan,
+                        operationURLs: operationURLs
                     )
                 }
                 if generation == self.syncGeneration, self.isEnabled {
@@ -401,7 +442,20 @@ final class CloudConfigurationSyncService: ObservableObject {
             let runAgain = self.syncRequestedWhileRunning
             self.syncRequestedWhileRunning = false
             if runAgain, self.retryTask == nil {
-                self.requestSync(applyDictionary: applyDictionary, recordLocalChanges: recordLocalChanges)
+                let nextApplyDictionary = self.pendingApplyDictionary
+                let nextRecordLocalChanges = self.pendingRecordLocalChanges
+                let nextFullScan = self.pendingFullScan
+                let nextOperationURLs = self.pendingOperationURLs
+                self.pendingApplyDictionary = false
+                self.pendingRecordLocalChanges = false
+                self.pendingFullScan = false
+                self.pendingOperationURLs.removeAll()
+                self.requestSync(
+                    applyDictionary: nextApplyDictionary,
+                    recordLocalChanges: nextRecordLocalChanges,
+                    fullScan: nextFullScan,
+                    operationURLs: nextOperationURLs
+                )
             }
         }
     }
@@ -418,14 +472,20 @@ final class CloudConfigurationSyncService: ObservableObject {
             try? await Task.sleep(for: .seconds(delay))
             guard let self, !Task.isCancelled else { return }
             self.retryTask = nil
-            self.requestSync(applyDictionary: applyDictionary, recordLocalChanges: recordLocalChanges)
+            self.requestSync(
+                applyDictionary: self.modelContainer != nil || applyDictionary,
+                recordLocalChanges: recordLocalChanges,
+                fullScan: true
+            )
         }
     }
 
     private nonisolated func synchronize(
         modelContext: ModelContext?,
         applyDictionary: Bool,
-        recordLocalChanges: Bool
+        recordLocalChanges: Bool,
+        fullScan: Bool,
+        operationURLs: Set<URL>
     ) throws -> SyncOutcome {
         dispatchPrecondition(condition: .notOnQueue(.main))
         guard isEnabled else {
@@ -443,27 +503,44 @@ final class CloudConfigurationSyncService: ObservableObject {
         if applyDictionary { try bootstrapDictionaryIfNeeded(modelContext: modelContext) }
         var didApplyConfiguration = false
         var didApplyDictionary = false
-        var latestRemoteEnvelope: VoiceInkSyncEnvelope?
+        var latestRemoteEnvelope: VoiceInkSyncOperationMetadata?
+        var configurationWasReconciled = false
+        var dictionaryWasReconciled = false
         if !hasConfigurationBaseline {
-            let result = try reconcileConfiguration()
+            let result = try reconcileConfiguration(fullScan: fullScan, operationURLs: operationURLs)
             didApplyConfiguration = result.didApplyRemote
             latestRemoteEnvelope = Self.latestEnvelope(latestRemoteEnvelope, result.latestRemoteEnvelope)
+            configurationWasReconciled = true
         }
         if applyDictionary, !hasDictionaryBaseline {
-            let result = try reconcileDictionary(modelContext: modelContext)
+            let result = try reconcileDictionary(
+                modelContext: modelContext, fullScan: fullScan, operationURLs: operationURLs)
             didApplyDictionary = result.didApplyRemote
             latestRemoteEnvelope = Self.latestEnvelope(latestRemoteEnvelope, result.latestRemoteEnvelope)
+            dictionaryWasReconciled = true
         }
+        var configurationURLs = operationURLs
+        var dictionaryURLs = operationURLs
         if recordLocalChanges {
-            try appendLocalConfigurationChanges()
-            if applyDictionary { try appendLocalDictionaryChanges(modelContext: modelContext) }
+            configurationURLs.formUnion(try appendLocalConfigurationChanges())
+            if applyDictionary {
+                dictionaryURLs.formUnion(
+                    try appendLocalDictionaryChanges(modelContext: modelContext))
+            }
         }
-        let configurationResult = try reconcileConfiguration()
+        let configurationResult = try reconcileConfiguration(
+            fullScan: fullScan && !configurationWasReconciled,
+            operationURLs: configurationURLs
+        )
         didApplyConfiguration = didApplyConfiguration || configurationResult.didApplyRemote
         latestRemoteEnvelope = Self.latestEnvelope(
             latestRemoteEnvelope, configurationResult.latestRemoteEnvelope)
         if applyDictionary {
-            let dictionaryResult = try reconcileDictionary(modelContext: modelContext)
+            let dictionaryResult = try reconcileDictionary(
+                modelContext: modelContext,
+                fullScan: fullScan && !dictionaryWasReconciled,
+                operationURLs: dictionaryURLs
+            )
             didApplyDictionary = didApplyDictionary || dictionaryResult.didApplyRemote
             latestRemoteEnvelope = Self.latestEnvelope(
                 latestRemoteEnvelope, dictionaryResult.latestRemoteEnvelope)
@@ -477,11 +554,15 @@ final class CloudConfigurationSyncService: ObservableObject {
         )
     }
 
-    private nonisolated func reconcileConfiguration() throws -> (
-        didApplyRemote: Bool, latestRemoteEnvelope: VoiceInkSyncEnvelope?
+    private nonisolated func reconcileConfiguration(
+        fullScan: Bool,
+        operationURLs: Set<URL>
+    ) throws -> (
+        didApplyRemote: Bool, latestRemoteEnvelope: VoiceInkSyncOperationMetadata?
     ) {
         let knownOperationIDs = Set(appliedConfigurationOperationIDs.values.flatMap { $0 })
-        let register = try loadRegister(for: .configuration)
+        let register = try loadRegister(
+            for: .configuration, fullScan: fullScan, operationURLs: operationURLs)
         workerConfigurationConflictCount = register.conflictCount
         let materialized = register.selectedValues()
         let localBefore = makeLocalConfiguration()
@@ -499,11 +580,14 @@ final class CloudConfigurationSyncService: ObservableObject {
     }
 
     private nonisolated func reconcileDictionary(
-        modelContext: ModelContext?
-    ) throws -> (didApplyRemote: Bool, latestRemoteEnvelope: VoiceInkSyncEnvelope?) {
+        modelContext: ModelContext?,
+        fullScan: Bool,
+        operationURLs: Set<URL>
+    ) throws -> (didApplyRemote: Bool, latestRemoteEnvelope: VoiceInkSyncOperationMetadata?) {
         guard let modelContext else { return (false, nil) }
         let knownOperationIDs = Set(appliedDictionaryOperationIDs.values.flatMap { $0 })
-        let register = try loadRegister(for: .dictionary)
+        let register = try loadRegister(
+            for: .dictionary, fullScan: fullScan, operationURLs: operationURLs)
         workerDictionaryConflictCount = register.conflictCount
         let materialized = register.selectedValues(addWins: true)
         let localBefore = makeLocalDictionary(modelContext: modelContext)
@@ -520,28 +604,32 @@ final class CloudConfigurationSyncService: ObservableObject {
         )
     }
 
-    private nonisolated func appendLocalConfigurationChanges() throws {
+    private nonisolated func appendLocalConfigurationChanges() throws -> Set<URL> {
         let current = makeLocalConfiguration()
         let mutations = mutations(
             current: current,
             previous: lastKnownConfiguration,
             appliedOperationIDs: appliedConfigurationOperationIDs
         )
-        guard !mutations.isEmpty else { return }
-        _ = try syncCore.appendChunked(mutations, domain: .configuration)
+        guard !mutations.isEmpty else { return [] }
+        let batches = try syncCore.appendChunked(mutations, domain: .configuration)
         lastKnownConfiguration = current
+        return Set(batches.compactMap { syncCore.operationURL(for: $0.envelope) })
     }
 
-    private nonisolated func appendLocalDictionaryChanges(modelContext: ModelContext?) throws {
+    private nonisolated func appendLocalDictionaryChanges(
+        modelContext: ModelContext?
+    ) throws -> Set<URL> {
         let current = makeLocalDictionary(modelContext: modelContext)
         let mutations = mutations(
             current: current,
             previous: lastKnownDictionary,
             appliedOperationIDs: appliedDictionaryOperationIDs
         )
-        guard !mutations.isEmpty else { return }
-        _ = try syncCore.appendChunked(mutations, domain: .dictionary)
+        guard !mutations.isEmpty else { return [] }
+        let batches = try syncCore.appendChunked(mutations, domain: .dictionary)
         lastKnownDictionary = current
+        return Set(batches.compactMap { syncCore.operationURL(for: $0.envelope) })
     }
 
     private nonisolated func mutations(
@@ -559,12 +647,16 @@ final class CloudConfigurationSyncService: ObservableObject {
         }
     }
 
-    private nonisolated func loadRegister(for domain: VoiceInkSyncDomain) throws -> VoiceInkSyncRegisterState {
-        var register = VoiceInkSyncRegisterState()
-        for envelope in try syncCore.readAll(in: domain) {
-            register.apply(envelope, batch: try syncCore.decodeBatch(from: envelope))
-        }
-        return register
+    private nonisolated func loadRegister(
+        for domain: VoiceInkSyncDomain,
+        fullScan: Bool,
+        operationURLs: Set<URL>
+    ) throws -> VoiceInkSyncRegisterState {
+        try syncCore.readIncrementally(
+            in: domain,
+            hintedOperationURLs: operationURLs,
+            fullScan: fullScan
+        ).register
     }
 
     private nonisolated func hasRemoteMaterializedDifference(
@@ -582,9 +674,9 @@ final class CloudConfigurationSyncService: ObservableObject {
     }
 
     private nonisolated static func latestEnvelope(
-        _ lhs: VoiceInkSyncEnvelope?,
-        _ rhs: VoiceInkSyncEnvelope?
-    ) -> VoiceInkSyncEnvelope? {
+        _ lhs: VoiceInkSyncOperationMetadata?,
+        _ rhs: VoiceInkSyncOperationMetadata?
+    ) -> VoiceInkSyncOperationMetadata? {
         guard let lhs else { return rhs }
         guard let rhs else { return lhs }
         if lhs.createdAt != rhs.createdAt { return lhs.createdAt > rhs.createdAt ? lhs : rhs }
@@ -954,7 +1046,7 @@ final class CloudConfigurationSyncService: ObservableObject {
 
     private func scheduleCatchUpSyncIfDue(now: Date = Date()) {
         guard Self.shouldRunCatchUpSync(lastSyncedAt: lastSyncedAt, now: now) else { return }
-        scheduleSync()
+        scheduleSync(fullScan: true)
     }
 
     nonisolated static func shouldRunCatchUpSync(lastSyncedAt: Date?, now: Date) -> Bool {
@@ -965,7 +1057,7 @@ final class CloudConfigurationSyncService: ObservableObject {
     private func startMonitoring() {
         if timer == nil {
             timer = Timer.scheduledTimer(withTimeInterval: Self.reconciliationInterval, repeats: true) { [weak self] _ in
-                Task { @MainActor in self?.scheduleSync() }
+                Task { @MainActor in self?.scheduleSync(fullScan: true) }
             }
             timer?.tolerance = 5 * 60
         }
@@ -1004,15 +1096,29 @@ final class CloudConfigurationSyncService: ObservableObject {
         metadataQueryObservers.removeAll()
     }
 
-    private func scheduleSync() {
+    private func scheduleSync(
+        fullScan: Bool = false,
+        operationURLs: Set<URL> = []
+    ) {
         guard isEnabled else { return }
+        scheduledFullScan = scheduledFullScan || fullScan
+        scheduledOperationURLs.formUnion(operationURLs)
         debounceTask?.cancel()
         debounceTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .milliseconds(800))
             guard !Task.isCancelled else { return }
             guard let self else { return }
             self.debounceTask = nil
-            self.requestSync(applyDictionary: self.modelContainer != nil, recordLocalChanges: true)
+            let requestedFullScan = self.scheduledFullScan
+            let requestedOperationURLs = self.scheduledOperationURLs
+            self.scheduledFullScan = false
+            self.scheduledOperationURLs.removeAll()
+            self.requestSync(
+                applyDictionary: self.modelContainer != nil,
+                recordLocalChanges: true,
+                fullScan: requestedFullScan,
+                operationURLs: requestedOperationURLs
+            )
         }
     }
 
@@ -1050,7 +1156,7 @@ final class CloudConfigurationSyncService: ObservableObject {
             syncCore.shouldConsumeRemoteOperation(
                 at: url, domains: [.configuration, .dictionary])
         }
-        if shouldConsume { scheduleSync() }
+        if shouldConsume { scheduleSync(operationURLs: Set(urls)) }
     }
 
     private var shouldSkipAutomaticSyncInTests: Bool {
