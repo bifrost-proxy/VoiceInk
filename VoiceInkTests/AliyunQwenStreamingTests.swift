@@ -790,7 +790,7 @@ private final class AliyunQwenFinishTestConnection: CloudSpeechWebSocketConnecti
         return .string(String(decoding: data, as: UTF8.self))
     }
 
-    func ping() async throws {}
+    func ping(timeout _: Duration) async throws {}
     func close() {}
 }
 
@@ -840,7 +840,7 @@ private final class AliyunQwenSendFailureTestConnection: CloudSpeechWebSocketCon
         throw CancellationError()
     }
 
-    func ping() async throws {}
+    func ping(timeout _: Duration) async throws {}
     func close() {}
 }
 
@@ -876,7 +876,7 @@ private final class AliyunQwenLifecycleTestConnection: CloudSpeechWebSocketConne
         throw CancellationError()
     }
 
-    func ping() async throws {}
+    func ping(timeout _: Duration) async throws {}
 
     func close() {
         lock.withLock {

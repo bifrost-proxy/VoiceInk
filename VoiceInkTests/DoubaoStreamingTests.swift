@@ -998,7 +998,7 @@ private final class DoubaoStalePreconnection: CloudSpeechWebSocketConnection, @u
         )
     }
 
-    func ping() async throws {}
+    func ping(timeout _: Duration) async throws {}
     func close() {}
 }
 
@@ -1082,7 +1082,7 @@ private final class DoubaoEarlyRecoveryConnection: CloudSpeechWebSocketConnectio
         return .data(frame)
     }
 
-    func ping() async throws {}
+    func ping(timeout _: Duration) async throws {}
     func close() {}
 
     private func appendUInt32(_ value: UInt32, to data: inout Data) {
@@ -1195,7 +1195,7 @@ private final class DoubaoReplayTestConnection: CloudSpeechWebSocketConnection, 
         return .data(frame)
     }
 
-    func ping() async throws {}
+    func ping(timeout _: Duration) async throws {}
     func close() {}
 
     private func appendUInt32(_ value: UInt32, to data: inout Data) {
