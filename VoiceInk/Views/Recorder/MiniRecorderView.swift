@@ -7,6 +7,8 @@ struct MiniRecorderView<S: RecorderStateProvider & ObservableObject>: View {
     let onRecordButtonTapped: () -> Void
     let onCloseTapped: () -> Void
     let onAssistantFollowUp: (String) -> Void
+    let usesFixedCanvas: Bool
+    let onContentSizeChange: ((CGSize) -> Void)?
     @AppStorage(RecorderDisplaySettingsKeys.showLiveTranscript) private var showLiveTranscript = true
     @StateObject private var presentationModel: RecorderWindowPresentationModel<S>
     @State private var isTranscriptContentVisible = false
@@ -17,7 +19,9 @@ struct MiniRecorderView<S: RecorderStateProvider & ObservableObject>: View {
         assistantSession: AssistantSession,
         onRecordButtonTapped: @escaping () -> Void,
         onCloseTapped: @escaping () -> Void,
-        onAssistantFollowUp: @escaping (String) -> Void
+        onAssistantFollowUp: @escaping (String) -> Void,
+        usesFixedCanvas: Bool = true,
+        onContentSizeChange: ((CGSize) -> Void)? = nil
     ) {
         self.stateProvider = stateProvider
         self.recorder = recorder
@@ -25,6 +29,8 @@ struct MiniRecorderView<S: RecorderStateProvider & ObservableObject>: View {
         self.onRecordButtonTapped = onRecordButtonTapped
         self.onCloseTapped = onCloseTapped
         self.onAssistantFollowUp = onAssistantFollowUp
+        self.usesFixedCanvas = usesFixedCanvas
+        self.onContentSizeChange = onContentSizeChange
 
         let defaults = UserDefaults.standard
         let initialShowLiveTranscript = defaults.object(
@@ -122,7 +128,7 @@ struct MiniRecorderView<S: RecorderStateProvider & ObservableObject>: View {
         .clipped()
     }
 
-    var body: some View {
+    private var recorderContent: some View {
         VStack(spacing: 0) {
             if let permissionGuidance {
                 RecorderPermissionGuidanceView(
@@ -153,7 +159,27 @@ struct MiniRecorderView<S: RecorderStateProvider & ObservableObject>: View {
                 .shadow(color: Color.black.opacity(0.20), radius: 18, y: 7)
         }
         .animation(.spring(response: 0.34, dampingFraction: 0.88), value: presentation)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+    }
+
+    var body: some View {
+        Group {
+            if usesFixedCanvas {
+                recorderContent
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+            } else {
+                recorderContent
+                    .fixedSize()
+            }
+        }
+        .background {
+            GeometryReader { proxy in
+                Color.clear.preference(key: RecorderContentSizePreferenceKey.self, value: proxy.size)
+            }
+        }
+        .onPreferenceChange(RecorderContentSizePreferenceKey.self) { size in
+            guard !usesFixedCanvas, size.width > 0, size.height > 0 else { return }
+            onContentSizeChange?(size)
+        }
         .onChange(of: showLiveTranscript) { _, isEnabled in
             presentationModel.updateShowLiveTranscript(isEnabled)
         }
@@ -170,5 +196,13 @@ struct MiniRecorderView<S: RecorderStateProvider & ObservableObject>: View {
                 isTranscriptContentVisible = true
             }
         }
+    }
+}
+
+private struct RecorderContentSizePreferenceKey: PreferenceKey {
+    static var defaultValue = CGSize.zero
+
+    static func reduce(value: inout CGSize, nextValue: () -> CGSize) {
+        value = nextValue()
     }
 }
