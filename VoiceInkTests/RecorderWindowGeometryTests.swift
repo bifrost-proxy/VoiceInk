@@ -125,6 +125,27 @@ struct RecorderWindowGeometryTests {
         #expect(placement.frame == NSRect(x: 512, y: 37, width: 184, height: 40))
     }
 
+    @Test("Reserves expansion space before placing a compact follow recorder near the bottom")
+    func reservesExpansionSpaceBeforeShowingCompactFollowRecorder() {
+        let visibleFrame = NSRect(x: 0, y: 0, width: 1_000, height: 800)
+        let anchor = NSPoint(x: 500, y: 100)
+        let expansionPlacement = RecorderWindowGeometry.followPlacement(
+            anchor: anchor,
+            panelSize: NSSize(width: 520, height: 430),
+            visibleFrame: visibleFrame
+        )
+        let compactPlacement = RecorderWindowGeometry.followPlacement(
+            anchor: anchor,
+            panelSize: NSSize(width: 184, height: 40),
+            visibleFrame: visibleFrame,
+            preferredCorner: expansionPlacement.corner
+        )
+
+        #expect(expansionPlacement.corner == .bottomLeft)
+        #expect(compactPlacement.corner == .bottomLeft)
+        #expect(compactPlacement.frame.minY > anchor.y)
+    }
+
     @Test("Constrains an oversized follow recorder to the visible frame")
     func constrainsOversizedFollowRecorder() {
         let visibleFrame = NSRect(x: -400, y: 20, width: 300, height: 180)

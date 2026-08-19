@@ -62,6 +62,12 @@ final class FollowWindowManager {
 }
 
 private final class FollowRecorderPanel: NSPanel {
+    /// Reserve room for the widest and tallest supported recorder presentation
+    /// before showing the compact control bar. This keeps a recorder opened
+    /// near a bottom-aligned input from growing back across that input when
+    /// live text, permission guidance, or an assistant response appears.
+    private static let expandedPresentationSize = NSSize(width: 520, height: 430)
+
     private var anchor: NSPoint?
     private var contentSize = NSSize(width: 184, height: 40)
     private var preferredCorner = RecorderFollowCorner.topLeft
@@ -103,7 +109,7 @@ private final class FollowRecorderPanel: NSPanel {
 
     func show(anchor: NSPoint) {
         self.anchor = anchor
-        preferredCorner = .topLeft
+        choosePreferredCorner(reserving: Self.expandedPresentationSize)
         applyPlacement()
         orderFrontRegardless()
     }
@@ -119,15 +125,25 @@ private final class FollowRecorderPanel: NSPanel {
     @objc private func handleScreenParametersChange() {
         guard isVisible else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+            self?.choosePreferredCorner(reserving: Self.expandedPresentationSize)
             self?.applyPlacement()
         }
     }
 
+    private func choosePreferredCorner(reserving reservedSize: NSSize) {
+        guard let anchor else { return }
+        let visibleFrame = visibleFrame(for: anchor)
+        let placement = RecorderWindowGeometry.followPlacement(
+            anchor: anchor,
+            panelSize: reservedSize,
+            visibleFrame: visibleFrame
+        )
+        preferredCorner = placement.corner
+    }
+
     private func applyPlacement() {
         guard let anchor else { return }
-        let visibleFrame = RecorderWindowGeometry.targetScreen(mouseLocation: anchor)?.visibleFrame
-            ?? NSScreen.main?.visibleFrame
-            ?? NSRect(origin: .zero, size: contentSize)
+        let visibleFrame = visibleFrame(for: anchor)
         let placement = RecorderWindowGeometry.followPlacement(
             anchor: anchor,
             panelSize: contentSize,
@@ -136,6 +152,12 @@ private final class FollowRecorderPanel: NSPanel {
         )
         preferredCorner = placement.corner
         setFrame(placement.frame, display: true)
+    }
+
+    private func visibleFrame(for anchor: NSPoint) -> NSRect {
+        RecorderWindowGeometry.targetScreen(mouseLocation: anchor)?.visibleFrame
+            ?? NSScreen.main?.visibleFrame
+            ?? NSRect(origin: .zero, size: contentSize)
     }
 
     deinit {
