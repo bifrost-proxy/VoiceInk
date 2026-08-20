@@ -64,12 +64,15 @@ struct VisualEffectView: NSViewRepresentable {
     private static func roundedMaskImage(cornerRadius: CGFloat) -> NSImage {
         let edgeLength = ceil(cornerRadius * 2) + 1
         let image = NSImage(size: NSSize(width: edgeLength, height: edgeLength), flipped: false) { rect in
-            NSColor.white.setFill()
-            NSBezierPath(
-                roundedRect: rect,
-                xRadius: cornerRadius,
-                yRadius: cornerRadius
-            ).fill()
+            guard let context = NSGraphicsContext.current?.cgContext else { return false }
+            let maskLayer = CALayer()
+            maskLayer.frame = rect
+            maskLayer.backgroundColor = NSColor.white.cgColor
+            maskLayer.cornerRadius = cornerRadius
+            maskLayer.cornerCurve = .continuous
+            maskLayer.masksToBounds = true
+            maskLayer.contentsScale = 1
+            maskLayer.render(in: context)
             return true
         }
         image.capInsets = NSEdgeInsets(

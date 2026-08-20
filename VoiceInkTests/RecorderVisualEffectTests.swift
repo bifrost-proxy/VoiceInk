@@ -33,6 +33,20 @@ struct RecorderVisualEffectTests {
         ).alphaComponent
         #expect(cornerAlpha == 0)
         #expect(centerAlpha == 1)
+
+        let ellipticalMask = NSImage(size: maskImage.size, flipped: false) { rect in
+            NSColor.white.setFill()
+            NSBezierPath(roundedRect: rect, xRadius: 14, yRadius: 14).fill()
+            return true
+        }
+        let ellipticalBitmap = try #require(
+            ellipticalMask.tiffRepresentation.flatMap(NSBitmapImageRep.init(data:))
+        )
+        let continuousShoulderAlpha = try #require(bitmap.colorAt(x: 11, y: 0)).alphaComponent
+        let ellipticalShoulderAlpha = try #require(
+            ellipticalBitmap.colorAt(x: 11, y: 0)
+        ).alphaComponent
+        #expect(continuousShoulderAlpha + 0.2 < ellipticalShoulderAlpha)
     }
 
     @Test("Unrounded materials do not retain a stale clipping mask")
