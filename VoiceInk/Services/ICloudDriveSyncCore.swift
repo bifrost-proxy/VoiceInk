@@ -847,22 +847,34 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
             return
         }
 
-        var coordinationError: NSError?
-        var writeError: Error?
-        NSFileCoordinator().coordinate(writingItemAt: destination, options: [], error: &coordinationError) { url in
+        let writeData: (URL) throws -> Void = { url in
             let stagingURL = url.deletingLastPathComponent()
                 .appendingPathComponent(".\(envelope.operationID.uuidString).incoming")
             defer { try? self.fileManager.removeItem(at: stagingURL) }
+            try? self.fileManager.removeItem(at: stagingURL)
+            try data.write(to: stagingURL, options: .atomic)
             do {
-                try? self.fileManager.removeItem(at: stagingURL)
-                try data.write(to: stagingURL, options: .atomic)
-                do {
-                    try self.fileManager.moveItem(at: stagingURL, to: url)
-                } catch {
-                    guard self.fileManager.fileExists(atPath: url.path),
-                        try Data(contentsOf: url) == data
-                    else { throw error }
-                }
+                try self.fileManager.moveItem(at: stagingURL, to: url)
+            } catch {
+                guard self.fileManager.fileExists(atPath: url.path),
+                    try Data(contentsOf: url) == data
+                else { throw error }
+            }
+        }
+
+        // Injected roots are ordinary local directories used by deterministic tests.
+        // Coordinating them can stall on CI when the x86_64 runner's filecoordinationd
+        // service is unavailable; real iCloud Drive paths still use coordination.
+        if iCloudDriveRootOverride != nil {
+            try writeData(destination)
+            return
+        }
+
+        var coordinationError: NSError?
+        var writeError: Error?
+        NSFileCoordinator().coordinate(writingItemAt: destination, options: [], error: &coordinationError) { url in
+            do {
+                try writeData(url)
             } catch {
                 writeError = error
             }
@@ -872,6 +884,10 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
     }
 
     private func coordinatedRead(from url: URL) throws -> Data {
+        if iCloudDriveRootOverride != nil {
+            return try Data(contentsOf: url)
+        }
+
         var coordinationError: NSError?
         var result: Result<Data, Error>?
         NSFileCoordinator().coordinate(readingItemAt: url, options: [], error: &coordinationError) { coordinatedURL in
