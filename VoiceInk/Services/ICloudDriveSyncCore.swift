@@ -262,7 +262,6 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
     private let defaults: UserDefaults
     private let fileManager: FileManager
     private let iCloudDriveRootOverride: URL?
-    private let payloadByteLimit: Int
     let deviceID: String
     let deviceName: String
     private(set) var frontierWriteCountForTesting = 0
@@ -274,14 +273,11 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
         defaults: UserDefaults = .standard,
         fileManager: FileManager = .default,
         iCloudDriveRootURL: URL? = nil,
-        deviceName: String? = nil,
-        payloadByteLimit: Int = ICloudDriveSyncCore.maximumPayloadBytes
+        deviceName: String? = nil
     ) {
-        precondition(payloadByteLimit > 0)
         self.defaults = defaults
         self.fileManager = fileManager
         self.iCloudDriveRootOverride = iCloudDriveRootURL
-        self.payloadByteLimit = payloadByteLimit
         if let existing = defaults.string(forKey: Self.deviceIDKey), UUID(uuidString: existing) != nil {
             self.deviceID = existing
         } else {
@@ -305,7 +301,7 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
 
     func append(_ batch: VoiceInkSyncMutationBatch, domain: VoiceInkSyncDomain) throws -> VoiceInkSyncEnvelope {
         let payload = try PropertyListEncoder.voiceInkSync.encode(batch)
-        guard payload.count <= payloadByteLimit else { throw POSIXError(.EFBIG) }
+        guard payload.count <= Self.maximumPayloadBytes else { throw POSIXError(.EFBIG) }
         let operationID = retryStableOperationID(domain: domain, payload: payload)
         if let existing = try existingEnvelope(
             operationID: operationID,
@@ -339,12 +335,24 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
         _ mutations: [VoiceInkSyncMutation],
         domain: VoiceInkSyncDomain
     ) throws -> [(envelope: VoiceInkSyncEnvelope, mutations: [VoiceInkSyncMutation])] {
-        var results: [(VoiceInkSyncEnvelope, [VoiceInkSyncMutation])] = []
+        try Self.chunkedMutationBatches(mutations).map { batch in
+            let envelope = try append(
+                VoiceInkSyncMutationBatch(mutations: batch),
+                domain: domain
+            )
+            return (envelope, batch)
+        }
+    }
+
+    static func chunkedMutationBatches(
+        _ mutations: [VoiceInkSyncMutation],
+        payloadByteLimit: Int = maximumPayloadBytes
+    ) throws -> [[VoiceInkSyncMutation]] {
+        precondition(payloadByteLimit > 0)
+        var batches: [[VoiceInkSyncMutation]] = []
 
         func encodedSize(_ candidate: ArraySlice<VoiceInkSyncMutation>) throws -> Int {
-            try PropertyListEncoder.voiceInkSync.encode(
-                VoiceInkSyncMutationBatch(mutations: Array(candidate))
-            ).count
+            try encodedMutationBatchSize(Array(candidate))
         }
 
         var start = mutations.startIndex
@@ -370,14 +378,16 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
             }
 
             let batch = Array(mutations[start..<bestEnd])
-            let envelope = try append(
-                VoiceInkSyncMutationBatch(mutations: batch),
-                domain: domain
-            )
-            results.append((envelope, batch))
+            batches.append(batch)
             start = bestEnd
         }
-        return results
+        return batches
+    }
+
+    static func encodedMutationBatchSize(_ mutations: [VoiceInkSyncMutation]) throws -> Int {
+        try PropertyListEncoder.voiceInkSync.encode(
+            VoiceInkSyncMutationBatch(mutations: mutations)
+        ).count
     }
 
     private func retryStableOperationID(domain: VoiceInkSyncDomain, payload: Data) -> UUID {
