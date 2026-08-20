@@ -46,6 +46,10 @@ enum RecorderDisplaySettingsKeys {
     static let showLiveTranscript = "ShowLiveTranscript"
 }
 
+enum DashboardSettingsKeys {
+    static let insightPeriod = "DashboardInsightPeriod"
+}
+
 enum RecordingDurationSettings {
     static let maximumRecordingMinutesKey = "MaximumRecordingDurationMinutes"
     static let defaultMinutes = 5

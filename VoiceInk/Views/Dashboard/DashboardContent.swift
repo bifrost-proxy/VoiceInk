@@ -25,7 +25,7 @@ struct DashboardContent: View {
     @State private var isModelPerformancePanelPresented = false
     @State private var isModelUsagePanelPresented = false
     @State private var isInsightsViewPresented = false
-    @State private var selectedInsightPeriod: DashboardInsightPeriod = .allTime
+    @State private var selectedInsightPeriod = DashboardInsightPeriod.stored()
     @State private var isAccessibilityEnabled = AXIsProcessTrusted()
     @ObservedObject private var modeManager = ModeManager.shared
     @State private var isSystemInfoCopied = false
@@ -82,6 +82,9 @@ struct DashboardContent: View {
             await scheduleDashboardStatsRefresh(allowSkipWhenFresh: hasLoadedStatsSnapshot)
         }
         .onAppear(perform: refreshAccessibilityStatus)
+        .onChange(of: selectedInsightPeriod) { period in
+            period.store()
+        }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             refreshAccessibilityStatus()
         }
