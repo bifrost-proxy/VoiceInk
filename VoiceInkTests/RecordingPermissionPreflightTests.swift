@@ -220,6 +220,119 @@ struct RecordingPermissionPreflightTests {
         )
     }
 
+    @Test func accessibilityRequestReplacesStaleEntryBeforeOpeningSettings() async {
+        var events: [String] = []
+        let dependencies = PrivacyPaneAuthorizationRequestDependencies(
+            hasAccess: {
+                events.append("check")
+                return false
+            },
+            resetAuthorization: {
+                events.append("reset")
+                return nil
+            },
+            registerCurrentApplication: {
+                events.append("register")
+                return false
+            },
+            openSettings: {
+                events.append("open")
+            }
+        )
+
+        let isGranted = await PrivacyPermissionAuthorizationService.requestAccessibilityAuthorization(
+            dependencies: dependencies
+        )
+
+        #expect(!isGranted)
+        #expect(events == ["check", "reset", "register", "open"])
+    }
+
+    @Test func accessibilityRequestPreservesCurrentGrantedEntry() async {
+        var events: [String] = []
+        let dependencies = PrivacyPaneAuthorizationRequestDependencies(
+            hasAccess: {
+                events.append("check")
+                return true
+            },
+            resetAuthorization: {
+                events.append("reset")
+                return nil
+            },
+            registerCurrentApplication: {
+                events.append("register")
+                return true
+            },
+            openSettings: {
+                events.append("open")
+            }
+        )
+
+        let isGranted = await PrivacyPermissionAuthorizationService.requestAccessibilityAuthorization(
+            dependencies: dependencies
+        )
+
+        #expect(isGranted)
+        #expect(events == ["check"])
+    }
+
+    @Test func accessibilityRequestWithoutSettingsDoesNotResetTheEntry() async {
+        var events: [String] = []
+        let dependencies = PrivacyPaneAuthorizationRequestDependencies(
+            hasAccess: {
+                events.append("check")
+                return false
+            },
+            resetAuthorization: {
+                events.append("reset")
+                return nil
+            },
+            registerCurrentApplication: {
+                events.append("register")
+                return false
+            },
+            openSettings: {
+                events.append("open")
+            }
+        )
+
+        let isGranted = await PrivacyPermissionAuthorizationService.requestAccessibilityAuthorization(
+            openSettings: false,
+            dependencies: dependencies
+        )
+
+        #expect(!isGranted)
+        #expect(events == ["check", "register"])
+    }
+
+    @Test func screenRecordingRequestReplacesStaleEntryBeforeOpeningSettings() async {
+        var events: [String] = []
+        let dependencies = PrivacyPaneAuthorizationRequestDependencies(
+            hasAccess: {
+                events.append("check")
+                return false
+            },
+            resetAuthorization: {
+                events.append("reset")
+                return nil
+            },
+            registerCurrentApplication: {
+                events.append("register")
+                return false
+            },
+            openSettings: {
+                events.append("open")
+            }
+        )
+
+        let isGranted = await PrivacyPermissionAuthorizationService.requestScreenRecordingAuthorization(
+            dependencies: dependencies
+        )
+
+        #expect(!isGranted)
+        #expect(events == ["check", "reset", "register", "open"])
+    }
+
     @Test func recorderGuidanceAlwaysProvidesAnActionableNextStep() {
         let accessibility = RecorderPermissionGuidance.required(.accessibility)
         let requesting = RecorderPermissionGuidance.requesting(.screenRecording)
