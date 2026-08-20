@@ -58,6 +58,7 @@ class TranscriptionPipeline {
         triggerWordModeSelection: @escaping (String) -> String? = { _ in nil },
         enhancementConfiguration: @escaping () -> EnhancementRuntimeConfiguration?,
         recordingContextSnapshot: @escaping () async -> RecordingContextSnapshot? = { nil },
+        inputTarget: RecordingInputTarget? = nil,
         captureIntegritySnapshot: AudioCaptureIntegritySnapshot? = nil,
         outputConfiguration: @escaping () -> OutputRuntimeConfiguration,
         onStateChange: @escaping (RecordingState) -> Void,
@@ -347,7 +348,8 @@ class TranscriptionPipeline {
                     output: outputForDelivery ?? outputConfiguration(),
                     responseConfig: responseConfig,
                     responseError: responseError,
-                    isAssistantFollowUp: assistant.isFollowUp
+                    isAssistantFollowUp: assistant.isFollowUp,
+                    inputTarget: inputTarget
                 ),
                 actions: TranscriptionDelivery.Actions(
                     setState: onStateChange,

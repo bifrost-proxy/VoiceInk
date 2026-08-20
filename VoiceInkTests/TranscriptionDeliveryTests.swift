@@ -1,3 +1,4 @@
+import ApplicationServices
 import Foundation
 import Testing
 @testable import VoiceInk
@@ -51,7 +52,7 @@ struct TranscriptionDeliveryTests {
             }
         )
 
-        await delivery.pasteOriginalImmediately("original transcript") {
+        await delivery.pasteOriginalImmediately("original transcript", inputTarget: nil) {
             dismissCount += 1
         }
 
@@ -96,7 +97,8 @@ struct TranscriptionDeliveryTests {
                     ),
                     responseConfig: nil,
                     responseError: nil,
-                    isAssistantFollowUp: false
+                    isAssistantFollowUp: false,
+                    inputTarget: nil
                 ),
                 actions: TranscriptionDelivery.Actions(
                     setState: { _ in },
@@ -116,6 +118,82 @@ struct TranscriptionDeliveryTests {
         await deliveryTask.value
 
         #expect(events == ["dismissed", "paste-started:enhanced", "delivery-returned"])
+    }
+
+    @Test func restoresCapturedInputBeforePasting() async {
+        let defaults = UserDefaults.standard
+        let previousAppendSpace = defaults.object(forKey: "AppendTrailingSpace")
+        defer {
+            restore(previousAppendSpace, forKey: "AppendTrailingSpace", in: defaults)
+        }
+        defaults.set(false, forKey: "AppendTrailingSpace")
+
+        var events: [String] = []
+        let delivery = TranscriptionDelivery(
+            pasteAtCursor: { text in
+                events.append("pasted:\(text)")
+                return .commandPosted
+            },
+            restoreInputTarget: { _ in
+                events.append("restored")
+                return .restored
+            }
+        )
+
+        await delivery.pasteOriginalImmediately("targeted", inputTarget: makeInputTarget()) {
+            events.append("dismissed")
+        }
+
+        #expect(events == ["dismissed", "restored", "pasted:targeted"])
+    }
+
+    @Test func unavailableCapturedInputCopiesWithoutPasting() async {
+        let defaults = UserDefaults.standard
+        let previousAppendSpace = defaults.object(forKey: "AppendTrailingSpace")
+        defer {
+            restore(previousAppendSpace, forKey: "AppendTrailingSpace", in: defaults)
+        }
+        defaults.set(false, forKey: "AppendTrailingSpace")
+
+        var events: [String] = []
+        var copiedText: String?
+        var pasteCount = 0
+        let delivery = TranscriptionDelivery(
+            pasteAtCursor: { _ in
+                pasteCount += 1
+                return .commandPosted
+            },
+            restoreInputTarget: { _ in
+                events.append("unavailable")
+                return .unavailable
+            },
+            copyToClipboard: { text in
+                copiedText = text
+                events.append("copied")
+                return true
+            },
+            notifyUnavailableTarget: {
+                events.append("notified")
+            }
+        )
+
+        await delivery.pasteOriginalImmediately("safe fallback", inputTarget: makeInputTarget()) {
+            events.append("dismissed")
+        }
+
+        #expect(pasteCount == 0)
+        #expect(copiedText == "safe fallback")
+        #expect(events == ["dismissed", "unavailable", "copied", "notified"])
+    }
+
+    private func makeInputTarget() -> RecordingInputTarget {
+        RecordingInputTarget(
+            processID: ProcessInfo.processInfo.processIdentifier,
+            bundleIdentifier: Bundle.main.bundleIdentifier,
+            window: nil,
+            element: AXUIElementCreateSystemWide(),
+            selectedTextRange: nil
+        )
     }
 
     private func restore(_ value: Any?, forKey key: String, in defaults: UserDefaults) {

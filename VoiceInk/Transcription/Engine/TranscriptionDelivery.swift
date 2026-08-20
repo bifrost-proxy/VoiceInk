@@ -4,16 +4,38 @@ import os
 @MainActor
 final class TranscriptionDelivery {
     typealias PasteAtCursor = @MainActor (String) async -> CursorPaster.PasteResult
+    typealias RestoreInputTarget = @MainActor (RecordingInputTarget) async -> RecordingInputTargetRestoration
+    typealias CopyToClipboard = @MainActor (String) -> Bool
+    typealias NotifyUnavailableTarget = @MainActor () -> Void
 
     private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "TranscriptionDelivery")
     private let pasteAtCursor: PasteAtCursor
+    private let restoreInputTarget: RestoreInputTarget
+    private let copyToClipboard: CopyToClipboard
+    private let notifyUnavailableTarget: NotifyUnavailableTarget
 
     init(
         pasteAtCursor: @escaping PasteAtCursor = { text in
             await CursorPaster.pasteAtCursorAndWaitUntilPosted(text)
+        },
+        restoreInputTarget: @escaping RestoreInputTarget = { target in
+            await RecordingInputTargetService.restore(target)
+        },
+        copyToClipboard: @escaping CopyToClipboard = { text in
+            ClipboardManager.copyToClipboard(text)
+        },
+        notifyUnavailableTarget: @escaping NotifyUnavailableTarget = {
+            NotificationManager.shared.showNotification(
+                title: String(localized: "Original input is no longer available. Transcription copied to clipboard."),
+                type: .warning,
+                duration: 6.0
+            )
         }
     ) {
         self.pasteAtCursor = pasteAtCursor
+        self.restoreInputTarget = restoreInputTarget
+        self.copyToClipboard = copyToClipboard
+        self.notifyUnavailableTarget = notifyUnavailableTarget
     }
 
     struct Request {
@@ -23,6 +45,7 @@ final class TranscriptionDelivery {
         let responseConfig: EnhancementRuntimeConfiguration?
         let responseError: String?
         let isAssistantFollowUp: Bool
+        let inputTarget: RecordingInputTarget?
     }
 
     struct Actions {
@@ -38,6 +61,7 @@ final class TranscriptionDelivery {
     /// not to submit it before reviewing the raw transcript.
     func pasteOriginalImmediately(
         _ text: String,
+        inputTarget: RecordingInputTarget?,
         dismiss: @escaping () async -> Void
     ) async {
         await paste(
@@ -48,6 +72,7 @@ final class TranscriptionDelivery {
                 autoSendKey: .none,
                 customCommand: nil
             ),
+            inputTarget: inputTarget,
             actions: Actions(
                 setState: { _ in },
                 dismiss: dismiss,
@@ -82,7 +107,7 @@ final class TranscriptionDelivery {
         }
 
         if let text = request.text {
-            await paste(text, output: request.output, actions: actions)
+            await paste(text, output: request.output, inputTarget: request.inputTarget, actions: actions)
         } else {
             await actions.dismiss()
         }
@@ -192,6 +217,7 @@ final class TranscriptionDelivery {
     private func paste(
         _ text: String,
         output: OutputRuntimeConfiguration,
+        inputTarget: RecordingInputTarget?,
         actions: Actions
     ) async {
         let appendSpace = UserDefaults.standard.bool(forKey: "AppendTrailingSpace")
@@ -199,12 +225,26 @@ final class TranscriptionDelivery {
         SoundManager.shared.playStopSound()
         await actions.dismiss()
 
-        _ = await pasteAtCursor(pastedText)
+        if let inputTarget,
+            await restoreInputTarget(inputTarget) == .unavailable
+        {
+            if copyToClipboard(pastedText) {
+                notifyUnavailableTarget()
+            }
+            return
+        }
+
+        let pasteResult = await pasteAtCursor(pastedText)
 
         let autoSendKey = output.outputMode == .paste ? output.autoSendKey : .none
-        if autoSendKey.isEnabled {
-            Task { @MainActor in
+        if autoSendKey.isEnabled, pasteResult == .commandPosted {
+            Task { @MainActor [restoreInputTarget] in
                 try? await Task.sleep(nanoseconds: 500_000_000)
+                if let inputTarget,
+                    await restoreInputTarget(inputTarget) == .unavailable
+                {
+                    return
+                }
                 CursorPaster.performAutoSend(autoSendKey)
             }
         }
