@@ -244,28 +244,36 @@ struct VoiceInkTests {
         #expect(!FileManager.default.fileExists(atPath: operations.path))
     }
 
-    @Test func syncCoreSplitsMutationSetsAtConfiguredPayloadLimit() throws {
-        let payloadByteLimit = 7 * 1_024
+    @Test func syncCoreSplitsLargeMutationSetsIntoValidImmutableOperations() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("VoiceInkChunkedSync-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let suite = "VoiceInkTests.ChunkedSync.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let core = ICloudDriveSyncCore(defaults: defaults, iCloudDriveRootURL: root)
         let mutations = [
             VoiceInkSyncMutation(
                 key: "preference/first",
-                value: Data(repeating: 0x3c, count: 4 * 1_024)
+                value: Data(repeating: 0x3c, count: 4 * 1_024 * 1_024)
             ),
             VoiceInkSyncMutation(
                 key: "preference/second",
-                value: Data(repeating: 0x4d, count: 4 * 1_024)
+                value: Data(repeating: 0x4d, count: 4 * 1_024 * 1_024)
             ),
         ]
 
-        let batches = try ICloudDriveSyncCore.chunkedMutationBatches(
-            mutations,
-            payloadByteLimit: payloadByteLimit
-        )
-        #expect(batches.count == 2)
-        #expect(batches.flatMap { $0 } == mutations)
-        for batch in batches {
-            #expect(try ICloudDriveSyncCore.encodedMutationBatchSize(batch) <= payloadByteLimit)
+        let written = try core.appendChunked(mutations, domain: .configuration)
+        #expect(written.count == 2)
+        #expect(written.flatMap { $0.mutations } == mutations)
+        #expect(try core.readAll(in: .configuration).count == 2)
+        for item in written {
+            #expect(item.envelope.payload.count <= ICloudDriveSyncCore.maximumPayloadBytes)
         }
+
+        let retried = try core.appendChunked(mutations, domain: .configuration)
+        #expect(retried.map(\.envelope.operationID) == written.map(\.envelope.operationID))
+        #expect(try core.readAll(in: .configuration).count == 2)
     }
 
     @Test func readingUnchangedOperationsDoesNotRewriteTheFrontier() throws {

@@ -335,29 +335,17 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
         _ mutations: [VoiceInkSyncMutation],
         domain: VoiceInkSyncDomain
     ) throws -> [(envelope: VoiceInkSyncEnvelope, mutations: [VoiceInkSyncMutation])] {
-        try Self.chunkedMutationBatches(mutations).map { batch in
-            let envelope = try append(
-                VoiceInkSyncMutationBatch(mutations: batch),
-                domain: domain
-            )
-            return (envelope, batch)
-        }
-    }
-
-    static func chunkedMutationBatches(
-        _ mutations: [VoiceInkSyncMutation],
-        payloadByteLimit: Int = maximumPayloadBytes
-    ) throws -> [[VoiceInkSyncMutation]] {
-        precondition(payloadByteLimit > 0)
-        var batches: [[VoiceInkSyncMutation]] = []
+        var results: [(VoiceInkSyncEnvelope, [VoiceInkSyncMutation])] = []
 
         func encodedSize(_ candidate: ArraySlice<VoiceInkSyncMutation>) throws -> Int {
-            try encodedMutationBatchSize(Array(candidate))
+            try PropertyListEncoder.voiceInkSync.encode(
+                VoiceInkSyncMutationBatch(mutations: Array(candidate))
+            ).count
         }
 
         var start = mutations.startIndex
         while start < mutations.endIndex {
-            guard try encodedSize(mutations[start...start]) <= payloadByteLimit else {
+            guard try encodedSize(mutations[start...start]) <= Self.maximumPayloadBytes else {
                 throw POSIXError(.EFBIG)
             }
 
@@ -368,7 +356,7 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
             var bestEnd = lowerBound
             while lowerBound <= upperBound {
                 let candidateEnd = lowerBound + (upperBound - lowerBound) / 2
-                let fits = try encodedSize(mutations[start..<candidateEnd]) <= payloadByteLimit
+                let fits = try encodedSize(mutations[start..<candidateEnd]) <= Self.maximumPayloadBytes
                 if fits {
                     bestEnd = candidateEnd
                     lowerBound = candidateEnd + 1
@@ -378,16 +366,14 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
             }
 
             let batch = Array(mutations[start..<bestEnd])
-            batches.append(batch)
+            let envelope = try append(
+                VoiceInkSyncMutationBatch(mutations: batch),
+                domain: domain
+            )
+            results.append((envelope, batch))
             start = bestEnd
         }
-        return batches
-    }
-
-    static func encodedMutationBatchSize(_ mutations: [VoiceInkSyncMutation]) throws -> Int {
-        try PropertyListEncoder.voiceInkSync.encode(
-            VoiceInkSyncMutationBatch(mutations: mutations)
-        ).count
+        return results
     }
 
     private func retryStableOperationID(domain: VoiceInkSyncDomain, payload: Data) -> UUID {
@@ -861,34 +847,22 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
             return
         }
 
-        let writeData: (URL) throws -> Void = { url in
-            let stagingURL = url.deletingLastPathComponent()
-                .appendingPathComponent(".\(envelope.operationID.uuidString).incoming")
-            defer { try? self.fileManager.removeItem(at: stagingURL) }
-            try? self.fileManager.removeItem(at: stagingURL)
-            try data.write(to: stagingURL, options: .atomic)
-            do {
-                try self.fileManager.moveItem(at: stagingURL, to: url)
-            } catch {
-                guard self.fileManager.fileExists(atPath: url.path),
-                    try Data(contentsOf: url) == data
-                else { throw error }
-            }
-        }
-
-        // Injected roots are ordinary local directories used by deterministic tests.
-        // Coordinating them can stall on CI when the x86_64 runner's filecoordinationd
-        // service is unavailable; real iCloud Drive paths still use coordination.
-        if iCloudDriveRootOverride != nil {
-            try writeData(destination)
-            return
-        }
-
         var coordinationError: NSError?
         var writeError: Error?
         NSFileCoordinator().coordinate(writingItemAt: destination, options: [], error: &coordinationError) { url in
+            let stagingURL = url.deletingLastPathComponent()
+                .appendingPathComponent(".\(envelope.operationID.uuidString).incoming")
+            defer { try? self.fileManager.removeItem(at: stagingURL) }
             do {
-                try writeData(url)
+                try? self.fileManager.removeItem(at: stagingURL)
+                try data.write(to: stagingURL, options: .atomic)
+                do {
+                    try self.fileManager.moveItem(at: stagingURL, to: url)
+                } catch {
+                    guard self.fileManager.fileExists(atPath: url.path),
+                        try Data(contentsOf: url) == data
+                    else { throw error }
+                }
             } catch {
                 writeError = error
             }
@@ -898,10 +872,6 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
     }
 
     private func coordinatedRead(from url: URL) throws -> Data {
-        if iCloudDriveRootOverride != nil {
-            return try Data(contentsOf: url)
-        }
-
         var coordinationError: NSError?
         var result: Result<Data, Error>?
         NSFileCoordinator().coordinate(readingItemAt: url, options: [], error: &coordinationError) { coordinatedURL in
