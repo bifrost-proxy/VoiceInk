@@ -12271,6 +12271,22 @@
         }
       }
     },
+    "Original input is no longer available. Transcription copied to clipboard." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Das ursprüngliche Eingabefeld ist nicht mehr verfügbar. Die Transkription wurde in die Zwischenablage kopiert."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "原输入位置已不可用，转录文本已复制到剪贴板。"
+          }
+        }
+      }
+    },
     "Original Text" : {
       "localizations" : {
         "de" : {

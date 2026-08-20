@@ -177,6 +177,8 @@ class VoiceInkEngine: NSObject, ObservableObject {
     private var activePipelineUseCase: RecordingUseCase = .newSession
     private var activeRecordingContextStore: RecordingContextSnapshotStore?
     private var activeRecordingContextTasks: RecordingContextCaptureTasks?
+    private var activeRecordingInputTarget: RecordingInputTarget?
+    private var activePipelineInputTarget: RecordingInputTarget?
     private var pendingPermissionModeId: UUID?
     private var isPermissionAuthorizationInProgress = false
     private let recordingDurationLimiter = RecordingDurationLimiter()
@@ -268,6 +270,8 @@ class VoiceInkEngine: NSObject, ObservableObject {
             recordingDurationLimiter.cancel()
             activePipelineUseCase = activeRecordingUseCase
             activeRecordingUseCase = .newSession
+            activePipelineInputTarget = activeRecordingInputTarget
+            activeRecordingInputTarget = nil
             activeRecordingStartID = nil
             recordingState = .transcribing
             await recorder.stopRecording()
@@ -323,17 +327,26 @@ class VoiceInkEngine: NSObject, ObservableObject {
             partialTranscript = ""
             activeRecordingUseCase = recordingUseCase
             clearActiveRecordingContext()
+            activeRecordingInputTarget = recordingUseCase.isAssistantFollowUp
+                ? nil
+                : RecordingInputTargetService.capture()
 
             if !recordingUseCase.isAssistantFollowUp {
                 assistantSession.reset()
             }
 
-            guard ensureRecordingPermissions(modeId: modeId) else { return }
+            guard ensureRecordingPermissions(modeId: modeId) else {
+                activeRecordingInputTarget = nil
+                return
+            }
 
             requestRecordPermission { [self] granted in
                 if granted {
                     Task { @MainActor [self] in
-                        guard await self.passesRecordingPreflight(modeId: modeId) else { return }
+                        guard await self.passesRecordingPreflight(modeId: modeId) else {
+                            self.activeRecordingInputTarget = nil
+                            return
+                        }
 
                         let startID = UUID()
                         self.activeRecordingStartID = startID
@@ -510,7 +523,9 @@ class VoiceInkEngine: NSObject, ObservableObject {
                 } else {
                     logger.error("Recording permission denied")
                     Task { @MainActor [weak self] in
-                        await self?.beginRecordingPermissionRecovery(modeId: modeId)
+                        guard let self else { return }
+                        self.activeRecordingInputTarget = nil
+                        await self.beginRecordingPermissionRecovery(modeId: modeId)
                     }
                 }
             }
@@ -1023,6 +1038,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
             try? modelContext.save()
             recordingState = .idle
             activePipelineUseCase = .newSession
+            activePipelineInputTarget = nil
             return
         }
 
@@ -1059,6 +1075,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
                     contextStore?.snapshot
                 }
             },
+            inputTarget: activePipelineInputTarget,
             captureIntegritySnapshot: recorder.lastCaptureIntegritySnapshot,
             outputConfiguration: {
                 ModeRuntimeResolver.outputConfiguration()
@@ -1128,6 +1145,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
             recordedFile = nil
             shouldCancelRecording = false
             activePipelineUseCase = .newSession
+            activePipelineInputTarget = nil
             clearActiveRecordingContext()
         }
         canceledPipelineTranscriptionIDs.remove(transcriptionID)
@@ -1193,7 +1211,10 @@ class VoiceInkEngine: NSObject, ObservableObject {
         partialTranscript = originalText
         recordingState = .busy
 
-        await enhancementBypassDelivery.pasteOriginalImmediately(originalText) { [weak self] in
+        await enhancementBypassDelivery.pasteOriginalImmediately(
+            originalText,
+            inputTarget: activePipelineInputTarget
+        ) { [weak self] in
             await self?.recorderUIManager?.dismissRecorderPanel()
         }
     }
@@ -1212,6 +1233,8 @@ class VoiceInkEngine: NSObject, ObservableObject {
         assistantSession.reset()
         activeRecordingUseCase = .newSession
         activePipelineUseCase = .newSession
+        activeRecordingInputTarget = nil
+        activePipelineInputTarget = nil
         clearActiveRecordingContext()
         await recorder.stopRecording()
         recordedFile = nil
@@ -1234,6 +1257,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
 
     private func finishActiveRecorderCancellation() async {
         activeRecordingStartID = nil
+        activeRecordingInputTarget = nil
         clearActiveRecordingContext()
         await recorder.stopRecording()
         await saveCanceledRecording()
@@ -1326,6 +1350,8 @@ class VoiceInkEngine: NSObject, ObservableObject {
         recordingDurationLimiter.cancel()
         activeRecordingStartID = nil
         activeRecordingUseCase = .newSession
+        activeRecordingInputTarget = nil
+        activePipelineInputTarget = nil
         await serviceRegistry.releaseUnboundLocalModelResources()
         logger.notice("cleanupResources: completed")
     }

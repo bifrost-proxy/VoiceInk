@@ -3,6 +3,8 @@ import SwiftData
 import SwiftUI
 
 enum DashboardInsightPeriod: String, CaseIterable, Identifiable, Sendable {
+    static let defaultSelection: Self = .allTime
+
     case today
     case lastSevenDays
     case lastThirtyDays
@@ -10,6 +12,18 @@ enum DashboardInsightPeriod: String, CaseIterable, Identifiable, Sendable {
     case allTime
 
     var id: Self { self }
+
+    static func stored(in defaults: UserDefaults = .standard) -> Self {
+        guard let rawValue = defaults.string(forKey: DashboardSettingsKeys.insightPeriod) else {
+            return defaultSelection
+        }
+
+        return Self(rawValue: rawValue) ?? defaultSelection
+    }
+
+    func store(in defaults: UserDefaults = .standard) {
+        defaults.set(rawValue, forKey: DashboardSettingsKeys.insightPeriod)
+    }
 
     var pickerTitle: LocalizedStringKey {
         switch self {

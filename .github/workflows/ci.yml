@@ -83,12 +83,20 @@ jobs:
         run: |
           set -euo pipefail
           architecture="${{ matrix.architecture }}"
-          xcodebuild test \
-            -project VoiceInk.xcodeproj \
-            -scheme VoiceInk \
-            -destination "platform=macOS,arch=$architecture" \
-            -only-testing:VoiceInkTests \
-            -parallel-testing-enabled NO \
+          xcodebuild_args=(
+            test
+            -project VoiceInk.xcodeproj
+            -scheme VoiceInk
+            -destination "platform=macOS,arch=$architecture"
+            -only-testing:VoiceInkTests
+            -parallel-testing-enabled NO
+          )
+          if [[ "$architecture" == "x86_64" ]]; then
+            # Cross-architecture WMO builds can exhaust the hosted arm64 runner
+            # when several package targets compile at once.
+            xcodebuild_args+=(-jobs 1)
+          fi
+          xcodebuild "${xcodebuild_args[@]}" \
             ARCHS="$architecture" \
             ONLY_ACTIVE_ARCH=YES \
             CODE_SIGNING_ALLOWED=NO \
