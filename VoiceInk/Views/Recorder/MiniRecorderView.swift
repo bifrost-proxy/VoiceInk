@@ -155,8 +155,7 @@ struct MiniRecorderView<S: RecorderStateProvider & ObservableObject>: View {
                 : (hasAssistantResponse ? assistantWidth : (hasVisibleTranscript ? expandedWidth : compactWidth))
         )
         .background {
-            RecorderGlassBackground(cornerRadius: cornerRadius)
-                .shadow(color: Color.black.opacity(0.20), radius: 18, y: 7)
+            RecorderGlassSurface(cornerRadius: cornerRadius)
         }
         .animation(.spring(response: 0.34, dampingFraction: 0.88), value: presentation)
     }
