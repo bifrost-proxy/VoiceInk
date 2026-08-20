@@ -6,7 +6,9 @@ import Testing
 struct RecorderVisualEffectTests {
     @Test("Recorder material clips its native backdrop to continuous rounded corners")
     func clipsNativeBackdropToRoundedCorners() throws {
-        let view = NSVisualEffectView()
+        let view = VisualEffectView.MaterialView(
+            frame: NSRect(x: 0, y: 0, width: 420, height: 137)
+        )
 
         VisualEffectView.configure(
             view,
@@ -20,11 +22,11 @@ struct RecorderVisualEffectTests {
         #expect(view.layer?.cornerCurve == .continuous)
         #expect(view.layer?.masksToBounds == true)
         let maskImage = try #require(view.maskImage)
-        #expect(maskImage.capInsets.top == 14)
-        #expect(maskImage.capInsets.left == 14)
-        #expect(maskImage.capInsets.bottom == 14)
-        #expect(maskImage.capInsets.right == 14)
-        #expect(maskImage.resizingMode == .stretch)
+        #expect(maskImage.size == view.bounds.size)
+        #expect(maskImage.capInsets.top == 0)
+        #expect(maskImage.capInsets.left == 0)
+        #expect(maskImage.capInsets.bottom == 0)
+        #expect(maskImage.capInsets.right == 0)
 
         let bitmap = try #require(maskImage.tiffRepresentation.flatMap(NSBitmapImageRep.init(data:)))
         let cornerAlpha = try #require(bitmap.colorAt(x: 0, y: 0)).alphaComponent
@@ -49,9 +51,33 @@ struct RecorderVisualEffectTests {
         #expect(continuousShoulderAlpha + 0.2 < ellipticalShoulderAlpha)
     }
 
+    @Test("Recorder material rebuilds its mask when the preview bounds change")
+    func rebuildsMaskForUpdatedBounds() throws {
+        let view = VisualEffectView.MaterialView(
+            frame: NSRect(x: 0, y: 0, width: 184, height: 40)
+        )
+        VisualEffectView.configure(
+            view,
+            material: .popover,
+            blendingMode: .behindWindow,
+            cornerRadius: 20
+        )
+        let compactMask = try #require(view.maskImage)
+        #expect(compactMask.size == NSSize(width: 184, height: 40))
+
+        view.setFrameSize(NSSize(width: 420, height: 137))
+        view.layout()
+
+        let expandedMask = try #require(view.maskImage)
+        #expect(expandedMask !== compactMask)
+        #expect(expandedMask.size == NSSize(width: 420, height: 137))
+    }
+
     @Test("Unrounded materials do not retain a stale clipping mask")
     func clearsNativeBackdropMaskWithoutCornerRadius() {
-        let view = NSVisualEffectView()
+        let view = VisualEffectView.MaterialView(
+            frame: NSRect(x: 0, y: 0, width: 184, height: 40)
+        )
 
         VisualEffectView.configure(
             view,
@@ -73,7 +99,9 @@ struct RecorderVisualEffectTests {
 
     @Test("Existing unrounded materials remain non-layer-backed")
     func leavesUnroundedMaterialsUnlayered() {
-        let view = NSVisualEffectView()
+        let view = VisualEffectView.MaterialView(
+            frame: NSRect(x: 0, y: 0, width: 400, height: 300)
+        )
 
         VisualEffectView.configure(
             view,
