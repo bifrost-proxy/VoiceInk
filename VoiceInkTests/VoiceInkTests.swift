@@ -251,15 +251,20 @@ struct VoiceInkTests {
         let suite = "VoiceInkTests.ChunkedSync.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
-        let core = ICloudDriveSyncCore(defaults: defaults, iCloudDriveRootURL: root)
+        let payloadByteLimit = 7 * 1_024
+        let core = ICloudDriveSyncCore(
+            defaults: defaults,
+            iCloudDriveRootURL: root,
+            payloadByteLimit: payloadByteLimit
+        )
         let mutations = [
             VoiceInkSyncMutation(
                 key: "preference/first",
-                value: Data(repeating: 0x3c, count: 4 * 1_024 * 1_024)
+                value: Data(repeating: 0x3c, count: 4 * 1_024)
             ),
             VoiceInkSyncMutation(
                 key: "preference/second",
-                value: Data(repeating: 0x4d, count: 4 * 1_024 * 1_024)
+                value: Data(repeating: 0x4d, count: 4 * 1_024)
             ),
         ]
 
@@ -268,7 +273,7 @@ struct VoiceInkTests {
         #expect(written.flatMap { $0.mutations } == mutations)
         #expect(try core.readAll(in: .configuration).count == 2)
         for item in written {
-            #expect(item.envelope.payload.count <= ICloudDriveSyncCore.maximumPayloadBytes)
+            #expect(item.envelope.payload.count <= payloadByteLimit)
         }
 
         let retried = try core.appendChunked(mutations, domain: .configuration)
