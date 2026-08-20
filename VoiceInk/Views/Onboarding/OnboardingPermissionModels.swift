@@ -232,9 +232,9 @@ enum PrivacyPermissionResetService {
         )
     }
 
-    /// Explicit recovery for a stale TCC entry. Normal permission requests must
-    /// never call this because resetting an existing decision removes VoiceInk
-    /// from System Settings until macOS registers it again.
+    /// Removes a stale TCC entry before the current VoiceInk build asks macOS to
+    /// register itself again. Community releases use an ad-hoc signature, so a
+    /// record left by an older build cannot be reused reliably after an update.
     static func resetAuthorization(for pane: PrivacySettingsPane) async -> String? {
         guard let command = command(for: pane) else { return nil }
 
@@ -275,6 +275,49 @@ enum PrivacyPermissionAuthorizationAction: Equatable {
     case alreadyGranted
     case request
     case openSettings
+}
+
+@MainActor
+struct PrivacyPaneAuthorizationRequestDependencies {
+    let hasAccess: () -> Bool
+    let resetAuthorization: () async -> String?
+    let registerCurrentApplication: () async -> Bool
+    let openSettings: () -> Void
+
+    static let accessibilityLive = PrivacyPaneAuthorizationRequestDependencies(
+        hasAccess: {
+            AXIsProcessTrusted()
+        },
+        resetAuthorization: {
+            await PrivacyPermissionResetService.resetAuthorization(for: .accessibility)
+        },
+        registerCurrentApplication: {
+            let options: NSDictionary = [
+                kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true
+            ]
+            return AXIsProcessTrustedWithOptions(options)
+        },
+        openSettings: {
+            guard let url = URL(string: PrivacySettingsPane.accessibility.urlString) else { return }
+            NSWorkspace.shared.open(url)
+        }
+    )
+
+    static let screenRecordingLive = PrivacyPaneAuthorizationRequestDependencies(
+        hasAccess: {
+            CGPreflightScreenCaptureAccess()
+        },
+        resetAuthorization: {
+            await PrivacyPermissionResetService.resetAuthorization(for: .screenRecording)
+        },
+        registerCurrentApplication: {
+            await ScreenCaptureService.requestScreenCapturePermissionRegistration()
+        },
+        openSettings: {
+            guard let url = URL(string: PrivacySettingsPane.screenRecording.urlString) else { return }
+            NSWorkspace.shared.open(url)
+        }
+    )
 }
 
 enum PrivacyPermissionAuthorizationService {
@@ -326,39 +369,49 @@ enum PrivacyPermissionAuthorizationService {
     }
 
     @MainActor
-    static func requestAccessibilityAuthorization(openSettings: Bool = true) async -> Bool {
-        guard accessibilityAction(isTrusted: AXIsProcessTrusted()) == .request else {
-            return true
-        }
-
-        let options: NSDictionary = [
-            kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true
-        ]
-        let isGranted = AXIsProcessTrustedWithOptions(options)
-
-        if !isGranted,
-            openSettings,
-            let url = URL(string: PrivacySettingsPane.accessibility.urlString)
-        {
-            NSWorkspace.shared.open(url)
-        }
-
-        return isGranted
+    static func requestAccessibilityAuthorization(
+        openSettings: Bool = true,
+        dependencies: PrivacyPaneAuthorizationRequestDependencies? = nil
+    ) async -> Bool {
+        let dependencies = dependencies ?? .accessibilityLive
+        return await requestPrivacyPaneAuthorization(
+            openSettings: openSettings,
+            permissionName: "Accessibility",
+            dependencies: dependencies
+        )
     }
 
     @MainActor
-    static func requestScreenRecordingAuthorization(openSettingsWhenNeeded: Bool = true) async -> Bool {
-        guard screenRecordingAction(hasAccess: CGPreflightScreenCaptureAccess()) == .request else {
-            return true
+    static func requestScreenRecordingAuthorization(
+        openSettingsWhenNeeded: Bool = true,
+        dependencies: PrivacyPaneAuthorizationRequestDependencies? = nil
+    ) async -> Bool {
+        let dependencies = dependencies ?? .screenRecordingLive
+        return await requestPrivacyPaneAuthorization(
+            openSettings: openSettingsWhenNeeded,
+            permissionName: "Screen Recording",
+            dependencies: dependencies
+        )
+    }
+
+    @MainActor
+    private static func requestPrivacyPaneAuthorization(
+        openSettings: Bool,
+        permissionName: String,
+        dependencies: PrivacyPaneAuthorizationRequestDependencies
+    ) async -> Bool {
+        guard !dependencies.hasAccess() else { return true }
+
+        if openSettings, let resetError = await dependencies.resetAuthorization() {
+            NSLog("VoiceInk could not clear the stale %@ permission: %@", permissionName, resetError)
         }
 
-        let isGranted = await ScreenCaptureService.requestScreenCapturePermissionRegistration()
+        // Reset first, then prompt macOS so System Settings contains the current
+        // app build instead of the obsolete ad-hoc-signed entry.
+        let isGranted = await dependencies.registerCurrentApplication()
 
-        if !isGranted,
-            openSettingsWhenNeeded,
-            let url = URL(string: PrivacySettingsPane.screenRecording.urlString)
-        {
-            NSWorkspace.shared.open(url)
+        if !isGranted, openSettings {
+            dependencies.openSettings()
         }
 
         return isGranted

@@ -1,4 +1,3 @@
-import AppKit
 import ApplicationServices
 import Foundation
 
@@ -48,12 +47,8 @@ enum AccessibilityShortcutPermissionPrompt {
     }
 
     private static func requestAuthorizationAndOpenSettings() {
-        let options: NSDictionary = [
-            kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true
-        ]
-        _ = AXIsProcessTrustedWithOptions(options)
-
-        guard let url = URL(string: PrivacySettingsPane.accessibility.urlString) else { return }
-        NSWorkspace.shared.open(url)
+        Task { @MainActor in
+            _ = await PrivacyPermissionAuthorizationService.requestAccessibilityAuthorization()
+        }
     }
 }
