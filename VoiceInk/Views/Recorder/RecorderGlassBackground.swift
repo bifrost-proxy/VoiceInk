@@ -1,6 +1,16 @@
 import AppKit
 import SwiftUI
 
+/// The complete background applied to recorder content. Keep this surface free of
+/// outer shadows so pixels outside the rounded glass remain fully transparent.
+struct RecorderGlassSurface: View {
+    let cornerRadius: CGFloat
+
+    var body: some View {
+        RecorderGlassBackground(cornerRadius: cornerRadius)
+    }
+}
+
 struct RecorderGlassBackground: View {
     let cornerRadius: CGFloat
 

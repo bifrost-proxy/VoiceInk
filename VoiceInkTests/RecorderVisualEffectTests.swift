@@ -1,9 +1,68 @@
 import AppKit
+import SwiftUI
 import Testing
 @testable import VoiceInk
 
 @MainActor
 struct RecorderVisualEffectTests {
+    @Test("Permission recorder leaves its expanded window corners transparent")
+    func leavesExpandedRecorderCornersTransparent() throws {
+        let backdrop = Color(red: 0.24, green: 0.52, blue: 0.78)
+        let provider = RecorderVisualTestProvider()
+        provider.recordingPermissionGuidance = .required(.accessibility)
+        let recorder = MiniRecorderView(
+            stateProvider: provider,
+            recorder: Recorder(),
+            assistantSession: AssistantSession(),
+            onRecordButtonTapped: {},
+            onCloseTapped: {},
+            onAssistantFollowUp: { _ in }
+        )
+        let renderer = ImageRenderer(
+            content: ZStack {
+                backdrop
+                recorder.frame(width: 540, height: 430)
+            }
+            .frame(width: 620, height: 510)
+        )
+        renderer.scale = 1
+
+        let image = try #require(renderer.nsImage)
+        let bitmap = try #require(image.tiffRepresentation.flatMap(NSBitmapImageRep.init(data:)))
+        let untouchedBackdrop = try #require(bitmap.colorAt(x: 10, y: 10)?.usingColorSpace(.sRGB))
+        let cornerCoordinates = [(100, 40), (519, 40), (100, 234), (519, 234)]
+
+        for (x, y) in cornerCoordinates {
+            let exteriorCorner = try #require(bitmap.colorAt(x: x, y: y)?.usingColorSpace(.sRGB))
+            #expect(abs(exteriorCorner.redComponent - untouchedBackdrop.redComponent) < 0.01)
+            #expect(abs(exteriorCorner.greenComponent - untouchedBackdrop.greenComponent) < 0.01)
+            #expect(abs(exteriorCorner.blueComponent - untouchedBackdrop.blueComponent) < 0.01)
+        }
+    }
+
+    @Test("Recorder glass leaves pixels outside its rounded corners unchanged")
+    func leavesRoundedCornerExteriorTransparent() throws {
+        let backdrop = Color(red: 0.24, green: 0.52, blue: 0.78)
+        let renderer = ImageRenderer(
+            content: ZStack {
+                backdrop
+                RecorderGlassSurface(cornerRadius: 14)
+                    .frame(width: 420, height: 195)
+            }
+            .frame(width: 500, height: 275)
+        )
+        renderer.scale = 1
+
+        let image = try #require(renderer.nsImage)
+        let bitmap = try #require(image.tiffRepresentation.flatMap(NSBitmapImageRep.init(data:)))
+        let untouchedBackdrop = try #require(bitmap.colorAt(x: 10, y: 10)?.usingColorSpace(.sRGB))
+        let exteriorCorner = try #require(bitmap.colorAt(x: 40, y: 40)?.usingColorSpace(.sRGB))
+
+        #expect(abs(exteriorCorner.redComponent - untouchedBackdrop.redComponent) < 0.01)
+        #expect(abs(exteriorCorner.greenComponent - untouchedBackdrop.greenComponent) < 0.01)
+        #expect(abs(exteriorCorner.blueComponent - untouchedBackdrop.blueComponent) < 0.01)
+    }
+
     @Test("Recorder material clips its native backdrop to continuous rounded corners")
     func clipsNativeBackdropToRoundedCorners() throws {
         let view = VisualEffectView.MaterialView(
@@ -114,4 +173,11 @@ struct RecorderVisualEffectTests {
         #expect(view.layer == nil)
         #expect(view.maskImage == nil)
     }
+}
+
+@MainActor
+private final class RecorderVisualTestProvider: ObservableObject, RecorderStateProvider {
+    @Published var recordingState: RecordingState = .idle
+    @Published var partialTranscript = ""
+    @Published var recordingPermissionGuidance: RecorderPermissionGuidance?
 }
