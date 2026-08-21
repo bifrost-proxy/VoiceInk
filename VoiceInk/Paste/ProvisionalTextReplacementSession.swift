@@ -53,6 +53,7 @@ final class ProvisionalTextReplacementSession {
         case replaced
         case originalRetained
         case originalNotInserted
+        case originalNotInsertedAfterInteraction
         case canceledByUser
         case targetChanged
         case unavailable
@@ -95,6 +96,7 @@ final class ProvisionalTextReplacementSession {
     private enum PastePropagationResult {
         case inserted(RecordingEditableTextState)
         case originalNotInserted
+        case originalNotInsertedAfterInteraction
         case canceledByUser
         case targetChanged
         case unavailable
@@ -174,7 +176,7 @@ final class ProvisionalTextReplacementSession {
 
     func replace(with enhancedText: String) async -> ReplacementResult {
         defer { stopMonitoring() }
-        switch await observePastePropagation() {
+        switch await observePastePropagation(verifyInsertionAfterUserInteraction: true) {
         case .inserted(let currentState):
             let result = replaceIfUnchanged(enhancedText, currentState: currentState)
             if result == .replaced, let clipboardOwnership {
@@ -183,6 +185,8 @@ final class ProvisionalTextReplacementSession {
             return result
         case .originalNotInserted:
             return .originalNotInserted
+        case .originalNotInsertedAfterInteraction:
+            return .originalNotInsertedAfterInteraction
         case .canceledByUser:
             return .canceledByUser
         case .targetChanged:
@@ -203,6 +207,8 @@ final class ProvisionalTextReplacementSession {
             return .originalRetained
         case .originalNotInserted:
             return .originalNotInserted
+        case .originalNotInsertedAfterInteraction:
+            return .originalNotInsertedAfterInteraction
         case .canceledByUser:
             return .canceledByUser
         case .targetChanged:
@@ -278,19 +284,25 @@ final class ProvisionalTextReplacementSession {
     /// A fast enhancement (or failure) can complete before the target processes Cmd+V. Wait only
     /// while both the full value and selection remain at the exact pre-insertion snapshot.
     private func observePastePropagation(
-        verifyInsertionAfterCancellation: Bool = false
+        verifyInsertionAfterCancellation: Bool = false,
+        verifyInsertionAfterUserInteraction: Bool = false
     ) async -> PastePropagationResult {
         let clock = ContinuousClock()
         let deadline = clock.now.advanced(by: .milliseconds(300))
         while clock.now < deadline {
+            let wasCanceledByUser = self.wasCanceledByUser
             let wasCanceled = wasCanceledByUser || Task.isCancelled
-            if wasCanceled && !verifyInsertionAfterCancellation { return .canceledByUser }
+            let shouldVerifyCancellation = verifyInsertionAfterCancellation
+                || (verifyInsertionAfterUserInteraction && wasCanceledByUser)
+            if wasCanceled && !shouldVerifyCancellation { return .canceledByUser }
             guard let currentState = readState(target) else { return .unavailable }
             if isExpectedPostInsertionState(currentState) {
                 return wasCanceled ? .canceledByUser : .inserted(currentState)
             }
-            guard isExactPreInsertionState(currentState) else { return .targetChanged }
-            if verifyInsertionAfterCancellation {
+            guard isExactPreInsertionState(currentState) else {
+                return wasCanceled ? .canceledByUser : .targetChanged
+            }
+            if shouldVerifyCancellation {
                 await waitIgnoringTaskCancellation(for: .milliseconds(20))
             } else {
                 do {
@@ -301,13 +313,19 @@ final class ProvisionalTextReplacementSession {
             }
         }
 
+        let wasCanceledByUser = self.wasCanceledByUser
         let wasCanceled = wasCanceledByUser || Task.isCancelled
-        if wasCanceled && !verifyInsertionAfterCancellation { return .canceledByUser }
+        let shouldVerifyCancellation = verifyInsertionAfterCancellation
+            || (verifyInsertionAfterUserInteraction && wasCanceledByUser)
+        if wasCanceled && !shouldVerifyCancellation { return .canceledByUser }
         guard let currentState = readState(target) else { return .unavailable }
         if isExpectedPostInsertionState(currentState) {
             return wasCanceled ? .canceledByUser : .inserted(currentState)
         }
-        return isExactPreInsertionState(currentState) ? .originalNotInserted : .targetChanged
+        guard isExactPreInsertionState(currentState) else {
+            return wasCanceled ? .canceledByUser : .targetChanged
+        }
+        return wasCanceledByUser ? .originalNotInsertedAfterInteraction : .originalNotInserted
     }
 
     private func waitIgnoringTaskCancellation(for duration: Duration) async {

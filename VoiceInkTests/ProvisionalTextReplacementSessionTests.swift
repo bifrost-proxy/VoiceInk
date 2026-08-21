@@ -9,6 +9,7 @@ struct ProvisionalTextReplacementSessionTests {
         #expect(ProvisionalTextReplacementSession.ReplacementResult.replaced.shouldPersistEnhancement)
         #expect(!ProvisionalTextReplacementSession.ReplacementResult.originalRetained.shouldPersistEnhancement)
         #expect(!ProvisionalTextReplacementSession.ReplacementResult.originalNotInserted.shouldPersistEnhancement)
+        #expect(!ProvisionalTextReplacementSession.ReplacementResult.originalNotInsertedAfterInteraction.shouldPersistEnhancement)
         #expect(!ProvisionalTextReplacementSession.ReplacementResult.canceledByUser.shouldPersistEnhancement)
         #expect(!ProvisionalTextReplacementSession.ReplacementResult.targetChanged.shouldPersistEnhancement)
         #expect(!ProvisionalTextReplacementSession.ReplacementResult.unavailable.shouldPersistEnhancement)
@@ -43,6 +44,19 @@ struct ProvisionalTextReplacementSessionTests {
         task.cancel()
 
         #expect(await task.value == .originalNotInserted)
+    }
+
+    @Test func userInteractionDuringDroppedPasteCommandUsesNonIntrusiveFallback() async throws {
+        let session = try #require(makeSession(
+            currentState: RecordingEditableTextState(
+                value: "prefix suffix",
+                selectedTextRange: CFRange(location: 7, length: 0)
+            ),
+            replaceText: { _, _, _, _, _, _ in true }
+        ))
+        session.registerUserInteraction()
+
+        #expect(await session.replace(with: "enhanced") == .originalNotInsertedAfterInteraction)
     }
 
     @Test func successfulReplacementUpdatesOnlyItsOwnedClipboardText() async throws {
@@ -172,6 +186,15 @@ struct ProvisionalTextReplacementSessionTests {
             transactionSelectionRanges: expectedRanges,
             isCanceled: true,
             permitObservedCancellation: true
+        ))
+        #expect(RecordingInputTargetService.ownsProvisionalReplacementState(
+            RecordingEditableTextState(
+                value: "prefix enhanced suffix",
+                selectedTextRange: CFRange(location: 14, length: 0)
+            ),
+            expectedTransactionValue: "prefix enhanced suffix",
+            transactionSelectionRanges: expectedRanges + [CFRange(location: 14, length: 0)],
+            isCanceled: false
         ))
     }
 

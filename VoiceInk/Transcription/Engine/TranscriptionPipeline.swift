@@ -62,7 +62,7 @@ class TranscriptionPipeline {
         captureIntegritySnapshot: AudioCaptureIntegritySnapshot? = nil,
         outputConfiguration: @escaping () -> OutputRuntimeConfiguration,
         onStateChange: @escaping (RecordingState) -> Void,
-        shouldCancel: () -> Bool,
+        shouldCancel: @escaping () -> Bool,
         shouldBypassEnhancement: () -> Bool = { false },
         onProvisionalDeliveryWillBegin: @escaping () -> Void = {},
         onProvisionalDeliveryCompleted: @escaping (Bool) -> Void = { _ in },
@@ -245,6 +245,7 @@ class TranscriptionPipeline {
                             cleanedText,
                             inputTarget: inputTarget,
                             dismiss: onDismiss,
+                            shouldCancel: shouldCancel,
                             onUserInteraction: onProvisionalInteraction
                         )
                         deliveryDuration = (deliveryDuration ?? 0)
@@ -274,6 +275,9 @@ class TranscriptionPipeline {
                                 )
                                 if bypassResult == .originalNotInserted {
                                     didDeliverOriginalEarly = false
+                                } else if bypassResult == .originalNotInsertedAfterInteraction {
+                                    delivery.copyOriginalToClipboardAfterInteraction(cleanedText)
+                                    didDeliverOriginalEarly = true
                                 }
                                 logger.notice(
                                     "Provisional transcript bypass result=\(String(describing: bypassResult), privacy: .public)"
@@ -318,6 +322,9 @@ class TranscriptionPipeline {
                                     )
                                     if bypassResult == .originalNotInserted {
                                         didDeliverOriginalEarly = false
+                                    } else if bypassResult == .originalNotInsertedAfterInteraction {
+                                        delivery.copyOriginalToClipboardAfterInteraction(cleanedText)
+                                        didDeliverOriginalEarly = true
                                     }
                                     logger.notice(
                                         "Provisional transcript post-enhancement bypass result=\(String(describing: bypassResult), privacy: .public)"
@@ -345,6 +352,10 @@ class TranscriptionPipeline {
                                     if replacementResult == .originalNotInserted {
                                         didDeliverOriginalEarly = false
                                         shouldPersistEnhancement = true
+                                    } else if replacementResult == .originalNotInsertedAfterInteraction {
+                                        delivery.copyOriginalToClipboardAfterInteraction(cleanedText)
+                                        didDeliverOriginalEarly = true
+                                        shouldPersistEnhancement = false
                                     } else {
                                         shouldPersistEnhancement = replacementResult.shouldPersistEnhancement
                                     }
@@ -384,6 +395,9 @@ class TranscriptionPipeline {
                                 )
                                 if bypassResult == .originalNotInserted {
                                     didDeliverOriginalEarly = false
+                                } else if bypassResult == .originalNotInsertedAfterInteraction {
+                                    delivery.copyOriginalToClipboardAfterInteraction(cleanedText)
+                                    didDeliverOriginalEarly = true
                                 }
                                 logger.notice(
                                     "Provisional transcript canceled-enhancement bypass result=\(String(describing: bypassResult), privacy: .public)"
@@ -402,6 +416,9 @@ class TranscriptionPipeline {
                                 )
                                 if fallbackResult == .originalNotInserted {
                                     didDeliverOriginalEarly = false
+                                } else if fallbackResult == .originalNotInsertedAfterInteraction {
+                                    delivery.copyOriginalToClipboardAfterInteraction(cleanedText)
+                                    didDeliverOriginalEarly = true
                                 }
                                 logger.notice(
                                     "Provisional transcript enhancement failure result=\(String(describing: fallbackResult), privacy: .public)"
@@ -506,24 +523,29 @@ class TranscriptionPipeline {
                 resolvedDeliveryOutput = outputForDelivery ?? outputConfiguration()
             }
             let deliveryStartedAt = Date()
-            await delivery.deliver(
-                TranscriptionDelivery.Request(
-                    transcription: transcription,
-                    text: finalText,
-                    output: resolvedDeliveryOutput,
-                    responseConfig: isEnhancementBypassed ? nil : responseConfig,
-                    responseError: isEnhancementBypassed ? nil : responseError,
-                    isAssistantFollowUp: assistant.isFollowUp,
-                    inputTarget: inputTarget
-                ),
-                actions: TranscriptionDelivery.Actions(
-                    setState: onStateChange,
-                    dismiss: onDismiss,
-                    sendFollowUp: assistant.sendFollowUp,
-                    showResponse: assistant.showResponse,
-                    failResponse: assistant.failResponse
-                )
+            let request = TranscriptionDelivery.Request(
+                transcription: transcription,
+                text: finalText,
+                output: resolvedDeliveryOutput,
+                responseConfig: isEnhancementBypassed ? nil : responseConfig,
+                responseError: isEnhancementBypassed ? nil : responseError,
+                isAssistantFollowUp: assistant.isFollowUp,
+                inputTarget: inputTarget
             )
+            let actions = TranscriptionDelivery.Actions(
+                setState: onStateChange,
+                dismiss: onDismiss,
+                sendFollowUp: assistant.sendFollowUp,
+                showResponse: assistant.showResponse,
+                failResponse: assistant.failResponse
+            )
+            if isEnhancementBypassed && Task.isCancelled {
+                await Task { @MainActor in
+                    await delivery.deliver(request, actions: actions)
+                }.value
+            } else {
+                await delivery.deliver(request, actions: actions)
+            }
             deliveryDuration = (deliveryDuration ?? 0) + Date().timeIntervalSince(deliveryStartedAt)
         }
 

@@ -30,6 +30,7 @@ struct RecordingEditableTextState: Equatable {
 enum RecordingInputTargetRestoration: Equatable {
     case restored
     case unavailable
+    case canceled
 }
 
 @MainActor
@@ -73,6 +74,7 @@ enum RecordingInputTargetService {
     }
 
     static func restore(_ target: RecordingInputTarget) async -> RecordingInputTargetRestoration {
+        guard !Task.isCancelled else { return .canceled }
         guard AXIsProcessTrusted(),
             let application = NSRunningApplication(processIdentifier: target.processID),
             !application.isTerminated,
@@ -90,6 +92,7 @@ enum RecordingInputTargetService {
             guard await waitUntil(timeout: activationTimeout, condition: {
                 NSWorkspace.shared.frontmostApplication?.processIdentifier == target.processID
             }) else {
+                if Task.isCancelled { return .canceled }
                 logger.notice("Timed out while activating the original recording application")
                 return .unavailable
             }
@@ -121,6 +124,7 @@ enum RecordingInputTargetService {
         guard await waitUntil(timeout: focusTimeout, condition: {
             isFocused(target.element, in: applicationElement)
         }) else {
+            if Task.isCancelled { return .canceled }
             logger.notice("The original recording input could not regain accessibility focus")
             return .unavailable
         }
@@ -235,11 +239,16 @@ enum RecordingInputTargetService {
             location: range.location + (replacement as NSString).length + trailingLength,
             length: 0
         )
-        guard setRange(finalCaret, on: target.element) else {
+        let finalCaretWrite = setRange(finalCaret, on: target.element)
+        guard case .exact = finalCaretWrite else {
+            var transactionSelectionRanges = [fallbackCaret, finalCaret]
+            if case .clamped(let observedRange) = finalCaretWrite {
+                transactionSelectionRanges.append(observedRange)
+            }
             let didRollback = restoreEditableTextStateIfOwned(
                 currentState,
                 transactionValue: expectedValue,
-                transactionSelectionRanges: [fallbackCaret, finalCaret],
+                transactionSelectionRanges: transactionSelectionRanges,
                 on: target.element,
                 shouldCancel: shouldCancel
             )
@@ -327,9 +336,15 @@ enum RecordingInputTargetService {
         return richTextAttributes.isDisjoint(with: parameterizedAttributes)
     }
 
-    private static func setRange(_ range: CFRange, on element: AXUIElement) -> Bool {
+    private enum RangeWriteResult {
+        case exact
+        case clamped(CFRange)
+        case failed
+    }
+
+    private static func setRange(_ range: CFRange, on element: AXUIElement) -> RangeWriteResult {
         var mutableRange = range
-        guard let value = AXValueCreate(.cfRange, &mutableRange) else { return false }
+        guard let value = AXValueCreate(.cfRange, &mutableRange) else { return .failed }
         guard AXUIElementSetAttributeValue(
             element,
             kAXSelectedTextRangeAttribute as CFString,
@@ -337,9 +352,12 @@ enum RecordingInputTargetService {
         ) == .success,
             let actualRange = copyRangeAttribute(kAXSelectedTextRangeAttribute, from: element)
         else {
-            return false
+            return .failed
         }
-        return actualRange.location == range.location && actualRange.length == range.length
+        if actualRange.location == range.location && actualRange.length == range.length {
+            return .exact
+        }
+        return .clamped(actualRange)
     }
 
     /// A failed AX operation may race with a user edit. Roll back only while the target still
@@ -376,7 +394,8 @@ enum RecordingInputTargetService {
         else {
             return false
         }
-        return setRange(state.selectedTextRange, on: element)
+        guard case .exact = setRange(state.selectedTextRange, on: element) else { return false }
+        return true
     }
 
     static func ownsProvisionalReplacementState(

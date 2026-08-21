@@ -122,8 +122,16 @@ final class TranscriptionDelivery {
         _ text: String,
         inputTarget: RecordingInputTarget,
         dismiss: @escaping () async -> Void,
+        shouldCancel: @escaping @MainActor () -> Bool,
         onUserInteraction: @escaping @MainActor () -> Void
     ) async -> ProvisionalPasteResult {
+        guard !shouldCancel() else {
+            return ProvisionalPasteResult(
+                wasDelivered: false,
+                didPostPasteCommand: false,
+                replacementSession: nil
+            )
+        }
         let appendSpace = appendTrailingSpace()
         let trailingText = appendSpace ? " " : ""
         let pastedText = text + trailingText
@@ -131,7 +139,24 @@ final class TranscriptionDelivery {
         SoundManager.shared.playStopSound()
         await dismiss()
 
-        guard await restoreInputTarget(inputTarget) == .restored else {
+        guard !shouldCancel() else {
+            return ProvisionalPasteResult(
+                wasDelivered: false,
+                didPostPasteCommand: false,
+                replacementSession: nil
+            )
+        }
+
+        switch await restoreInputTarget(inputTarget) {
+        case .restored:
+            break
+        case .canceled:
+            return ProvisionalPasteResult(
+                wasDelivered: false,
+                didPostPasteCommand: false,
+                replacementSession: nil
+            )
+        case .unavailable:
             if copyToClipboard(pastedText) {
                 notifyUnavailableTarget()
                 return ProvisionalPasteResult(
@@ -140,6 +165,14 @@ final class TranscriptionDelivery {
                     replacementSession: nil
                 )
             }
+            return ProvisionalPasteResult(
+                wasDelivered: false,
+                didPostPasteCommand: false,
+                replacementSession: nil
+            )
+        }
+
+        guard !shouldCancel() else {
             return ProvisionalPasteResult(
                 wasDelivered: false,
                 didPostPasteCommand: false,
@@ -158,11 +191,20 @@ final class TranscriptionDelivery {
         }
         replacementSession?.beginIgnoringPasteShortcut()
         let pasteResult = await pasteAtCursor(pastedText) {
-            Task.isCancelled || replacementSession?.wasCanceledByUser == true
+            shouldCancel() || Task.isCancelled || replacementSession?.wasCanceledByUser == true
         }
         replacementSession?.endIgnoringPasteShortcut()
         guard pasteResult.didPostCommand else {
+            let wasCanceledByUser = replacementSession?.wasCanceledByUser == true
             replacementSession?.stopMonitoring()
+            if wasCanceledByUser && !shouldCancel() {
+                copyOriginalToClipboardAfterInteraction(text)
+                return ProvisionalPasteResult(
+                    wasDelivered: true,
+                    didPostPasteCommand: false,
+                    replacementSession: nil
+                )
+            }
             return ProvisionalPasteResult(
                 wasDelivered: false,
                 didPostPasteCommand: false,
@@ -176,6 +218,15 @@ final class TranscriptionDelivery {
             didPostPasteCommand: true,
             replacementSession: replacementSession
         )
+    }
+
+    /// A user interaction makes another automatic paste unsafe. Preserve the raw transcript on the
+    /// clipboard instead, so the user can recover it without changing the newly focused control.
+    func copyOriginalToClipboardAfterInteraction(_ text: String) {
+        let pastedText = text + (appendTrailingSpace() ? " " : "")
+        if copyToClipboard(pastedText) {
+            notifyUnavailableTarget()
+        }
     }
 
     func completeProvisionalDelivery(
@@ -358,13 +409,18 @@ final class TranscriptionDelivery {
         SoundManager.shared.playStopSound()
         await actions.dismiss()
 
-        if let inputTarget,
-            await restoreInputTarget(inputTarget) == .unavailable
-        {
-            if copyToClipboard(pastedText) {
-                notifyUnavailableTarget()
+        if let inputTarget {
+            switch await restoreInputTarget(inputTarget) {
+            case .restored:
+                break
+            case .unavailable:
+                if copyToClipboard(pastedText) {
+                    notifyUnavailableTarget()
+                }
+                return
+            case .canceled:
+                return
             }
-            return
         }
 
         let pasteResult = await pasteAtCursor(pastedText) { Task.isCancelled }
@@ -383,7 +439,7 @@ final class TranscriptionDelivery {
         Task { @MainActor [restoreInputTarget] in
             try? await Task.sleep(nanoseconds: 500_000_000)
             if let inputTarget,
-                await restoreInputTarget(inputTarget) == .unavailable
+                await restoreInputTarget(inputTarget) != .restored
             {
                 return
             }

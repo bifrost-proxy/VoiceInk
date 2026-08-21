@@ -60,6 +60,7 @@ struct TranscriptionDeliveryTests {
             "raw",
             inputTarget: makeInputTarget(),
             dismiss: { events.append("dismissed") },
+            shouldCancel: { false },
             onUserInteraction: {}
         )
         result.replacementSession?.stopMonitoring()
@@ -82,6 +83,7 @@ struct TranscriptionDeliveryTests {
             "raw",
             inputTarget: makeInputTarget(),
             dismiss: {},
+            shouldCancel: { false },
             onUserInteraction: {}
         )
 
@@ -103,6 +105,7 @@ struct TranscriptionDeliveryTests {
             "raw",
             inputTarget: makeInputTarget(),
             dismiss: {},
+            shouldCancel: { false },
             onUserInteraction: {}
         )
 
@@ -126,6 +129,7 @@ struct TranscriptionDeliveryTests {
             "raw",
             inputTarget: target,
             dismiss: {},
+            shouldCancel: { false },
             onUserInteraction: {}
         )
         let completion = await delivery.finishProvisionalDeliveryWithoutEnhancement(
@@ -144,6 +148,82 @@ struct TranscriptionDeliveryTests {
         #expect(!result.didPostPasteCommand)
         #expect(completion == .originalRetained)
         #expect(scheduledKeys.isEmpty)
+    }
+
+    @Test func canceledTargetRestorationDoesNotClaimClipboardDelivery() async {
+        var copiedText: String?
+        var pasteCount = 0
+        let delivery = TranscriptionDelivery(
+            pasteAtCursor: { _, _ in
+                pasteCount += 1
+                return .commandPosted
+            },
+            restoreInputTarget: { _ in .canceled },
+            copyToClipboard: { text in
+                copiedText = text
+                return true
+            },
+            appendTrailingSpace: { false }
+        )
+
+        let result = await delivery.deliverOriginalProvisionally(
+            "raw",
+            inputTarget: makeInputTarget(),
+            dismiss: {},
+            shouldCancel: { false },
+            onUserInteraction: {}
+        )
+
+        #expect(!result.wasDelivered)
+        #expect(!result.didPostPasteCommand)
+        #expect(pasteCount == 0)
+        #expect(copiedText == nil)
+    }
+
+    @Test func fullCancellationAfterRestorationPreventsProvisionalPaste() async {
+        var isCanceled = false
+        var pasteCount = 0
+        let delivery = TranscriptionDelivery(
+            pasteAtCursor: { _, _ in
+                pasteCount += 1
+                return .commandPosted
+            },
+            restoreInputTarget: { _ in
+                isCanceled = true
+                return .restored
+            },
+            appendTrailingSpace: { false }
+        )
+
+        let result = await delivery.deliverOriginalProvisionally(
+            "raw",
+            inputTarget: makeInputTarget(),
+            dismiss: {},
+            shouldCancel: { isCanceled },
+            onUserInteraction: {}
+        )
+
+        #expect(!result.wasDelivered)
+        #expect(!result.didPostPasteCommand)
+        #expect(pasteCount == 0)
+    }
+
+    @Test func interactionFallbackCopiesOriginalWithoutPasting() {
+        var copiedText: String?
+        var notifyCount = 0
+        let delivery = TranscriptionDelivery(
+            copyToClipboard: { text in
+                copiedText = text
+                return true
+            },
+            notifyUnavailableTarget: { notifyCount += 1 },
+            appendTrailingSpace: { true }
+        )
+
+        delivery.copyOriginalToClipboardAfterInteraction("raw")
+
+        #expect(copiedText == "raw ")
+        #expect(notifyCount == 1)
     }
 
     @Test func postedRawTextWithoutReplacementSupportRetainsAutoSend() async {
