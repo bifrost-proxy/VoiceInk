@@ -74,6 +74,58 @@ struct TranscriptionDeliveryTests {
         #expect(events == ["dismissed", "restored", "pasted:raw "])
     }
 
+    @Test func provisionalDeliveryWithoutReplacementSupportSkipsEnhancement() async {
+        let defaults = UserDefaults.standard
+        let previousAppendSpace = defaults.object(forKey: "AppendTrailingSpace")
+        defer {
+            restore(previousAppendSpace, forKey: "AppendTrailingSpace", in: defaults)
+        }
+        defaults.set(false, forKey: "AppendTrailingSpace")
+
+        let delivery = TranscriptionDelivery(
+            pasteAtCursor: { _ in .commandPosted },
+            restoreInputTarget: { _ in .restored },
+            captureEditableTextState: { _ in nil }
+        )
+
+        let result = await delivery.deliverOriginalProvisionally(
+            "raw",
+            inputTarget: makeInputTarget(),
+            dismiss: {},
+            onUserInteraction: {}
+        )
+
+        #expect(result.wasDelivered)
+        #expect(result.replacementSession == nil)
+        #expect(!result.shouldContinueEnhancement)
+    }
+
+    @Test func failedProvisionalDeliveryRetainsFinalEnhancementFallback() async {
+        let defaults = UserDefaults.standard
+        let previousAppendSpace = defaults.object(forKey: "AppendTrailingSpace")
+        defer {
+            restore(previousAppendSpace, forKey: "AppendTrailingSpace", in: defaults)
+        }
+        defaults.set(false, forKey: "AppendTrailingSpace")
+
+        let delivery = TranscriptionDelivery(
+            pasteAtCursor: { _ in .commandNotPosted },
+            restoreInputTarget: { _ in .restored },
+            captureEditableTextState: { _ in nil }
+        )
+
+        let result = await delivery.deliverOriginalProvisionally(
+            "raw",
+            inputTarget: makeInputTarget(),
+            dismiss: {},
+            onUserInteraction: {}
+        )
+
+        #expect(!result.wasDelivered)
+        #expect(result.replacementSession == nil)
+        #expect(result.shouldContinueEnhancement)
+    }
+
     @Test func skippingEnhancementPastesOriginalTextWithoutAutoSend() async {
         let defaults = UserDefaults.standard
         let previousAppendSpace = defaults.object(forKey: "AppendTrailingSpace")

@@ -65,6 +65,13 @@ final class TranscriptionDelivery {
     struct ProvisionalPasteResult {
         let wasDelivered: Bool
         let replacementSession: ProvisionalTextReplacementSession?
+
+        /// Continue enhancement only when its result can still be delivered. A failed provisional
+        /// paste falls back to the normal final delivery path, while a successful raw delivery
+        /// without a replacement session must keep the raw text and avoid wasted enhancement work.
+        var shouldContinueEnhancement: Bool {
+            !wasDelivered || replacementSession != nil
+        }
     }
 
     /// Immediately pastes an unenhanced transcript after the user skips an in-flight enhancement.

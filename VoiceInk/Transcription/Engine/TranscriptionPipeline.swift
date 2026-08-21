@@ -81,6 +81,7 @@ class TranscriptionPipeline {
         var deliveryDuration: TimeInterval?
         var didAttemptProvisionalDelivery = false
         var didDeliverOriginalEarly = false
+        var shouldContinueEnhancement = true
         var provisionalReplacementSession: ProvisionalTextReplacementSession?
 
         defer {
@@ -247,14 +248,20 @@ class TranscriptionPipeline {
                         deliveryDuration = (deliveryDuration ?? 0)
                             + Date().timeIntervalSince(provisionalDeliveryStartedAt)
                         didDeliverOriginalEarly = provisionalResult.wasDelivered
+                        shouldContinueEnhancement = provisionalResult.shouldContinueEnhancement
                         provisionalReplacementSession = provisionalResult.replacementSession
                     }
 
                     do {
-                        let contextSnapshot = await recordingContextSnapshot()
-                        if shouldBypassEnhancement() {
+                        if shouldBypassEnhancement() || !shouldContinueEnhancement {
+                            if !shouldContinueEnhancement {
+                                logger.notice(
+                                    "AI enhancement skipped because the provisional transcript cannot be safely replaced"
+                                )
+                            }
                             finalText = cleanedText
                         } else {
+                            let contextSnapshot = await recordingContextSnapshot()
                             let (enhancedText, enhancementDuration, promptName) = try await enhancementService.enhance(
                                 textForAI,
                                 configuration: resolvedEnhancementConfiguration,
