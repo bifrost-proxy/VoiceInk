@@ -114,6 +114,31 @@ enum RecorderWindowGeometry {
         )
     }
 
+    /// Resizes a follow recorder that the user has manually moved without
+    /// returning it to the pointer anchor. The control bar lives at the bottom
+    /// of every presentation, so preserving the bottom center keeps the part
+    /// the user dragged visually stable while transcript or guidance content
+    /// expands above it.
+    static func manuallyPositionedFollowFrame(
+        currentFrame: NSRect,
+        panelSize: NSSize,
+        visibleFrame: NSRect,
+        edgePadding: CGFloat = followEdgePadding
+    ) -> NSRect {
+        let safeFrame = visibleFrame.insetBy(dx: edgePadding, dy: edgePadding)
+        let fittingSize = NSSize(
+            width: min(panelSize.width, safeFrame.width),
+            height: min(panelSize.height, safeFrame.height)
+        )
+        let resizedFrame = NSRect(
+            x: currentFrame.midX - (fittingSize.width / 2),
+            y: currentFrame.minY,
+            width: fittingSize.width,
+            height: fittingSize.height
+        )
+        return constrained(resizedFrame, to: safeFrame)
+    }
+
     private static func orderedFollowCorners(
         preferredCorner: RecorderFollowCorner
     ) -> [RecorderFollowCorner] {
