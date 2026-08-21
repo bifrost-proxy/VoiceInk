@@ -264,7 +264,23 @@ class TranscriptionPipeline {
 
                     do {
                         if shouldBypassEnhancement() {
-                            provisionalReplacementSession?.stopMonitoring()
+                            if didDeliverOriginalEarly, let inputTarget {
+                                let bypassResult = await delivery.finishProvisionalDeliveryWithoutEnhancement(
+                                    provisionalReplacementSession,
+                                    output: resolvedOutputConfiguration,
+                                    inputTarget: inputTarget,
+                                    didPostPasteCommand: didPostProvisionalPasteCommand,
+                                    verifyInsertionAfterCancellation: true
+                                )
+                                if bypassResult == .originalNotInserted {
+                                    didDeliverOriginalEarly = false
+                                }
+                                logger.notice(
+                                    "Provisional transcript bypass result=\(String(describing: bypassResult), privacy: .public)"
+                                )
+                            } else {
+                                provisionalReplacementSession?.stopMonitoring()
+                            }
                             finalText = cleanedText
                         } else if !shouldContinueEnhancement {
                             logger.notice(
@@ -292,6 +308,23 @@ class TranscriptionPipeline {
                                 return
                             }
                             if shouldBypassEnhancement() {
+                                if didDeliverOriginalEarly, let inputTarget {
+                                    let bypassResult = await delivery.finishProvisionalDeliveryWithoutEnhancement(
+                                        provisionalReplacementSession,
+                                        output: resolvedOutputConfiguration,
+                                        inputTarget: inputTarget,
+                                        didPostPasteCommand: didPostProvisionalPasteCommand,
+                                        verifyInsertionAfterCancellation: true
+                                    )
+                                    if bypassResult == .originalNotInserted {
+                                        didDeliverOriginalEarly = false
+                                    }
+                                    logger.notice(
+                                        "Provisional transcript post-enhancement bypass result=\(String(describing: bypassResult), privacy: .public)"
+                                    )
+                                } else {
+                                    provisionalReplacementSession?.stopMonitoring()
+                                }
                                 finalText = cleanedText
                             } else {
                                 var shouldPersistEnhancement = !didDeliverOriginalEarly
@@ -341,7 +374,23 @@ class TranscriptionPipeline {
                             await finishCanceledTranscription()
                             return
                         } else if shouldBypassEnhancement() {
-                            provisionalReplacementSession?.stopMonitoring()
+                            if didDeliverOriginalEarly, let inputTarget {
+                                let bypassResult = await delivery.finishProvisionalDeliveryWithoutEnhancement(
+                                    provisionalReplacementSession,
+                                    output: resolvedOutputConfiguration,
+                                    inputTarget: inputTarget,
+                                    didPostPasteCommand: didPostProvisionalPasteCommand,
+                                    verifyInsertionAfterCancellation: true
+                                )
+                                if bypassResult == .originalNotInserted {
+                                    didDeliverOriginalEarly = false
+                                }
+                                logger.notice(
+                                    "Provisional transcript canceled-enhancement bypass result=\(String(describing: bypassResult), privacy: .public)"
+                                )
+                            } else {
+                                provisionalReplacementSession?.stopMonitoring()
+                            }
                             finalText = cleanedText
                         } else {
                             if didDeliverOriginalEarly, let inputTarget {

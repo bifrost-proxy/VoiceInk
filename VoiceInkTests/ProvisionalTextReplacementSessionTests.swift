@@ -28,6 +28,108 @@ struct ProvisionalTextReplacementSessionTests {
         #expect(result == .originalNotInserted)
     }
 
+    @Test func canceledBypassStillDetectsDroppedPasteCommand() async throws {
+        let session = try #require(makeSession(
+            currentState: RecordingEditableTextState(
+                value: "prefix suffix",
+                selectedTextRange: CFRange(location: 7, length: 0)
+            ),
+            replaceText: { _, _, _, _, _, _ in true }
+        ))
+
+        let task = Task { @MainActor in
+            await session.finishKeepingOriginal(verifyInsertionAfterCancellation: true)
+        }
+        task.cancel()
+
+        #expect(await task.value == .originalNotInserted)
+    }
+
+    @Test func successfulReplacementUpdatesOnlyItsOwnedClipboardText() async throws {
+        let ownership = CursorPaster.ClipboardOwnership(
+            sessionID: "session",
+            changeCount: 7,
+            expectedText: "raw "
+        )
+        var updatedClipboardText: String?
+        let session = try #require(ProvisionalTextReplacementSession(
+            target: makeInputTarget(),
+            preInsertionState: RecordingEditableTextState(
+                value: "prefix suffix",
+                selectedTextRange: CFRange(location: 7, length: 0)
+            ),
+            insertedText: "raw ",
+            replacementText: "raw",
+            clipboardOwnership: ownership,
+            startMonitoring: false,
+            readState: { _ in
+                RecordingEditableTextState(
+                    value: "prefix raw suffix",
+                    selectedTextRange: CFRange(location: 11, length: 0)
+                )
+            },
+            replaceText: { _, _, _, _, _, _ in true },
+            updateClipboard: { receivedOwnership, text in
+                #expect(receivedOwnership == ownership)
+                updatedClipboardText = text
+                return true
+            },
+            onUserInteraction: {}
+        ))
+
+        #expect(await session.replace(with: "enhanced") == .replaced)
+        #expect(updatedClipboardText == "enhanced ")
+    }
+
+    @Test func clipboardOwnershipRejectsAnyNewPasteboardState() {
+        let ownership = CursorPaster.ClipboardOwnership(
+            sessionID: "session",
+            changeCount: 7,
+            expectedText: "raw"
+        )
+        #expect(CursorPaster.stillOwnsClipboard(
+            ownership,
+            changeCount: 7,
+            text: "raw",
+            sessionID: "session"
+        ))
+        #expect(!CursorPaster.stillOwnsClipboard(
+            ownership,
+            changeCount: 8,
+            text: "raw",
+            sessionID: "session"
+        ))
+        #expect(!CursorPaster.stillOwnsClipboard(
+            ownership,
+            changeCount: 7,
+            text: "new user copy",
+            sessionID: "session"
+        ))
+        #expect(!CursorPaster.stillOwnsClipboard(
+            ownership,
+            changeCount: 7,
+            text: "raw",
+            sessionID: "another session"
+        ))
+    }
+
+    @Test func editableTextSnapshotsHaveAConservativeUTF16Limit() {
+        let limit = RecordingInputTargetService.maximumEditableTextUTF16Length
+        #expect(RecordingInputTargetService.isWithinEditableTextLimit(limit))
+        #expect(!RecordingInputTargetService.isWithinEditableTextLimit(limit + 1))
+        #expect(!RecordingInputTargetService.isWithinEditableTextLimit(-1))
+    }
+
+    @Test func targetRestorationWaitStopsWhenItsTaskIsCanceled() async {
+        let task = Task { @MainActor in
+            await RecordingInputTargetService.waitUntil(timeout: .seconds(1)) { false }
+        }
+        await Task.yield()
+        task.cancel()
+
+        #expect(await task.value == false)
+    }
+
     @Test func rollbackOwnershipRejectsCancellationAndConcurrentEdits() {
         let transactionState = RecordingEditableTextState(
             value: "prefix enhanced suffix",

@@ -41,6 +41,7 @@ enum RecordingInputTargetService {
     private static let activationTimeout: Duration = .milliseconds(600)
     private static let focusTimeout: Duration = .milliseconds(400)
     private static let pollInterval: Duration = .milliseconds(25)
+    static let maximumEditableTextUTF16Length = 262_144
 
     static func capture(
         excluding excludedProcessID: pid_t = ProcessInfo.processInfo.processIdentifier
@@ -146,7 +147,10 @@ enum RecordingInputTargetService {
         let applicationElement = AXUIElementCreateApplication(target.processID)
         guard isFocused(target.element, in: applicationElement),
             isPlainTextElement(target.element),
+            copyIntegerAttribute(kAXNumberOfCharactersAttribute, from: target.element)
+                .map(isWithinEditableTextLimit) ?? true,
             let value = copyStringAttribute(kAXValueAttribute, from: target.element),
+            isWithinEditableTextLimit((value as NSString).length),
             let selectedTextRange = copyRangeAttribute(kAXSelectedTextRangeAttribute, from: target.element),
             isValid(selectedTextRange, in: value)
         else {
@@ -168,6 +172,7 @@ enum RecordingInputTargetService {
         shouldCancel: @escaping @Sendable () -> Bool = { false }
     ) -> Bool {
         guard !shouldCancel(),
+            isWithinEditableTextLimit((expectedCurrentValue as NSString).length),
             let currentState = editableTextState(for: target),
             currentState.value == expectedCurrentValue,
             currentState.selectedTextRange.location == fallbackCaret.location,
@@ -177,6 +182,13 @@ enum RecordingInputTargetService {
             isAttributeSettable(kAXValueAttribute, on: target.element),
             isAttributeSettable(kAXSelectedTextRangeAttribute, on: target.element)
         else {
+            return false
+        }
+
+        let replacementLength = (replacement as NSString).length
+        guard isWithinEditableTextLimit(
+            (expectedCurrentValue as NSString).length - range.length + replacementLength
+        ) else {
             return false
         }
 
@@ -233,6 +245,20 @@ enum RecordingInputTargetService {
             )
             if !didRollback {
                 logger.notice("Skipped provisional replacement rollback because the target changed")
+            }
+            return false
+        }
+        if shouldCancel() {
+            let didRollback = restoreEditableTextStateIfOwned(
+                currentState,
+                transactionValue: expectedValue,
+                transactionSelectionRanges: [finalCaret],
+                on: target.element,
+                shouldCancel: shouldCancel,
+                permitObservedCancellation: true
+            )
+            if !didRollback {
+                logger.notice("Skipped canceled provisional replacement rollback because the target changed")
             }
             return false
         }
@@ -399,17 +425,27 @@ enum RecordingInputTargetService {
         return CFEqual(focusedElement, element)
     }
 
-    private static func waitUntil(
+    static func waitUntil(
         timeout: Duration,
         condition: @MainActor () -> Bool
     ) async -> Bool {
         let clock = ContinuousClock()
         let deadline = clock.now.advanced(by: timeout)
         while clock.now < deadline {
+            guard !Task.isCancelled else { return false }
             if condition() { return true }
-            try? await Task.sleep(for: pollInterval)
+            do {
+                try await Task.sleep(for: pollInterval)
+            } catch {
+                return false
+            }
         }
+        guard !Task.isCancelled else { return false }
         return condition()
+    }
+
+    static func isWithinEditableTextLimit(_ utf16Length: Int) -> Bool {
+        utf16Length >= 0 && utf16Length <= maximumEditableTextUTF16Length
     }
 
     private static func copyElementAttribute(_ attribute: String, from element: AXUIElement) -> AXUIElement? {
@@ -432,6 +468,16 @@ enum RecordingInputTargetService {
             return nil
         }
         return value as? String
+    }
+
+    private static func copyIntegerAttribute(_ attribute: String, from element: AXUIElement) -> Int? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success,
+            let number = value as? NSNumber
+        else {
+            return nil
+        }
+        return number.intValue
     }
 
     private static func copyRangeAttribute(_ attribute: String, from element: AXUIElement) -> CFRange? {

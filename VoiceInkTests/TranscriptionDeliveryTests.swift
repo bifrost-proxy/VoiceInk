@@ -38,7 +38,7 @@ struct TranscriptionDeliveryTests {
     @Test func provisionalDeliveryPastesRawTextBeforeEnhancementCanComplete() async throws {
         var events: [String] = []
         let delivery = TranscriptionDelivery(
-            pasteAtCursor: { text in
+            pasteAtCursor: { text, _ in
                 events.append("pasted:\(text)")
                 return .commandPosted
             },
@@ -47,7 +47,8 @@ struct TranscriptionDeliveryTests {
                 return .restored
             },
             captureEditableTextState: { _ in
-                RecordingEditableTextState(
+                events.append("captured")
+                return RecordingEditableTextState(
                     value: "prefix suffix",
                     selectedTextRange: CFRange(location: 7, length: 0)
                 )
@@ -66,12 +67,12 @@ struct TranscriptionDeliveryTests {
         #expect(result.wasDelivered)
         #expect(result.didPostPasteCommand)
         #expect(result.replacementSession != nil)
-        #expect(events == ["dismissed", "restored", "pasted:raw "])
+        #expect(events == ["dismissed", "restored", "captured", "pasted:raw "])
     }
 
     @Test func provisionalDeliveryWithoutReplacementSupportSkipsEnhancement() async {
         let delivery = TranscriptionDelivery(
-            pasteAtCursor: { _ in .commandPosted },
+            pasteAtCursor: { _, _ in .commandPosted },
             restoreInputTarget: { _ in .restored },
             captureEditableTextState: { _ in nil },
             appendTrailingSpace: { false }
@@ -92,7 +93,7 @@ struct TranscriptionDeliveryTests {
 
     @Test func failedProvisionalDeliveryRetainsFinalEnhancementFallback() async {
         let delivery = TranscriptionDelivery(
-            pasteAtCursor: { _ in .commandNotPosted },
+            pasteAtCursor: { _, _ in .commandNotPosted },
             restoreInputTarget: { _ in .restored },
             captureEditableTextState: { _ in nil },
             appendTrailingSpace: { false }
@@ -168,11 +169,35 @@ struct TranscriptionDeliveryTests {
         #expect(scheduledKeys == [.enter])
     }
 
+    @Test func userBypassNeverAutoSendsAnAlreadyPostedRawTranscript() async {
+        var scheduledKeys: [AutoSendKey] = []
+        let delivery = TranscriptionDelivery(
+            appendTrailingSpace: { false },
+            autoSendScheduler: { key, _ in scheduledKeys.append(key) }
+        )
+
+        let completion = await delivery.finishProvisionalDeliveryWithoutEnhancement(
+            nil,
+            output: OutputRuntimeConfiguration(
+                mode: nil,
+                outputMode: .paste,
+                autoSendKey: .enter,
+                customCommand: nil
+            ),
+            inputTarget: makeInputTarget(),
+            didPostPasteCommand: true,
+            verifyInsertionAfterCancellation: true
+        )
+
+        #expect(completion == .originalRetained)
+        #expect(scheduledKeys.isEmpty)
+    }
+
     @Test func skippingEnhancementPastesOriginalTextWithoutAutoSend() async {
         var pastedText: String?
         var dismissCount = 0
         let delivery = TranscriptionDelivery(
-            pasteAtCursor: { text in
+            pasteAtCursor: { text, _ in
                 pastedText = text
                 return .commandPosted
             },
@@ -198,7 +223,7 @@ struct TranscriptionDeliveryTests {
         let gate = PasteCommandGate()
         var events: [String] = []
         let delivery = TranscriptionDelivery(
-            pasteAtCursor: { text in
+            pasteAtCursor: { text, _ in
                 events.append("paste-started:\(text)")
                 return await gate.performPaste()
             },
@@ -244,7 +269,7 @@ struct TranscriptionDeliveryTests {
     @Test func restoresCapturedInputBeforePasting() async {
         var events: [String] = []
         let delivery = TranscriptionDelivery(
-            pasteAtCursor: { text in
+            pasteAtCursor: { text, _ in
                 events.append("pasted:\(text)")
                 return .commandPosted
             },
@@ -267,7 +292,7 @@ struct TranscriptionDeliveryTests {
         var copiedText: String?
         var pasteCount = 0
         let delivery = TranscriptionDelivery(
-            pasteAtCursor: { _ in
+            pasteAtCursor: { _, _ in
                 pasteCount += 1
                 return .commandPosted
             },

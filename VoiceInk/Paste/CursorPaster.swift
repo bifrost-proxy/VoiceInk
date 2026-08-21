@@ -8,9 +8,18 @@ class CursorPaster {
     private typealias ClipboardSnapshot = [ClipboardItemSnapshot]
     private static let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "CursorPaster")
 
-    enum PasteResult: Equatable {
-        case commandPosted
-        case commandNotPosted
+    struct ClipboardOwnership: Equatable, Sendable {
+        let sessionID: String
+        let changeCount: Int
+        let expectedText: String
+    }
+
+    struct PasteResult: Equatable, Sendable {
+        let didPostCommand: Bool
+        let clipboardOwnership: ClipboardOwnership?
+
+        static let commandPosted = PasteResult(didPostCommand: true, clipboardOwnership: nil)
+        static let commandNotPosted = PasteResult(didPostCommand: false, clipboardOwnership: nil)
     }
 
     private static let prePasteDelay: TimeInterval = 0.10
@@ -35,12 +44,18 @@ class CursorPaster {
     }
 
     @MainActor
-    static func pasteAtCursorAndWaitUntilPosted(_ text: String) async -> PasteResult {
-        await startPasteAtCursor(text).value
+    static func pasteAtCursorAndWaitUntilPosted(
+        _ text: String,
+        shouldCancel: @escaping @MainActor () -> Bool = { false }
+    ) async -> PasteResult {
+        await performPasteSession(text, shouldCancel: shouldCancel)
     }
 
     @MainActor
-    private static func performPasteSession(_ text: String) async -> PasteResult {
+    private static func performPasteSession(
+        _ text: String,
+        shouldCancel: @escaping @MainActor () -> Bool = { false }
+    ) async -> PasteResult {
         let pasteboard = NSPasteboard.general
         let shouldRestoreClipboard = UserDefaults.standard.bool(forKey: "restoreClipboardAfterPaste")
         let savedContents = shouldRestoreClipboard ? snapshotClipboard(from: pasteboard) : []
@@ -50,14 +65,27 @@ class CursorPaster {
             ClipboardManager.setClipboard(
                 text,
                 transient: shouldRestoreClipboard,
-                sessionID: shouldRestoreClipboard ? sessionID : nil
+                sessionID: sessionID
             )
         else {
             logger.error("Failed to prepare clipboard for paste")
             return .commandNotPosted
         }
+        let clipboardChangeCount = pasteboard.changeCount
 
         await wait(prePasteDelay)
+
+        guard !shouldCancel() else {
+            if shouldRestoreClipboard {
+                scheduleClipboardRestore(
+                    savedContents,
+                    expectedText: text,
+                    sessionID: sessionID,
+                    on: pasteboard
+                )
+            }
+            return .commandNotPosted
+        }
 
         let pasteResult = await postPasteCommand()
         if shouldRestoreClipboard {
@@ -69,7 +97,45 @@ class CursorPaster {
             )
         }
 
-        return pasteResult
+        guard pasteResult.didPostCommand else { return .commandNotPosted }
+        return PasteResult(
+            didPostCommand: true,
+            clipboardOwnership: shouldRestoreClipboard ? nil : ClipboardOwnership(
+                sessionID: sessionID,
+                changeCount: clipboardChangeCount,
+                expectedText: text
+            )
+        )
+    }
+
+    /// Updates the persistent clipboard after an AX-only provisional replacement, but only while
+    /// no other application or user action has changed the pasteboard since VoiceInk prepared it.
+    @MainActor
+    static func updateClipboardIfOwned(
+        _ ownership: ClipboardOwnership,
+        with text: String
+    ) -> Bool {
+        let pasteboard = NSPasteboard.general
+        guard stillOwnsClipboard(
+            ownership,
+            changeCount: pasteboard.changeCount,
+            text: pasteboard.string(forType: .string),
+            sessionID: pasteboard.string(forType: ClipboardManager.pasteSessionType)
+        ) else {
+            return false
+        }
+        return ClipboardManager.setClipboard(text, transient: false, sessionID: ownership.sessionID)
+    }
+
+    static func stillOwnsClipboard(
+        _ ownership: ClipboardOwnership,
+        changeCount: Int,
+        text: String?,
+        sessionID: String?
+    ) -> Bool {
+        changeCount == ownership.changeCount
+            && text == ownership.expectedText
+            && sessionID == ownership.sessionID
     }
 
     private static func snapshotClipboard(from pasteboard: NSPasteboard) -> ClipboardSnapshot {

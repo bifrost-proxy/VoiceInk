@@ -3,7 +3,10 @@ import os
 
 @MainActor
 final class TranscriptionDelivery {
-    typealias PasteAtCursor = @MainActor (String) async -> CursorPaster.PasteResult
+    typealias PasteAtCursor = @MainActor (
+        String,
+        @escaping @MainActor () -> Bool
+    ) async -> CursorPaster.PasteResult
     typealias RestoreInputTarget = @MainActor (RecordingInputTarget) async -> RecordingInputTargetRestoration
     typealias CaptureEditableTextState = @MainActor (RecordingInputTarget) -> RecordingEditableTextState?
     typealias CopyToClipboard = @MainActor (String) -> Bool
@@ -21,8 +24,8 @@ final class TranscriptionDelivery {
     private let autoSendScheduler: AutoSendScheduler?
 
     init(
-        pasteAtCursor: @escaping PasteAtCursor = { text in
-            await CursorPaster.pasteAtCursorAndWaitUntilPosted(text)
+        pasteAtCursor: @escaping PasteAtCursor = { text, shouldCancel in
+            await CursorPaster.pasteAtCursorAndWaitUntilPosted(text, shouldCancel: shouldCancel)
         },
         restoreInputTarget: @escaping RestoreInputTarget = { target in
             await RecordingInputTargetService.restore(target)
@@ -144,17 +147,7 @@ final class TranscriptionDelivery {
             )
         }
 
-        let preInsertionState = captureEditableTextState(inputTarget)
-        let pasteResult = await pasteAtCursor(pastedText)
-        guard pasteResult == .commandPosted else {
-            return ProvisionalPasteResult(
-                wasDelivered: false,
-                didPostPasteCommand: false,
-                replacementSession: nil
-            )
-        }
-
-        let replacementSession = preInsertionState.flatMap { state in
+        let replacementSession = captureEditableTextState(inputTarget).flatMap { state in
             ProvisionalTextReplacementSession(
                 target: inputTarget,
                 preInsertionState: state,
@@ -163,6 +156,21 @@ final class TranscriptionDelivery {
                 onUserInteraction: onUserInteraction
             )
         }
+        replacementSession?.beginIgnoringPasteShortcut()
+        let pasteResult = await pasteAtCursor(pastedText) {
+            Task.isCancelled || replacementSession?.wasCanceledByUser == true
+        }
+        replacementSession?.endIgnoringPasteShortcut()
+        guard pasteResult.didPostCommand else {
+            replacementSession?.stopMonitoring()
+            return ProvisionalPasteResult(
+                wasDelivered: false,
+                didPostPasteCommand: false,
+                replacementSession: nil
+            )
+        }
+
+        replacementSession?.setClipboardOwnership(pasteResult.clipboardOwnership)
         return ProvisionalPasteResult(
             wasDelivered: true,
             didPostPasteCommand: true,
@@ -191,10 +199,14 @@ final class TranscriptionDelivery {
         _ session: ProvisionalTextReplacementSession?,
         output: OutputRuntimeConfiguration,
         inputTarget: RecordingInputTarget,
-        didPostPasteCommand: Bool
+        didPostPasteCommand: Bool,
+        verifyInsertionAfterCancellation: Bool = false
     ) async -> ProvisionalTextReplacementSession.ReplacementResult {
-        let result = await session?.finishKeepingOriginal() ?? .originalRetained
-        if didPostPasteCommand,
+        let result = await session?.finishKeepingOriginal(
+            verifyInsertionAfterCancellation: verifyInsertionAfterCancellation
+        ) ?? .originalRetained
+        if !verifyInsertionAfterCancellation,
+            didPostPasteCommand,
             result == .originalRetained,
             output.outputMode == .paste,
             output.autoSendKey.isEnabled
@@ -355,10 +367,10 @@ final class TranscriptionDelivery {
             return
         }
 
-        let pasteResult = await pasteAtCursor(pastedText)
+        let pasteResult = await pasteAtCursor(pastedText) { Task.isCancelled }
 
         let autoSendKey = output.outputMode == .paste ? output.autoSendKey : .none
-        if autoSendKey.isEnabled, pasteResult == .commandPosted {
+        if autoSendKey.isEnabled, pasteResult.didPostCommand {
             scheduleAutoSend(autoSendKey, inputTarget: inputTarget)
         }
     }
