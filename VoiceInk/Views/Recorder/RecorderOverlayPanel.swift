@@ -8,7 +8,10 @@ import AppKit
 /// are transitioning, so presentation state is tracked independently from
 /// `isVisible` and the overlay is explicitly reasserted after each transition.
 class RecorderOverlayPanel: NSPanel {
-    static let overlayLevel = NSWindow.Level(rawValue: NSWindow.Level.statusBar.rawValue + 3)
+    // Full-screen application windows can be ordered above menu/status-bar
+    // levels. Use AppKit's dedicated high overlay level so the recorder stays
+    // visible there without relying on an arbitrary offset.
+    static let overlayLevel = NSWindow.Level.screenSaver
     static let overlayCollectionBehavior: NSWindow.CollectionBehavior = [
         .canJoinAllSpaces,
         .canJoinAllApplications,

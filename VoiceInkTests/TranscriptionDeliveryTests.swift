@@ -35,6 +35,12 @@ private final class PasteCommandGate {
 
 @MainActor
 struct TranscriptionDeliveryTests {
+    @Test func autoSendRequiresExactInputRestoration() {
+        #expect(TranscriptionDelivery.canAutoSend(after: .restored))
+        #expect(!TranscriptionDelivery.canAutoSend(after: .focusedWindow))
+        #expect(!TranscriptionDelivery.canAutoSend(after: .unavailable))
+    }
+
     @Test func skippingEnhancementPastesOriginalTextWithoutAutoSend() async {
         let defaults = UserDefaults.standard
         let previousAppendSpace = defaults.object(forKey: "AppendTrailingSpace")
@@ -145,6 +151,40 @@ struct TranscriptionDeliveryTests {
         }
 
         #expect(events == ["dismissed", "restored", "pasted:targeted"])
+    }
+
+    @Test func pastesWhenTheWindowIsFocusedButTheCapturedInputWasReplaced() async {
+        let defaults = UserDefaults.standard
+        let previousAppendSpace = defaults.object(forKey: "AppendTrailingSpace")
+        defer {
+            restore(previousAppendSpace, forKey: "AppendTrailingSpace", in: defaults)
+        }
+        defaults.set(false, forKey: "AppendTrailingSpace")
+
+        var events: [String] = []
+        let delivery = TranscriptionDelivery(
+            pasteAtCursor: { text in
+                events.append("pasted:\(text)")
+                return .commandPosted
+            },
+            restoreInputTarget: { _ in
+                events.append("focused-window")
+                return .focusedWindow
+            },
+            copyToClipboard: { _ in
+                events.append("copied")
+                return true
+            },
+            notifyUnavailableTarget: {
+                events.append("notified")
+            }
+        )
+
+        await delivery.pasteOriginalImmediately("dynamic editor", inputTarget: makeInputTarget()) {
+            events.append("dismissed")
+        }
+
+        #expect(events == ["dismissed", "focused-window", "pasted:dynamic editor"])
     }
 
     @Test func unavailableCapturedInputCopiesWithoutPasting() async {
