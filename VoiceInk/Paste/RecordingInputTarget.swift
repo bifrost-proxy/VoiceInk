@@ -18,6 +18,7 @@ struct RecordingInputTarget {
 
 enum RecordingInputTargetRestoration: Equatable {
     case restored
+    case focusedWindow
     case unavailable
 }
 
@@ -109,15 +110,36 @@ enum RecordingInputTargetService {
         guard await waitUntil(timeout: focusTimeout, condition: {
             isFocused(target.element, in: applicationElement)
         }) else {
-            logger.notice("The original recording input could not regain accessibility focus")
-            return .unavailable
+            return fallbackToFocusedWindow(
+                in: applicationElement,
+                reason: "The original recording input could not regain accessibility focus"
+            )
         }
 
         guard restoreSelectionIfSupported(target.selectedTextRange, on: target.element) else {
-            logger.notice("The original recording selection could not be restored safely")
-            return .unavailable
+            return fallbackToFocusedWindow(
+                in: applicationElement,
+                reason: "The original recording selection could not be restored safely"
+            )
         }
         return .restored
+    }
+
+    private static func fallbackToFocusedWindow(
+        in application: AXUIElement,
+        reason: StaticString
+    ) -> RecordingInputTargetRestoration {
+        guard copyElementAttribute(kAXFocusedWindowAttribute, from: application) != nil else {
+            logger.notice("\(reason, privacy: .public); no focused window is available")
+            return .unavailable
+        }
+
+        // Web views and other dynamically rendered editors may replace their
+        // accessibility element while keeping the same application window and
+        // insertion point active. In that case Cmd+V is more reliable than
+        // treating the stale element identity as a hard delivery failure.
+        logger.notice("\(reason, privacy: .public); pasting into the focused window")
+        return .focusedWindow
     }
 
     private static func restoreSelectionIfSupported(_ range: CFRange?, on element: AXUIElement) -> Bool {

@@ -13,6 +13,9 @@ struct RecorderOverlayPanelTests {
         ]
         defer { panels.forEach { $0.close() } }
 
+        #expect(RecorderOverlayPanel.overlayLevel == .screenSaver)
+        #expect(RecorderOverlayPanel.overlayLevel > .popUpMenu)
+
         for panel in panels {
             #expect(panel.level == RecorderOverlayPanel.overlayLevel)
             #expect(panel.collectionBehavior.contains(.canJoinAllSpaces))
