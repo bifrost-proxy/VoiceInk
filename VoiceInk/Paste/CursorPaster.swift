@@ -58,7 +58,10 @@ class CursorPaster {
     ) async -> PasteResult {
         let pasteboard = NSPasteboard.general
         let shouldRestoreClipboard = UserDefaults.standard.bool(forKey: "restoreClipboardAfterPaste")
-        let savedContents = shouldRestoreClipboard ? snapshotClipboard(from: pasteboard) : []
+        // Even when the user normally keeps pasted text on the clipboard, an aborted paste must
+        // put back the contents that VoiceInk temporarily replaced. Otherwise canceling before
+        // Cmd+V is emitted destroys the user's clipboard without delivering any text.
+        let savedContents = snapshotClipboard(from: pasteboard)
         let sessionID = UUID().uuidString
 
         guard
@@ -69,6 +72,7 @@ class CursorPaster {
             )
         else {
             logger.error("Failed to prepare clipboard for paste")
+            restoreClipboard(savedContents, on: pasteboard)
             return .commandNotPosted
         }
         let clipboardChangeCount = pasteboard.changeCount
@@ -76,18 +80,25 @@ class CursorPaster {
         await wait(prePasteDelay)
 
         guard !shouldCancel() else {
-            if shouldRestoreClipboard {
-                scheduleClipboardRestore(
-                    savedContents,
-                    expectedText: text,
-                    sessionID: sessionID,
-                    on: pasteboard
-                )
-            }
+            restoreClipboardIfOwned(
+                savedContents,
+                expectedText: text,
+                sessionID: sessionID,
+                on: pasteboard
+            )
             return .commandNotPosted
         }
 
-        let pasteResult = await postPasteCommand()
+        let pasteResult = await postPasteCommand(shouldCancel: shouldCancel)
+        guard pasteResult.didPostCommand else {
+            restoreClipboardIfOwned(
+                savedContents,
+                expectedText: text,
+                sessionID: sessionID,
+                on: pasteboard
+            )
+            return .commandNotPosted
+        }
         if shouldRestoreClipboard {
             scheduleClipboardRestore(
                 savedContents,
@@ -97,7 +108,6 @@ class CursorPaster {
             )
         }
 
-        guard pasteResult.didPostCommand else { return .commandNotPosted }
         return PasteResult(
             didPostCommand: true,
             clipboardOwnership: shouldRestoreClipboard ? nil : ClipboardOwnership(
@@ -150,11 +160,14 @@ class CursorPaster {
     }
 
     @MainActor
-    private static func postPasteCommand() async -> PasteResult {
+    private static func postPasteCommand(
+        shouldCancel: @escaping @MainActor () -> Bool
+    ) async -> PasteResult {
+        guard !shouldCancel() else { return .commandNotPosted }
         if PasteMethod.current() == .appleScript {
             return pasteUsingAppleScript() ? .commandPosted : .commandNotPosted
         } else {
-            return await pasteFromClipboard()
+            return await pasteFromClipboard(shouldCancel: shouldCancel)
         }
     }
 
@@ -171,14 +184,38 @@ class CursorPaster {
 
         Task { @MainActor in
             await wait(delay)
-            guard pasteboardStillOwnedByPasteSession(pasteboard, expectedText: expectedText, sessionID: sessionID)
-            else {
-                return
-            }
-            pasteboard.clearContents()
-            if !savedContents.isEmpty {
-                pasteboard.writeObjects(pasteboardItems(from: savedContents))
-            }
+            restoreClipboardIfOwned(
+                savedContents,
+                expectedText: expectedText,
+                sessionID: sessionID,
+                on: pasteboard
+            )
+        }
+    }
+
+    private static func restoreClipboardIfOwned(
+        _ savedContents: ClipboardSnapshot,
+        expectedText: String,
+        sessionID: String,
+        on pasteboard: NSPasteboard
+    ) {
+        guard pasteboardStillOwnedByPasteSession(
+            pasteboard,
+            expectedText: expectedText,
+            sessionID: sessionID
+        ) else {
+            return
+        }
+        restoreClipboard(savedContents, on: pasteboard)
+    }
+
+    private static func restoreClipboard(
+        _ savedContents: ClipboardSnapshot,
+        on pasteboard: NSPasteboard
+    ) {
+        pasteboard.clearContents()
+        if !savedContents.isEmpty {
+            pasteboard.writeObjects(pasteboardItems(from: savedContents))
         }
     }
 
@@ -243,7 +280,9 @@ class CursorPaster {
 
     // Posts Cmd+V via CGEvent without modifying the active input source.
     @MainActor
-    private static func pasteFromClipboard() async -> PasteResult {
+    private static func pasteFromClipboard(
+        shouldCancel: @escaping @MainActor () -> Bool
+    ) async -> PasteResult {
         guard AXIsProcessTrusted() else {
             logger.error("Accessibility permission is required to paste with simulated key events")
             return .commandNotPosted
@@ -264,13 +303,41 @@ class CursorPaster {
         vDown.flags = .maskCommand
         vUp.flags = .maskCommand
 
+        guard !shouldCancel() else { return .commandNotPosted }
+
+        var commandIsDown = true
+        var pasteKeyIsDown = false
+        defer {
+            // A cancellation can stop the shortcut before V is emitted, but any already-posted
+            // key-down events must always be balanced so Command never remains logically stuck.
+            if pasteKeyIsDown {
+                vUp.post(tap: .cghidEventTap)
+            }
+            if commandIsDown {
+                cmdUp.post(tap: .cghidEventTap)
+            }
+        }
+
         cmdDown.post(tap: .cghidEventTap)
         await wait(pasteShortcutEventDelay)
+        guard !shouldCancel() else { return .commandNotPosted }
+
         vDown.post(tap: .cghidEventTap)
+        pasteKeyIsDown = true
         await wait(pasteShortcutEventDelay)
+        if shouldCancel() {
+            return .commandPosted
+        }
+
         vUp.post(tap: .cghidEventTap)
+        pasteKeyIsDown = false
         await wait(pasteShortcutEventDelay)
+        if shouldCancel() {
+            return .commandPosted
+        }
+
         cmdUp.post(tap: .cghidEventTap)
+        commandIsDown = false
 
         return .commandPosted
     }

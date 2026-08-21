@@ -173,7 +173,7 @@ enum RecordingInputTargetService {
         with replacement: String,
         expectedCurrentValue: String,
         fallbackCaret: CFRange,
-        shouldCancel: @escaping @Sendable () -> Bool = { false }
+        shouldCancel: @escaping @MainActor @Sendable () -> Bool = { false }
     ) -> Bool {
         guard !shouldCancel(),
             isWithinEditableTextLimit((expectedCurrentValue as NSString).length),
@@ -368,7 +368,7 @@ enum RecordingInputTargetService {
         transactionValue: String,
         transactionSelectionRanges: [CFRange],
         on element: AXUIElement,
-        shouldCancel: @escaping @Sendable () -> Bool,
+        shouldCancel: @escaping @MainActor @Sendable () -> Bool,
         permitObservedCancellation: Bool = false
     ) -> Bool {
         guard ownsProvisionalReplacementState(

@@ -208,22 +208,114 @@ struct TranscriptionDeliveryTests {
         #expect(pasteCount == 0)
     }
 
-    @Test func interactionFallbackCopiesOriginalWithoutPasting() {
-        var copiedText: String?
-        var notifyCount = 0
+    @Test func interactionFallbackPreservesClipboardAndReportsHistoryRecovery() {
+        var copyCount = 0
+        var interruptedNotificationCount = 0
         let delivery = TranscriptionDelivery(
-            copyToClipboard: { text in
-                copiedText = text
+            copyToClipboard: { _ in
+                copyCount += 1
                 return true
             },
-            notifyUnavailableTarget: { notifyCount += 1 },
+            notifyInterruptedDelivery: { interruptedNotificationCount += 1 },
             appendTrailingSpace: { true }
         )
 
-        delivery.copyOriginalToClipboardAfterInteraction("raw")
+        delivery.reportOriginalNotInsertedAfterInteraction()
 
-        #expect(copiedText == "raw ")
-        #expect(notifyCount == 1)
+        #expect(copyCount == 0)
+        #expect(interruptedNotificationCount == 1)
+    }
+
+    @Test func fullCancellationBeforeReplacementPreventsMutationAndAutoSend() async throws {
+        var isCanceled = false
+        var replacementCount = 0
+        var scheduledKeys: [AutoSendKey] = []
+        let session = try #require(ProvisionalTextReplacementSession(
+            target: makeInputTarget(),
+            preInsertionState: RecordingEditableTextState(
+                value: "prefix suffix",
+                selectedTextRange: CFRange(location: 7, length: 0)
+            ),
+            insertedText: "raw",
+            replacementText: "raw",
+            startMonitoring: false,
+            readState: { _ in
+                isCanceled = true
+                return RecordingEditableTextState(
+                    value: "prefix rawsuffix",
+                    selectedTextRange: CFRange(location: 10, length: 0)
+                )
+            },
+            replaceText: { _, _, _, _, _, _ in
+                replacementCount += 1
+                return true
+            },
+            onUserInteraction: {}
+        ))
+        let delivery = TranscriptionDelivery(
+            appendTrailingSpace: { false },
+            autoSendScheduler: { key, _ in scheduledKeys.append(key) }
+        )
+
+        let result = await delivery.completeProvisionalDelivery(
+            session,
+            enhancedText: "enhanced",
+            output: OutputRuntimeConfiguration(
+                mode: nil,
+                outputMode: .paste,
+                autoSendKey: .enter,
+                customCommand: nil
+            ),
+            inputTarget: makeInputTarget(),
+            shouldCancel: { isCanceled }
+        )
+
+        #expect(result == .canceledByUser)
+        #expect(replacementCount == 0)
+        #expect(scheduledKeys.isEmpty)
+    }
+
+    @Test func fullCancellationDuringRetentionSuppressesAutoSend() async throws {
+        var isCanceled = false
+        var scheduledKeys: [AutoSendKey] = []
+        let session = try #require(ProvisionalTextReplacementSession(
+            target: makeInputTarget(),
+            preInsertionState: RecordingEditableTextState(
+                value: "prefix suffix",
+                selectedTextRange: CFRange(location: 7, length: 0)
+            ),
+            insertedText: "raw",
+            replacementText: "raw",
+            startMonitoring: false,
+            readState: { _ in
+                isCanceled = true
+                return RecordingEditableTextState(
+                    value: "prefix rawsuffix",
+                    selectedTextRange: CFRange(location: 10, length: 0)
+                )
+            },
+            onUserInteraction: {}
+        ))
+        let delivery = TranscriptionDelivery(
+            appendTrailingSpace: { false },
+            autoSendScheduler: { key, _ in scheduledKeys.append(key) }
+        )
+
+        let result = await delivery.finishProvisionalDeliveryWithoutEnhancement(
+            session,
+            output: OutputRuntimeConfiguration(
+                mode: nil,
+                outputMode: .paste,
+                autoSendKey: .enter,
+                customCommand: nil
+            ),
+            inputTarget: makeInputTarget(),
+            didPostPasteCommand: true,
+            shouldCancel: { isCanceled }
+        )
+
+        #expect(result == .canceledByUser)
+        #expect(scheduledKeys.isEmpty)
     }
 
     @Test func postedRawTextWithoutReplacementSupportRetainsAutoSend() async {

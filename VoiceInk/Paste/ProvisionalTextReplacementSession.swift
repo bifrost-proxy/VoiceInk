@@ -70,7 +70,7 @@ final class ProvisionalTextReplacementSession {
         String,
         String,
         CFRange,
-        @escaping @Sendable () -> Bool
+        @escaping @MainActor @Sendable () -> Bool
     ) -> Bool
     typealias UpdateClipboard = @MainActor (CursorPaster.ClipboardOwnership, String) -> Bool
 
@@ -174,11 +174,21 @@ final class ProvisionalTextReplacementSession {
         }
     }
 
-    func replace(with enhancedText: String) async -> ReplacementResult {
+    func replace(
+        with enhancedText: String,
+        shouldCancel: @escaping @MainActor () -> Bool = { false }
+    ) async -> ReplacementResult {
         defer { stopMonitoring() }
-        switch await observePastePropagation(verifyInsertionAfterUserInteraction: true) {
+        switch await observePastePropagation(
+            verifyInsertionAfterUserInteraction: true,
+            shouldCancel: shouldCancel
+        ) {
         case .inserted(let currentState):
-            let result = replaceIfUnchanged(enhancedText, currentState: currentState)
+            let result = replaceIfUnchanged(
+                enhancedText,
+                currentState: currentState,
+                shouldCancel: shouldCancel
+            )
             if result == .replaced, let clipboardOwnership {
                 _ = updateClipboard(clipboardOwnership, enhancedText + enhancedClipboardSuffix)
             }
@@ -198,10 +208,14 @@ final class ProvisionalTextReplacementSession {
 
     /// Ends the transaction without replacing the raw text. Auto-send callers use this to verify
     /// that the target still contains the exact provisional value and caret after enhancement fails.
-    func finishKeepingOriginal(verifyInsertionAfterCancellation: Bool = false) async -> ReplacementResult {
+    func finishKeepingOriginal(
+        verifyInsertionAfterCancellation: Bool = false,
+        shouldCancel: @escaping @MainActor () -> Bool = { false }
+    ) async -> ReplacementResult {
         defer { stopMonitoring() }
         switch await observePastePropagation(
-            verifyInsertionAfterCancellation: verifyInsertionAfterCancellation
+            verifyInsertionAfterCancellation: verifyInsertionAfterCancellation,
+            shouldCancel: shouldCancel
         ) {
         case .inserted:
             return .originalRetained
@@ -248,9 +262,10 @@ final class ProvisionalTextReplacementSession {
 
     private func replaceIfUnchanged(
         _ enhancedText: String,
-        currentState: RecordingEditableTextState
+        currentState: RecordingEditableTextState,
+        shouldCancel: @escaping @MainActor () -> Bool
     ) -> ReplacementResult {
-        guard !wasCanceledByUser, !Task.isCancelled else { return .canceledByUser }
+        guard !shouldCancel(), !wasCanceledByUser, !Task.isCancelled else { return .canceledByUser }
         guard isExpectedPostInsertionState(currentState) else {
             return .targetChanged
         }
@@ -262,9 +277,10 @@ final class ProvisionalTextReplacementSession {
             expectedPostInsertionValue,
             expectedCaret,
             { [interactionCancellation] in
-                interactionCancellation.isCanceled || Task.isCancelled
+                interactionCancellation.isCanceled || Task.isCancelled || shouldCancel()
             }
         )
+        guard !shouldCancel() else { return .canceledByUser }
         if !didReplace {
             logger.notice("The provisional transcript target did not support a verified replacement")
         }
@@ -285,17 +301,20 @@ final class ProvisionalTextReplacementSession {
     /// while both the full value and selection remain at the exact pre-insertion snapshot.
     private func observePastePropagation(
         verifyInsertionAfterCancellation: Bool = false,
-        verifyInsertionAfterUserInteraction: Bool = false
+        verifyInsertionAfterUserInteraction: Bool = false,
+        shouldCancel: @escaping @MainActor () -> Bool = { false }
     ) async -> PastePropagationResult {
         let clock = ContinuousClock()
         let deadline = clock.now.advanced(by: .milliseconds(300))
         while clock.now < deadline {
+            guard !shouldCancel() else { return .canceledByUser }
             let wasCanceledByUser = self.wasCanceledByUser
             let wasCanceled = wasCanceledByUser || Task.isCancelled
             let shouldVerifyCancellation = verifyInsertionAfterCancellation
                 || (verifyInsertionAfterUserInteraction && wasCanceledByUser)
             if wasCanceled && !shouldVerifyCancellation { return .canceledByUser }
             guard let currentState = readState(target) else { return .unavailable }
+            guard !shouldCancel() else { return .canceledByUser }
             if isExpectedPostInsertionState(currentState) {
                 return wasCanceled ? .canceledByUser : .inserted(currentState)
             }
@@ -313,12 +332,14 @@ final class ProvisionalTextReplacementSession {
             }
         }
 
+        guard !shouldCancel() else { return .canceledByUser }
         let wasCanceledByUser = self.wasCanceledByUser
         let wasCanceled = wasCanceledByUser || Task.isCancelled
         let shouldVerifyCancellation = verifyInsertionAfterCancellation
             || (verifyInsertionAfterUserInteraction && wasCanceledByUser)
         if wasCanceled && !shouldVerifyCancellation { return .canceledByUser }
         guard let currentState = readState(target) else { return .unavailable }
+        guard !shouldCancel() else { return .canceledByUser }
         if isExpectedPostInsertionState(currentState) {
             return wasCanceled ? .canceledByUser : .inserted(currentState)
         }

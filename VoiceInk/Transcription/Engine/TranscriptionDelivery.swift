@@ -11,6 +11,7 @@ final class TranscriptionDelivery {
     typealias CaptureEditableTextState = @MainActor (RecordingInputTarget) -> RecordingEditableTextState?
     typealias CopyToClipboard = @MainActor (String) -> Bool
     typealias NotifyUnavailableTarget = @MainActor () -> Void
+    typealias NotifyInterruptedDelivery = @MainActor () -> Void
     typealias AppendTrailingSpace = @MainActor () -> Bool
     typealias AutoSendScheduler = @MainActor (AutoSendKey, RecordingInputTarget?) -> Void
 
@@ -20,6 +21,7 @@ final class TranscriptionDelivery {
     private let captureEditableTextState: CaptureEditableTextState
     private let copyToClipboard: CopyToClipboard
     private let notifyUnavailableTarget: NotifyUnavailableTarget
+    private let notifyInterruptedDelivery: NotifyInterruptedDelivery
     private let appendTrailingSpace: AppendTrailingSpace
     private let autoSendScheduler: AutoSendScheduler?
 
@@ -43,6 +45,13 @@ final class TranscriptionDelivery {
                 duration: 6.0
             )
         },
+        notifyInterruptedDelivery: @escaping NotifyInterruptedDelivery = {
+            NotificationManager.shared.showNotification(
+                title: String(localized: "Input changed before transcription could be inserted. Transcription remains in VoiceInk history."),
+                type: .warning,
+                duration: 6.0
+            )
+        },
         appendTrailingSpace: @escaping AppendTrailingSpace = {
             UserDefaults.standard.bool(forKey: "AppendTrailingSpace")
         },
@@ -53,6 +62,7 @@ final class TranscriptionDelivery {
         self.captureEditableTextState = captureEditableTextState
         self.copyToClipboard = copyToClipboard
         self.notifyUnavailableTarget = notifyUnavailableTarget
+        self.notifyInterruptedDelivery = notifyInterruptedDelivery
         self.appendTrailingSpace = appendTrailingSpace
         self.autoSendScheduler = autoSendScheduler
     }
@@ -198,7 +208,7 @@ final class TranscriptionDelivery {
             let wasCanceledByUser = replacementSession?.wasCanceledByUser == true
             replacementSession?.stopMonitoring()
             if wasCanceledByUser && !shouldCancel() {
-                copyOriginalToClipboardAfterInteraction(text)
+                reportOriginalNotInsertedAfterInteraction()
                 return ProvisionalPasteResult(
                     wasDelivered: true,
                     didPostPasteCommand: false,
@@ -220,23 +230,27 @@ final class TranscriptionDelivery {
         )
     }
 
-    /// A user interaction makes another automatic paste unsafe. Preserve the raw transcript on the
-    /// clipboard instead, so the user can recover it without changing the newly focused control.
-    func copyOriginalToClipboardAfterInteraction(_ text: String) {
-        let pastedText = text + (appendTrailingSpace() ? " " : "")
-        if copyToClipboard(pastedText) {
-            notifyUnavailableTarget()
-        }
+    /// A user interaction makes another automatic paste and any clipboard overwrite unsafe. The
+    /// raw transcript is still persisted in VoiceInk history, so report that recovery path while
+    /// leaving clipboard content created by the user's interaction untouched.
+    func reportOriginalNotInsertedAfterInteraction() {
+        notifyInterruptedDelivery()
     }
 
     func completeProvisionalDelivery(
         _ session: ProvisionalTextReplacementSession,
         enhancedText: String,
         output: OutputRuntimeConfiguration,
-        inputTarget: RecordingInputTarget
+        inputTarget: RecordingInputTarget,
+        shouldCancel: @escaping @MainActor () -> Bool = { false }
     ) async -> ProvisionalTextReplacementSession.ReplacementResult {
-        let result = await session.replace(with: enhancedText)
-        if result == .replaced, output.outputMode == .paste, output.autoSendKey.isEnabled {
+        let result = await session.replace(with: enhancedText, shouldCancel: shouldCancel)
+        if result == .replaced,
+            !shouldCancel(),
+            !Task.isCancelled,
+            output.outputMode == .paste,
+            output.autoSendKey.isEnabled
+        {
             scheduleAutoSend(output.autoSendKey, inputTarget: inputTarget)
         }
         return result
@@ -251,12 +265,16 @@ final class TranscriptionDelivery {
         output: OutputRuntimeConfiguration,
         inputTarget: RecordingInputTarget,
         didPostPasteCommand: Bool,
-        verifyInsertionAfterCancellation: Bool = false
+        verifyInsertionAfterCancellation: Bool = false,
+        shouldCancel: @escaping @MainActor () -> Bool = { false }
     ) async -> ProvisionalTextReplacementSession.ReplacementResult {
         let result = await session?.finishKeepingOriginal(
-            verifyInsertionAfterCancellation: verifyInsertionAfterCancellation
+            verifyInsertionAfterCancellation: verifyInsertionAfterCancellation,
+            shouldCancel: shouldCancel
         ) ?? .originalRetained
         if !verifyInsertionAfterCancellation,
+            !shouldCancel(),
+            !Task.isCancelled,
             didPostPasteCommand,
             result == .originalRetained,
             output.outputMode == .paste,

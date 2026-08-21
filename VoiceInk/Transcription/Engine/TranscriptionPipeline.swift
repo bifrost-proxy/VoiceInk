@@ -271,12 +271,13 @@ class TranscriptionPipeline {
                                     output: resolvedOutputConfiguration,
                                     inputTarget: inputTarget,
                                     didPostPasteCommand: didPostProvisionalPasteCommand,
-                                    verifyInsertionAfterCancellation: true
+                                    verifyInsertionAfterCancellation: true,
+                                    shouldCancel: shouldCancel
                                 )
                                 if bypassResult == .originalNotInserted {
                                     didDeliverOriginalEarly = false
                                 } else if bypassResult == .originalNotInsertedAfterInteraction {
-                                    delivery.copyOriginalToClipboardAfterInteraction(cleanedText)
+                                    delivery.reportOriginalNotInsertedAfterInteraction()
                                     didDeliverOriginalEarly = true
                                 }
                                 logger.notice(
@@ -295,7 +296,8 @@ class TranscriptionPipeline {
                                     provisionalReplacementSession,
                                     output: resolvedOutputConfiguration,
                                     inputTarget: inputTarget,
-                                    didPostPasteCommand: didPostProvisionalPasteCommand
+                                    didPostPasteCommand: didPostProvisionalPasteCommand,
+                                    shouldCancel: shouldCancel
                                 )
                             }
                             finalText = cleanedText
@@ -318,12 +320,13 @@ class TranscriptionPipeline {
                                         output: resolvedOutputConfiguration,
                                         inputTarget: inputTarget,
                                         didPostPasteCommand: didPostProvisionalPasteCommand,
-                                        verifyInsertionAfterCancellation: true
+                                        verifyInsertionAfterCancellation: true,
+                                        shouldCancel: shouldCancel
                                     )
                                     if bypassResult == .originalNotInserted {
                                         didDeliverOriginalEarly = false
                                     } else if bypassResult == .originalNotInsertedAfterInteraction {
-                                        delivery.copyOriginalToClipboardAfterInteraction(cleanedText)
+                                        delivery.reportOriginalNotInsertedAfterInteraction()
                                         didDeliverOriginalEarly = true
                                     }
                                     logger.notice(
@@ -345,7 +348,8 @@ class TranscriptionPipeline {
                                         provisionalReplacementSession,
                                         enhancedText: enhancedText,
                                         output: resolvedOutputConfiguration,
-                                        inputTarget: inputTarget
+                                        inputTarget: inputTarget,
+                                        shouldCancel: shouldCancel
                                     )
                                     deliveryDuration = (deliveryDuration ?? 0)
                                         + Date().timeIntervalSince(replacementStartedAt)
@@ -353,7 +357,7 @@ class TranscriptionPipeline {
                                         didDeliverOriginalEarly = false
                                         shouldPersistEnhancement = true
                                     } else if replacementResult == .originalNotInsertedAfterInteraction {
-                                        delivery.copyOriginalToClipboardAfterInteraction(cleanedText)
+                                        delivery.reportOriginalNotInsertedAfterInteraction()
                                         didDeliverOriginalEarly = true
                                         shouldPersistEnhancement = false
                                     } else {
@@ -391,12 +395,13 @@ class TranscriptionPipeline {
                                     output: resolvedOutputConfiguration,
                                     inputTarget: inputTarget,
                                     didPostPasteCommand: didPostProvisionalPasteCommand,
-                                    verifyInsertionAfterCancellation: true
+                                    verifyInsertionAfterCancellation: true,
+                                    shouldCancel: shouldCancel
                                 )
                                 if bypassResult == .originalNotInserted {
                                     didDeliverOriginalEarly = false
                                 } else if bypassResult == .originalNotInsertedAfterInteraction {
-                                    delivery.copyOriginalToClipboardAfterInteraction(cleanedText)
+                                    delivery.reportOriginalNotInsertedAfterInteraction()
                                     didDeliverOriginalEarly = true
                                 }
                                 logger.notice(
@@ -412,12 +417,13 @@ class TranscriptionPipeline {
                                     provisionalReplacementSession,
                                     output: resolvedOutputConfiguration,
                                     inputTarget: inputTarget,
-                                    didPostPasteCommand: didPostProvisionalPasteCommand
+                                    didPostPasteCommand: didPostProvisionalPasteCommand,
+                                    shouldCancel: shouldCancel
                                 )
                                 if fallbackResult == .originalNotInserted {
                                     didDeliverOriginalEarly = false
                                 } else if fallbackResult == .originalNotInsertedAfterInteraction {
-                                    delivery.copyOriginalToClipboardAfterInteraction(cleanedText)
+                                    delivery.reportOriginalNotInsertedAfterInteraction()
                                     didDeliverOriginalEarly = true
                                 }
                                 logger.notice(
