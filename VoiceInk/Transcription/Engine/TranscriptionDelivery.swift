@@ -225,9 +225,13 @@ final class TranscriptionDelivery {
         SoundManager.shared.playStopSound()
         await actions.dismiss()
 
-        if let inputTarget,
-            await restoreInputTarget(inputTarget) == .unavailable
-        {
+        let initialRestoration = if let inputTarget {
+            await restoreInputTarget(inputTarget)
+        } else {
+            RecordingInputTargetRestoration.restored
+        }
+
+        if initialRestoration == .unavailable {
             if copyToClipboard(pastedText) {
                 notifyUnavailableTarget()
             }
@@ -237,17 +241,24 @@ final class TranscriptionDelivery {
         let pasteResult = await pasteAtCursor(pastedText)
 
         let autoSendKey = output.outputMode == .paste ? output.autoSendKey : .none
-        if autoSendKey.isEnabled, pasteResult == .commandPosted {
+        if autoSendKey.isEnabled,
+            pasteResult == .commandPosted,
+            Self.canAutoSend(after: initialRestoration)
+        {
             Task { @MainActor [restoreInputTarget] in
                 try? await Task.sleep(nanoseconds: 500_000_000)
                 if let inputTarget,
-                    await restoreInputTarget(inputTarget) == .unavailable
+                    !Self.canAutoSend(after: await restoreInputTarget(inputTarget))
                 {
                     return
                 }
                 CursorPaster.performAutoSend(autoSendKey)
             }
         }
+    }
+
+    static func canAutoSend(after restoration: RecordingInputTargetRestoration) -> Bool {
+        restoration == .restored
     }
 
 }

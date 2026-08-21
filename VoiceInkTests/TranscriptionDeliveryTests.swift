@@ -35,6 +35,12 @@ private final class PasteCommandGate {
 
 @MainActor
 struct TranscriptionDeliveryTests {
+    @Test func autoSendRequiresExactInputRestoration() {
+        #expect(TranscriptionDelivery.canAutoSend(after: .restored))
+        #expect(!TranscriptionDelivery.canAutoSend(after: .focusedWindow))
+        #expect(!TranscriptionDelivery.canAutoSend(after: .unavailable))
+    }
+
     @Test func skippingEnhancementPastesOriginalTextWithoutAutoSend() async {
         let defaults = UserDefaults.standard
         let previousAppendSpace = defaults.object(forKey: "AppendTrailingSpace")
