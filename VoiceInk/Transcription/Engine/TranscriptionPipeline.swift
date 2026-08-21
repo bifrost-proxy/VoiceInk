@@ -258,6 +258,13 @@ class TranscriptionPipeline {
                                 logger.notice(
                                     "AI enhancement skipped because the provisional transcript cannot be safely replaced"
                                 )
+                                if let inputTarget {
+                                    delivery.finishProvisionalDeliveryWithoutEnhancement(
+                                        provisionalReplacementSession,
+                                        output: resolvedOutputConfiguration,
+                                        inputTarget: inputTarget
+                                    )
+                                }
                             }
                             finalText = cleanedText
                         } else {
@@ -307,10 +314,20 @@ class TranscriptionPipeline {
                             }
                         }
                     } catch {
-                        provisionalReplacementSession?.stopMonitoring()
                         if shouldBypassEnhancement() {
+                            provisionalReplacementSession?.stopMonitoring()
                             finalText = cleanedText
                         } else {
+                            if didDeliverOriginalEarly, let inputTarget {
+                                let fallbackResult = delivery.finishProvisionalDeliveryWithoutEnhancement(
+                                    provisionalReplacementSession,
+                                    output: resolvedOutputConfiguration,
+                                    inputTarget: inputTarget
+                                )
+                                logger.notice(
+                                    "Provisional transcript enhancement failure result=\(String(describing: fallbackResult), privacy: .public)"
+                                )
+                            }
                             let errorDescription = EnhancementFailureFormatter.description(for: error)
                             let failureMessage = EnhancementFailureFormatter.message(description: errorDescription)
                             transcription.enhancedText = failureMessage

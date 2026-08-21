@@ -7,6 +7,7 @@ import Testing
 struct ProvisionalTextReplacementSessionTests {
     @Test func onlySuccessfulReplacementPersistsEnhancement() {
         #expect(ProvisionalTextReplacementSession.ReplacementResult.replaced.shouldPersistEnhancement)
+        #expect(!ProvisionalTextReplacementSession.ReplacementResult.originalRetained.shouldPersistEnhancement)
         #expect(!ProvisionalTextReplacementSession.ReplacementResult.canceledByUser.shouldPersistEnhancement)
         #expect(!ProvisionalTextReplacementSession.ReplacementResult.targetChanged.shouldPersistEnhancement)
         #expect(!ProvisionalTextReplacementSession.ReplacementResult.unavailable.shouldPersistEnhancement)
@@ -42,7 +43,8 @@ struct ProvisionalTextReplacementSessionTests {
             replacementText: rawText,
             startMonitoring: false,
             readState: { _ in currentState },
-            replaceText: { _, range, replacement, expectedValue, _ in
+            replaceText: { _, range, replacement, expectedValue, _, shouldCancel in
+                guard !shouldCancel() else { return false }
                 replacedRange = range
                 currentState = RecordingEditableTextState(
                     value: (expectedValue as NSString).replacingCharacters(
@@ -75,7 +77,7 @@ struct ProvisionalTextReplacementSessionTests {
                 value: "prefix raw suffix",
                 selectedTextRange: CFRange(location: 10, length: 0)
             ),
-            replaceText: { _, _, _, _, _ in
+            replaceText: { _, _, _, _, _, _ in
                 replacementCount += 1
                 return true
             },
@@ -98,7 +100,7 @@ struct ProvisionalTextReplacementSessionTests {
                 value: "prefix raw plus user edit suffix",
                 selectedTextRange: CFRange(location: 10, length: 0)
             ),
-            replaceText: { _, _, _, _, _ in
+            replaceText: { _, _, _, _, _, _ in
                 replacementCount += 1
                 return true
             }
@@ -117,7 +119,7 @@ struct ProvisionalTextReplacementSessionTests {
                 value: "prefix raw suffix",
                 selectedTextRange: CFRange(location: 0, length: 0)
             ),
-            replaceText: { _, _, _, _, _ in
+            replaceText: { _, _, _, _, _, _ in
                 replacementCount += 1
                 return true
             }
@@ -126,6 +128,30 @@ struct ProvisionalTextReplacementSessionTests {
         let result = await session.replace(with: "enhanced")
 
         #expect(result == .targetChanged)
+        #expect(replacementCount == 0)
+    }
+
+    @Test func taskCancellationStopsThePastePropagationWait() async throws {
+        var replacementCount = 0
+        let session = try #require(makeSession(
+            currentState: RecordingEditableTextState(
+                value: "prefix suffix",
+                selectedTextRange: CFRange(location: 7, length: 0)
+            ),
+            replaceText: { _, _, _, _, _, _ in
+                replacementCount += 1
+                return true
+            }
+        ))
+
+        let replacementTask = Task { @MainActor in
+            await session.replace(with: "enhanced")
+        }
+        await Task.yield()
+        replacementTask.cancel()
+
+        let result = await replacementTask.value
+        #expect(result == .canceledByUser)
         #expect(replacementCount == 0)
     }
 

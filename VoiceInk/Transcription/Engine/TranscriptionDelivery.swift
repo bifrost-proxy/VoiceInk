@@ -8,6 +8,8 @@ final class TranscriptionDelivery {
     typealias CaptureEditableTextState = @MainActor (RecordingInputTarget) -> RecordingEditableTextState?
     typealias CopyToClipboard = @MainActor (String) -> Bool
     typealias NotifyUnavailableTarget = @MainActor () -> Void
+    typealias AppendTrailingSpace = @MainActor () -> Bool
+    typealias AutoSendScheduler = @MainActor (AutoSendKey, RecordingInputTarget?) -> Void
 
     private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "TranscriptionDelivery")
     private let pasteAtCursor: PasteAtCursor
@@ -15,6 +17,8 @@ final class TranscriptionDelivery {
     private let captureEditableTextState: CaptureEditableTextState
     private let copyToClipboard: CopyToClipboard
     private let notifyUnavailableTarget: NotifyUnavailableTarget
+    private let appendTrailingSpace: AppendTrailingSpace
+    private let autoSendScheduler: AutoSendScheduler?
 
     init(
         pasteAtCursor: @escaping PasteAtCursor = { text in
@@ -35,13 +39,19 @@ final class TranscriptionDelivery {
                 type: .warning,
                 duration: 6.0
             )
-        }
+        },
+        appendTrailingSpace: @escaping AppendTrailingSpace = {
+            UserDefaults.standard.bool(forKey: "AppendTrailingSpace")
+        },
+        autoSendScheduler: AutoSendScheduler? = nil
     ) {
         self.pasteAtCursor = pasteAtCursor
         self.restoreInputTarget = restoreInputTarget
         self.captureEditableTextState = captureEditableTextState
         self.copyToClipboard = copyToClipboard
         self.notifyUnavailableTarget = notifyUnavailableTarget
+        self.appendTrailingSpace = appendTrailingSpace
+        self.autoSendScheduler = autoSendScheduler
     }
 
     struct Request {
@@ -110,7 +120,7 @@ final class TranscriptionDelivery {
         dismiss: @escaping () async -> Void,
         onUserInteraction: @escaping @MainActor () -> Void
     ) async -> ProvisionalPasteResult {
-        let appendSpace = UserDefaults.standard.bool(forKey: "AppendTrailingSpace")
+        let appendSpace = appendTrailingSpace()
         let trailingText = appendSpace ? " " : ""
         let pastedText = text + trailingText
 
@@ -151,6 +161,25 @@ final class TranscriptionDelivery {
     ) async -> ProvisionalTextReplacementSession.ReplacementResult {
         let result = await session.replace(with: enhancedText)
         if result == .replaced, output.outputMode == .paste, output.autoSendKey.isEnabled {
+            scheduleAutoSend(output.autoSendKey, inputTarget: inputTarget)
+        }
+        return result
+    }
+
+    /// Keeps an already-inserted raw transcript when enhancement is skipped or fails. When a
+    /// replacement session exists, auto-send is allowed only if the exact raw value and caret are
+    /// still unchanged and no user interaction canceled the transaction.
+    @discardableResult
+    func finishProvisionalDeliveryWithoutEnhancement(
+        _ session: ProvisionalTextReplacementSession?,
+        output: OutputRuntimeConfiguration,
+        inputTarget: RecordingInputTarget
+    ) -> ProvisionalTextReplacementSession.ReplacementResult {
+        let result = session?.finishKeepingOriginal() ?? .originalRetained
+        if result == .originalRetained,
+            output.outputMode == .paste,
+            output.autoSendKey.isEnabled
+        {
             scheduleAutoSend(output.autoSendKey, inputTarget: inputTarget)
         }
         return result
@@ -293,7 +322,7 @@ final class TranscriptionDelivery {
         inputTarget: RecordingInputTarget?,
         actions: Actions
     ) async {
-        let appendSpace = UserDefaults.standard.bool(forKey: "AppendTrailingSpace")
+        let appendSpace = appendTrailingSpace()
         let pastedText = text + (appendSpace ? " " : "")
         SoundManager.shared.playStopSound()
         await actions.dismiss()
@@ -316,6 +345,10 @@ final class TranscriptionDelivery {
     }
 
     private func scheduleAutoSend(_ key: AutoSendKey, inputTarget: RecordingInputTarget?) {
+        if let autoSendScheduler {
+            autoSendScheduler(key, inputTarget)
+            return
+        }
         Task { @MainActor [restoreInputTarget] in
             try? await Task.sleep(nanoseconds: 500_000_000)
             if let inputTarget,

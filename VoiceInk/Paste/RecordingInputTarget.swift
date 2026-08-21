@@ -145,6 +145,7 @@ enum RecordingInputTargetService {
 
         let applicationElement = AXUIElementCreateApplication(target.processID)
         guard isFocused(target.element, in: applicationElement),
+            isPlainTextElement(target.element),
             let value = copyStringAttribute(kAXValueAttribute, from: target.element),
             let selectedTextRange = copyRangeAttribute(kAXSelectedTextRangeAttribute, from: target.element),
             isValid(selectedTextRange, in: value)
@@ -163,9 +164,11 @@ enum RecordingInputTargetService {
         range: CFRange,
         with replacement: String,
         expectedCurrentValue: String,
-        fallbackCaret: CFRange
+        fallbackCaret: CFRange,
+        shouldCancel: @escaping @Sendable () -> Bool = { false }
     ) -> Bool {
-        guard let currentState = editableTextState(for: target),
+        guard !shouldCancel(),
+            let currentState = editableTextState(for: target),
             currentState.value == expectedCurrentValue,
             currentState.selectedTextRange.location == fallbackCaret.location,
             currentState.selectedTextRange.length == fallbackCaret.length,
@@ -181,6 +184,10 @@ enum RecordingInputTargetService {
             in: NSRange(location: range.location, length: range.length),
             with: replacement
         )
+        // The event monitor marks cancellation synchronously off the main actor. Recheck at the
+        // last possible point before the non-atomic AX full-value write so a queued interaction
+        // cannot overwrite newer user input while waiting for its MainActor callback.
+        guard !shouldCancel() else { return false }
         let valueWriteResult = AXUIElementSetAttributeValue(
             target.element,
             kAXValueAttribute as CFString,
@@ -190,6 +197,13 @@ enum RecordingInputTargetService {
             copyStringAttribute(kAXValueAttribute, from: target.element) == expectedValue
         else {
             _ = restoreEditableTextState(currentState, on: target.element)
+            return false
+        }
+
+        if shouldCancel() {
+            if copyStringAttribute(kAXValueAttribute, from: target.element) == expectedValue {
+                _ = restoreEditableTextState(currentState, on: target.element)
+            }
             return false
         }
 
