@@ -255,11 +255,11 @@ struct VoiceInkTests {
         let mutations = [
             VoiceInkSyncMutation(
                 key: "preference/first",
-                value: Data(repeating: 0x3c, count: 4 * 1_024 * 1_024)
+                value: Data(repeating: 0x3c, count: 3 * 1_024 * 1_024)
             ),
             VoiceInkSyncMutation(
                 key: "preference/second",
-                value: Data(repeating: 0x4d, count: 4 * 1_024 * 1_024)
+                value: Data(repeating: 0x4d, count: 3 * 1_024 * 1_024)
             ),
         ]
 
