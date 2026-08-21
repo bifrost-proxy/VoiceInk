@@ -13,6 +13,51 @@ struct ProvisionalTextReplacementSessionTests {
         #expect(!ProvisionalTextReplacementSession.ReplacementResult.unavailable.shouldPersistEnhancement)
     }
 
+    @Test func rollbackOwnershipRejectsCancellationAndConcurrentEdits() {
+        let transactionState = RecordingEditableTextState(
+            value: "prefix enhanced suffix",
+            selectedTextRange: CFRange(location: 15, length: 0)
+        )
+        let expectedRanges = [CFRange(location: 15, length: 0)]
+        #expect(RecordingInputTargetService.ownsProvisionalReplacementState(
+            transactionState,
+            expectedTransactionValue: "prefix enhanced suffix",
+            transactionSelectionRanges: expectedRanges,
+            isCanceled: false
+        ))
+        #expect(!RecordingInputTargetService.ownsProvisionalReplacementState(
+            RecordingEditableTextState(
+                value: "prefix enhanced plus user edit suffix",
+                selectedTextRange: CFRange(location: 15, length: 0)
+            ),
+            expectedTransactionValue: "prefix enhanced suffix",
+            transactionSelectionRanges: expectedRanges,
+            isCanceled: false
+        ))
+        #expect(!RecordingInputTargetService.ownsProvisionalReplacementState(
+            RecordingEditableTextState(
+                value: "prefix enhanced suffix",
+                selectedTextRange: CFRange(location: 2, length: 0)
+            ),
+            expectedTransactionValue: "prefix enhanced suffix",
+            transactionSelectionRanges: expectedRanges,
+            isCanceled: false
+        ))
+        #expect(!RecordingInputTargetService.ownsProvisionalReplacementState(
+            transactionState,
+            expectedTransactionValue: "prefix enhanced suffix",
+            transactionSelectionRanges: expectedRanges,
+            isCanceled: true
+        ))
+        #expect(RecordingInputTargetService.ownsProvisionalReplacementState(
+            transactionState,
+            expectedTransactionValue: "prefix enhanced suffix",
+            transactionSelectionRanges: expectedRanges,
+            isCanceled: true,
+            permitObservedCancellation: true
+        ))
+    }
+
     @Test func replacesOnlyOriginalUTF16RangeAndPreservesSurroundingText() async throws {
         let originalValue = "前😀被选中后"
         let selectedRange = (originalValue as NSString).range(of: "被选中")

@@ -196,14 +196,25 @@ enum RecordingInputTargetService {
         guard valueWriteResult == .success,
             copyStringAttribute(kAXValueAttribute, from: target.element) == expectedValue
         else {
-            _ = restoreEditableTextState(currentState, on: target.element)
+            _ = restoreEditableTextStateIfOwned(
+                currentState,
+                transactionValue: expectedValue,
+                transactionSelectionRanges: [fallbackCaret],
+                on: target.element,
+                shouldCancel: shouldCancel
+            )
             return false
         }
 
         if shouldCancel() {
-            if copyStringAttribute(kAXValueAttribute, from: target.element) == expectedValue {
-                _ = restoreEditableTextState(currentState, on: target.element)
-            }
+            _ = restoreEditableTextStateIfOwned(
+                currentState,
+                transactionValue: expectedValue,
+                transactionSelectionRanges: [fallbackCaret],
+                on: target.element,
+                shouldCancel: shouldCancel,
+                permitObservedCancellation: true
+            )
             return false
         }
 
@@ -213,9 +224,15 @@ enum RecordingInputTargetService {
             length: 0
         )
         guard setRange(finalCaret, on: target.element) else {
-            let didRollback = restoreEditableTextState(currentState, on: target.element)
+            let didRollback = restoreEditableTextStateIfOwned(
+                currentState,
+                transactionValue: expectedValue,
+                transactionSelectionRanges: [fallbackCaret, finalCaret],
+                on: target.element,
+                shouldCancel: shouldCancel
+            )
             if !didRollback {
-                logger.error("Failed to roll back a provisional text replacement after caret restoration failed")
+                logger.notice("Skipped provisional replacement rollback because the target changed")
             }
             return false
         }
@@ -299,10 +316,31 @@ enum RecordingInputTargetService {
         return actualRange.location == range.location && actualRange.length == range.length
     }
 
-    private static func restoreEditableTextState(
+    /// A failed AX operation may race with a user edit. Roll back only while the target still
+    /// contains the value written by this transaction; otherwise the newer value belongs to the
+    /// user (or another editor) and must not be overwritten with the stale pre-write snapshot.
+    private static func restoreEditableTextStateIfOwned(
         _ state: RecordingEditableTextState,
-        on element: AXUIElement
+        transactionValue: String,
+        transactionSelectionRanges: [CFRange],
+        on element: AXUIElement,
+        shouldCancel: @escaping @Sendable () -> Bool,
+        permitObservedCancellation: Bool = false
     ) -> Bool {
+        guard ownsProvisionalReplacementState(
+            editableTextStateForRollback(on: element),
+            expectedTransactionValue: transactionValue,
+            transactionSelectionRanges: transactionSelectionRanges,
+            isCanceled: shouldCancel(),
+            permitObservedCancellation: permitObservedCancellation
+        ) else {
+            return false
+        }
+
+        // Keep the cancellation check adjacent to the rollback write for the same reason as the
+        // forward write above. The explicit post-write cancellation path is the sole exception:
+        // it may restore raw text only while both value and selection are still transaction-owned.
+        guard permitObservedCancellation || !shouldCancel() else { return false }
         guard AXUIElementSetAttributeValue(
             element,
             kAXValueAttribute as CFString,
@@ -313,6 +351,38 @@ enum RecordingInputTargetService {
             return false
         }
         return setRange(state.selectedTextRange, on: element)
+    }
+
+    static func ownsProvisionalReplacementState(
+        _ currentState: RecordingEditableTextState?,
+        expectedTransactionValue: String,
+        transactionSelectionRanges: [CFRange],
+        isCanceled: Bool,
+        permitObservedCancellation: Bool = false
+    ) -> Bool {
+        guard permitObservedCancellation || !isCanceled,
+            let currentState,
+            currentState.value == expectedTransactionValue
+        else {
+            return false
+        }
+        return transactionSelectionRanges.contains {
+            $0.location == currentState.selectedTextRange.location
+                && $0.length == currentState.selectedTextRange.length
+        }
+    }
+
+    /// Rollback runs only after the caller has already validated focus, role, and writability.
+    /// Re-read the two mutable attributes without re-querying the process so value and selection
+    /// ownership are checked together immediately before the compensating write.
+    private static func editableTextStateForRollback(on element: AXUIElement) -> RecordingEditableTextState? {
+        guard let value = copyStringAttribute(kAXValueAttribute, from: element),
+            let selectedTextRange = copyRangeAttribute(kAXSelectedTextRangeAttribute, from: element),
+            isValid(selectedTextRange, in: value)
+        else {
+            return nil
+        }
+        return RecordingEditableTextState(value: value, selectedTextRange: selectedTextRange)
     }
 
     private static func isValid(_ range: CFRange, in value: String) -> Bool {
