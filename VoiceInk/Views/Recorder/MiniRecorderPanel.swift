@@ -1,10 +1,7 @@
 import AppKit
 import SwiftUI
 
-class MiniRecorderPanel: NSPanel {
-    override var canBecomeKey: Bool { true }
-    override var canBecomeMain: Bool { true }
-
+class MiniRecorderPanel: RecorderOverlayPanel {
     init(contentRect: NSRect) {
         super.init(
             contentRect: contentRect,
@@ -16,16 +13,6 @@ class MiniRecorderPanel: NSPanel {
     }
 
     private func configurePanel() {
-        isFloatingPanel = true
-        canHide = false
-        level = .floating
-        hidesOnDeactivate = false
-        collectionBehavior = [
-            .canJoinAllSpaces,
-            .fullScreenAuxiliary,
-            .stationary,
-            .ignoresCycle,
-        ]
         isMovable = true
         isMovableByWindowBackground = true
         backgroundColor = .clear
@@ -35,12 +22,6 @@ class MiniRecorderPanel: NSPanel {
         titleVisibility = .hidden
         standardWindowButton(.closeButton)?.isHidden = true
 
-        NSWorkspace.shared.notificationCenter.addObserver(
-            self,
-            selector: #selector(handleActiveSpaceChange),
-            name: NSWorkspace.activeSpaceDidChangeNotification,
-            object: nil
-        )
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(handleScreenParametersChange),
@@ -57,29 +38,18 @@ class MiniRecorderPanel: NSPanel {
     }
 
     func show() {
-        let metrics = MiniRecorderPanel.calculateWindowMetrics()
-        setFrame(metrics, display: true)
-        orderFrontRegardless()
-    }
-
-    @objc private func handleActiveSpaceChange() {
-        reanchorIfVisible(after: 0.12)
+        presentRecorderOverlay()
     }
 
     @objc private func handleScreenParametersChange() {
-        reanchorIfVisible(after: 0.1)
+        reassertRecorderOverlay(after: 0.1)
     }
 
-    private func reanchorIfVisible(after delay: TimeInterval) {
-        guard isVisible else { return }
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-            guard let self, self.isVisible else { return }
-            self.setFrame(MiniRecorderPanel.calculateWindowMetrics(), display: true)
-        }
+    override func prepareRecorderOverlayForPresentation() {
+        setFrame(MiniRecorderPanel.calculateWindowMetrics(), display: true)
     }
 
     deinit {
-        NSWorkspace.shared.notificationCenter.removeObserver(self)
         NotificationCenter.default.removeObserver(self)
     }
 

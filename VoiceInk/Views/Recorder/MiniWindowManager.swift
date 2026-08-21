@@ -36,7 +36,7 @@ class MiniWindowManager {
     }
 
     func hide() {
-        panel?.orderOut(nil)
+        panel?.dismissRecorderOverlay()
     }
 
     func destroyWindow() {
@@ -55,7 +55,7 @@ class MiniWindowManager {
     }
 
     private func deinitializeWindow() {
-        panel?.orderOut(nil)
+        panel?.dismissRecorderOverlay()
         windowController?.close()
         windowController = nil
         panel = nil

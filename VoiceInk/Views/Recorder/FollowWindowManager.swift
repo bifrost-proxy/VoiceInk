@@ -37,11 +37,11 @@ final class FollowWindowManager {
     }
 
     func hide() {
-        panel?.orderOut(nil)
+        panel?.dismissRecorderOverlay()
     }
 
     func destroyWindow() {
-        panel?.orderOut(nil)
+        panel?.dismissRecorderOverlay()
         windowController?.close()
         windowController = nil
         panel = nil
@@ -61,7 +61,7 @@ final class FollowWindowManager {
     }
 }
 
-final class FollowRecorderPanel: NSPanel {
+final class FollowRecorderPanel: RecorderOverlayPanel {
     /// Reserve room for the widest and tallest supported recorder presentation
     /// before showing the compact control bar. This keeps a recorder opened
     /// near a bottom-aligned input from growing back across that input when
@@ -74,9 +74,6 @@ final class FollowRecorderPanel: NSPanel {
     private(set) var usesManualPlacement = false
     private var isApplyingManagedFrame = false
 
-    override var canBecomeKey: Bool { true }
-    override var canBecomeMain: Bool { true }
-
     override init(contentRect: NSRect, styleMask: NSWindow.StyleMask, backing backingType: NSWindow.BackingStoreType, defer flag: Bool) {
         super.init(
             contentRect: contentRect,
@@ -84,11 +81,6 @@ final class FollowRecorderPanel: NSPanel {
             backing: backingType,
             defer: flag
         )
-        isFloatingPanel = true
-        canHide = false
-        level = .floating
-        hidesOnDeactivate = false
-        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
         isMovable = true
         isMovableByWindowBackground = true
         backgroundColor = .clear
@@ -126,8 +118,7 @@ final class FollowRecorderPanel: NSPanel {
         self.anchor = anchor
         usesManualPlacement = false
         choosePreferredCorner(reserving: Self.expandedPresentationSize)
-        applyPlacement()
-        orderFrontRegardless()
+        presentRecorderOverlay()
     }
 
     func updateContentSize(_ size: CGSize) {
@@ -143,15 +134,15 @@ final class FollowRecorderPanel: NSPanel {
     }
 
     @objc private func handleScreenParametersChange() {
-        guard isVisible else { return }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
-            guard let self else { return }
-            if self.usesManualPlacement {
-                self.applyManualPlacement()
-            } else {
-                self.choosePreferredCorner(reserving: Self.expandedPresentationSize)
-                self.applyPlacement()
-            }
+        reassertRecorderOverlay(after: 0.1)
+    }
+
+    override func prepareRecorderOverlayForPresentation() {
+        if usesManualPlacement {
+            applyManualPlacement()
+        } else {
+            choosePreferredCorner(reserving: Self.expandedPresentationSize)
+            applyPlacement()
         }
     }
 
