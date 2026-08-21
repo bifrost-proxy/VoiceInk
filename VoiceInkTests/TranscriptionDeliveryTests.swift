@@ -35,6 +35,45 @@ private final class PasteCommandGate {
 
 @MainActor
 struct TranscriptionDeliveryTests {
+    @Test func provisionalDeliveryPastesRawTextBeforeEnhancementCanComplete() async throws {
+        let defaults = UserDefaults.standard
+        let previousAppendSpace = defaults.object(forKey: "AppendTrailingSpace")
+        defer {
+            restore(previousAppendSpace, forKey: "AppendTrailingSpace", in: defaults)
+        }
+        defaults.set(true, forKey: "AppendTrailingSpace")
+
+        var events: [String] = []
+        let delivery = TranscriptionDelivery(
+            pasteAtCursor: { text in
+                events.append("pasted:\(text)")
+                return .commandPosted
+            },
+            restoreInputTarget: { _ in
+                events.append("restored")
+                return .restored
+            },
+            captureEditableTextState: { _ in
+                RecordingEditableTextState(
+                    value: "prefix suffix",
+                    selectedTextRange: CFRange(location: 7, length: 0)
+                )
+            }
+        )
+
+        let result = await delivery.deliverOriginalProvisionally(
+            "raw",
+            inputTarget: makeInputTarget(),
+            dismiss: { events.append("dismissed") },
+            onUserInteraction: {}
+        )
+        result.replacementSession?.stopMonitoring()
+
+        #expect(result.wasDelivered)
+        #expect(result.replacementSession != nil)
+        #expect(events == ["dismissed", "restored", "pasted:raw "])
+    }
+
     @Test func skippingEnhancementPastesOriginalTextWithoutAutoSend() async {
         let defaults = UserDefaults.standard
         let previousAppendSpace = defaults.object(forKey: "AppendTrailingSpace")

@@ -64,6 +64,8 @@ class TranscriptionPipeline {
         onStateChange: @escaping (RecordingState) -> Void,
         shouldCancel: () -> Bool,
         shouldBypassEnhancement: () -> Bool = { false },
+        onProvisionalDeliveryWillBegin: @escaping () -> Void = {},
+        onProvisionalInteraction: @escaping () -> Void = {},
         onCancel: @escaping () async -> Void,
         onDismiss: @escaping () async -> Void,
         assistant: AssistantHooks = .inactive
@@ -77,6 +79,13 @@ class TranscriptionPipeline {
         var responseConfig: EnhancementRuntimeConfiguration?
         var postProcessingDuration: TimeInterval?
         var deliveryDuration: TimeInterval?
+        var didAttemptProvisionalDelivery = false
+        var didDeliverOriginalEarly = false
+        var provisionalReplacementSession: ProvisionalTextReplacementSession?
+
+        defer {
+            provisionalReplacementSession?.stopMonitoring()
+        }
 
         func finishCanceledTranscription() async {
             await onCancel()
@@ -222,6 +231,22 @@ class TranscriptionPipeline {
                         await assistant.startResponse(textForAI, resolvedEnhancementConfiguration)
                     }
 
+                    if !shouldRespondInRecorder,
+                        resolvedOutputConfiguration.outputMode == .paste,
+                        let inputTarget
+                    {
+                        didAttemptProvisionalDelivery = true
+                        onProvisionalDeliveryWillBegin()
+                        let provisionalResult = await delivery.deliverOriginalProvisionally(
+                            cleanedText,
+                            inputTarget: inputTarget,
+                            dismiss: onDismiss,
+                            onUserInteraction: onProvisionalInteraction
+                        )
+                        didDeliverOriginalEarly = provisionalResult.wasDelivered
+                        provisionalReplacementSession = provisionalResult.replacementSession
+                    }
+
                     do {
                         let contextSnapshot = await recordingContextSnapshot()
                         if shouldBypassEnhancement() {
@@ -244,9 +269,25 @@ class TranscriptionPipeline {
                                 transcription.aiRequestSystemMessage = enhancementService.lastSystemMessageSent
                                 transcription.aiRequestUserMessage = enhancementService.lastUserMessageSent
                                 finalText = enhancedText
+
+                                if didDeliverOriginalEarly,
+                                    let provisionalReplacementSession,
+                                    let inputTarget
+                                {
+                                    let replacementResult = await delivery.completeProvisionalDelivery(
+                                        provisionalReplacementSession,
+                                        enhancedText: enhancedText,
+                                        output: resolvedOutputConfiguration,
+                                        inputTarget: inputTarget
+                                    )
+                                    logger.notice(
+                                        "Provisional transcript completion result=\(String(describing: replacementResult), privacy: .public)"
+                                    )
+                                }
                             }
                         }
                     } catch {
+                        provisionalReplacementSession?.stopMonitoring()
                         if shouldBypassEnhancement() {
                             finalText = cleanedText
                         } else {
@@ -339,15 +380,27 @@ class TranscriptionPipeline {
             return
         }
 
-        if !shouldBypassEnhancement() {
+        let isEnhancementBypassed = shouldBypassEnhancement()
+        if !didDeliverOriginalEarly && (!isEnhancementBypassed || didAttemptProvisionalDelivery) {
+            let resolvedDeliveryOutput: OutputRuntimeConfiguration
+            if isEnhancementBypassed {
+                resolvedDeliveryOutput = OutputRuntimeConfiguration(
+                    mode: nil,
+                    outputMode: .paste,
+                    autoSendKey: .none,
+                    customCommand: nil
+                )
+            } else {
+                resolvedDeliveryOutput = outputForDelivery ?? outputConfiguration()
+            }
             let deliveryStartedAt = Date()
             await delivery.deliver(
                 TranscriptionDelivery.Request(
                     transcription: transcription,
                     text: finalText,
-                    output: outputForDelivery ?? outputConfiguration(),
-                    responseConfig: responseConfig,
-                    responseError: responseError,
+                    output: resolvedDeliveryOutput,
+                    responseConfig: isEnhancementBypassed ? nil : responseConfig,
+                    responseError: isEnhancementBypassed ? nil : responseError,
                     isAssistantFollowUp: assistant.isFollowUp,
                     inputTarget: inputTarget
                 ),

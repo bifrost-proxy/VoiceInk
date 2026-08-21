@@ -16,6 +16,17 @@ struct RecordingInputTarget {
     let selectedTextRange: CFRange?
 }
 
+struct RecordingEditableTextState: Equatable {
+    let value: String
+    let selectedTextRange: CFRange
+
+    static func == (lhs: RecordingEditableTextState, rhs: RecordingEditableTextState) -> Bool {
+        lhs.value == rhs.value
+            && lhs.selectedTextRange.location == rhs.selectedTextRange.location
+            && lhs.selectedTextRange.length == rhs.selectedTextRange.length
+    }
+}
+
 enum RecordingInputTargetRestoration: Equatable {
     case restored
     case unavailable
@@ -120,6 +131,71 @@ enum RecordingInputTargetService {
         return .restored
     }
 
+    /// Returns a plain-text snapshot only while the original input is still the focused control.
+    /// Callers must treat the value as ephemeral and must never persist or log it.
+    static func editableTextState(for target: RecordingInputTarget) -> RecordingEditableTextState? {
+        guard AXIsProcessTrusted(),
+            NSWorkspace.shared.frontmostApplication?.processIdentifier == target.processID,
+            let application = NSRunningApplication(processIdentifier: target.processID),
+            !application.isTerminated,
+            target.bundleIdentifier == nil || application.bundleIdentifier == target.bundleIdentifier
+        else {
+            return nil
+        }
+
+        let applicationElement = AXUIElementCreateApplication(target.processID)
+        guard isFocused(target.element, in: applicationElement),
+            let value = copyStringAttribute(kAXValueAttribute, from: target.element),
+            let selectedTextRange = copyRangeAttribute(kAXSelectedTextRangeAttribute, from: target.element),
+            isValid(selectedTextRange, in: value)
+        else {
+            return nil
+        }
+
+        return RecordingEditableTextState(value: value, selectedTextRange: selectedTextRange)
+    }
+
+    /// Replaces a verified range by writing one reconstructed plain-text value. AXSelectedText is
+    /// read-only on macOS, so this is enabled only when AXValue itself is writable. The caller must
+    /// compare the complete current value and selection immediately before invoking this method.
+    static func replaceTextValue(
+        in target: RecordingInputTarget,
+        range: CFRange,
+        with replacement: String,
+        expectedCurrentValue: String,
+        fallbackCaret: CFRange
+    ) -> Bool {
+        guard let currentState = editableTextState(for: target),
+            currentState.value == expectedCurrentValue,
+            isValid(range, in: expectedCurrentValue),
+            isAttributeSettable(kAXValueAttribute, on: target.element),
+            isAttributeSettable(kAXSelectedTextRangeAttribute, on: target.element)
+        else {
+            return false
+        }
+
+        let expectedValue = (expectedCurrentValue as NSString).replacingCharacters(
+            in: NSRange(location: range.location, length: range.length),
+            with: replacement
+        )
+        guard AXUIElementSetAttributeValue(
+            target.element,
+            kAXValueAttribute as CFString,
+            expectedValue as CFString
+        ) == .success,
+            copyStringAttribute(kAXValueAttribute, from: target.element) == expectedValue
+        else {
+            return false
+        }
+
+        let trailingLength = max(0, fallbackCaret.location - (range.location + range.length))
+        let finalCaret = CFRange(
+            location: range.location + (replacement as NSString).length + trailingLength,
+            length: 0
+        )
+        return setRange(finalCaret, on: target.element)
+    }
+
     private static func restoreSelectionIfSupported(_ range: CFRange?, on element: AXUIElement) -> Bool {
         guard var range else { return true }
         var isSettable = DarwinBoolean(false)
@@ -145,6 +221,29 @@ enum RecordingInputTargetService {
             return false
         }
         return restoredRange.location == range.location && restoredRange.length == range.length
+    }
+
+    private static func isAttributeSettable(_ attribute: String, on element: AXUIElement) -> Bool {
+        var isSettable = DarwinBoolean(false)
+        return AXUIElementIsAttributeSettable(element, attribute as CFString, &isSettable) == .success
+            && isSettable.boolValue
+    }
+
+    private static func setRange(_ range: CFRange, on element: AXUIElement) -> Bool {
+        var mutableRange = range
+        guard let value = AXValueCreate(.cfRange, &mutableRange) else { return false }
+        return AXUIElementSetAttributeValue(
+            element,
+            kAXSelectedTextRangeAttribute as CFString,
+            value
+        ) == .success
+    }
+
+    private static func isValid(_ range: CFRange, in value: String) -> Bool {
+        range.location >= 0
+            && range.length >= 0
+            && range.location <= (value as NSString).length
+            && range.length <= (value as NSString).length - range.location
     }
 
     private static func isFocused(_ element: AXUIElement, in application: AXUIElement) -> Bool {
@@ -176,6 +275,17 @@ enum RecordingInputTargetService {
             return nil
         }
         return (value as! AXUIElement)
+    }
+
+    private static func copyStringAttribute(_ attribute: String, from element: AXUIElement) -> String? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success,
+            let value,
+            CFGetTypeID(value) == CFStringGetTypeID()
+        else {
+            return nil
+        }
+        return value as? String
     }
 
     private static func copyRangeAttribute(_ attribute: String, from element: AXUIElement) -> CFRange? {

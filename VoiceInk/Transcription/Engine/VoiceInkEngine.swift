@@ -172,6 +172,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
     private var activePipelineTask: Task<Void, Never>?
     private var canceledPipelineTranscriptionIDs = Set<UUID>()
     private var enhancementBypassTranscriptionIDs = Set<UUID>()
+    private var provisionalDeliveryTranscriptionIDs = Set<UUID>()
     private let enhancementBypassDelivery = TranscriptionDelivery()
     private var activeRecordingUseCase: RecordingUseCase = .newSession
     private var activePipelineUseCase: RecordingUseCase = .newSession
@@ -1097,6 +1098,17 @@ class VoiceInkEngine: NSObject, ObservableObject {
             shouldBypassEnhancement: { [weak self] in
                 self?.enhancementBypassTranscriptionIDs.contains(transcriptionID) == true
             },
+            onProvisionalDeliveryWillBegin: { [weak self] in
+                guard let self, self.activePipelineTranscriptionID == transcriptionID else { return }
+                self.provisionalDeliveryTranscriptionIDs.insert(transcriptionID)
+            },
+            onProvisionalInteraction: { [weak self] in
+                guard let self, self.activePipelineTranscriptionID == transcriptionID else { return }
+                self.enhancementBypassTranscriptionIDs.insert(transcriptionID)
+                self.partialTranscript = transcription.text
+                self.recordingState = .busy
+                self.activePipelineTask?.cancel()
+            },
             onCancel: { [weak self, session] in
                 guard let self else { return }
                 self.cancelPipelineSession(transcriptionID: transcriptionID, session: session)
@@ -1150,6 +1162,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
         }
         canceledPipelineTranscriptionIDs.remove(transcriptionID)
         enhancementBypassTranscriptionIDs.remove(transcriptionID)
+        provisionalDeliveryTranscriptionIDs.remove(transcriptionID)
 
         if didFinishActivePipeline
             && (recordingState == .transcribing || recordingState == .enhancing || recordingState == .busy)
@@ -1193,7 +1206,8 @@ class VoiceInkEngine: NSObject, ObservableObject {
         }
     }
 
-    /// Stops only the AI enhancement phase and immediately returns the completed raw transcript.
+    /// Stops only the AI enhancement phase. The pipeline either keeps the provisionally inserted
+    /// raw transcript or delivers it through the normal safe target-restoration path.
     func cancelEnhancementAndPasteOriginal() async {
         guard recordingState == .enhancing,
             let transcriptionID = activePipelineTranscriptionID,
@@ -1211,6 +1225,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
         partialTranscript = originalText
         recordingState = .busy
 
+        guard !provisionalDeliveryTranscriptionIDs.contains(transcriptionID) else { return }
         await enhancementBypassDelivery.pasteOriginalImmediately(
             originalText,
             inputTarget: activePipelineInputTarget
@@ -1228,6 +1243,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
         activePipelineTask = nil
         canceledPipelineTranscriptionIDs.removeAll()
         enhancementBypassTranscriptionIDs.removeAll()
+        provisionalDeliveryTranscriptionIDs.removeAll()
         shouldCancelRecording = false
         partialTranscript = ""
         assistantSession.reset()

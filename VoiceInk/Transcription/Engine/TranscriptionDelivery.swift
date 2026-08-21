@@ -5,12 +5,14 @@ import os
 final class TranscriptionDelivery {
     typealias PasteAtCursor = @MainActor (String) async -> CursorPaster.PasteResult
     typealias RestoreInputTarget = @MainActor (RecordingInputTarget) async -> RecordingInputTargetRestoration
+    typealias CaptureEditableTextState = @MainActor (RecordingInputTarget) -> RecordingEditableTextState?
     typealias CopyToClipboard = @MainActor (String) -> Bool
     typealias NotifyUnavailableTarget = @MainActor () -> Void
 
     private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "TranscriptionDelivery")
     private let pasteAtCursor: PasteAtCursor
     private let restoreInputTarget: RestoreInputTarget
+    private let captureEditableTextState: CaptureEditableTextState
     private let copyToClipboard: CopyToClipboard
     private let notifyUnavailableTarget: NotifyUnavailableTarget
 
@@ -20,6 +22,9 @@ final class TranscriptionDelivery {
         },
         restoreInputTarget: @escaping RestoreInputTarget = { target in
             await RecordingInputTargetService.restore(target)
+        },
+        captureEditableTextState: @escaping CaptureEditableTextState = { target in
+            RecordingInputTargetService.editableTextState(for: target)
         },
         copyToClipboard: @escaping CopyToClipboard = { text in
             ClipboardManager.copyToClipboard(text)
@@ -34,6 +39,7 @@ final class TranscriptionDelivery {
     ) {
         self.pasteAtCursor = pasteAtCursor
         self.restoreInputTarget = restoreInputTarget
+        self.captureEditableTextState = captureEditableTextState
         self.copyToClipboard = copyToClipboard
         self.notifyUnavailableTarget = notifyUnavailableTarget
     }
@@ -54,6 +60,11 @@ final class TranscriptionDelivery {
         let sendFollowUp: (String, Transcription) async -> Void
         let showResponse: (String, String?) async -> Void
         let failResponse: (String) async -> Void
+    }
+
+    struct ProvisionalPasteResult {
+        let wasDelivered: Bool
+        let replacementSession: ProvisionalTextReplacementSession?
     }
 
     /// Immediately pastes an unenhanced transcript after the user skips an in-flight enhancement.
@@ -81,6 +92,61 @@ final class TranscriptionDelivery {
                 failResponse: { _ in }
             )
         )
+    }
+
+    /// Inserts the raw transcript immediately while enhancement continues. When the target exposes
+    /// a verifiable plain-text accessibility state, the returned session can later replace only the
+    /// inserted transcript. Unsupported targets still keep the safely pasted raw text.
+    func deliverOriginalProvisionally(
+        _ text: String,
+        inputTarget: RecordingInputTarget,
+        dismiss: @escaping () async -> Void,
+        onUserInteraction: @escaping @MainActor () -> Void
+    ) async -> ProvisionalPasteResult {
+        let appendSpace = UserDefaults.standard.bool(forKey: "AppendTrailingSpace")
+        let trailingText = appendSpace ? " " : ""
+        let pastedText = text + trailingText
+
+        SoundManager.shared.playStopSound()
+        await dismiss()
+
+        guard await restoreInputTarget(inputTarget) == .restored else {
+            if copyToClipboard(pastedText) {
+                notifyUnavailableTarget()
+                return ProvisionalPasteResult(wasDelivered: true, replacementSession: nil)
+            }
+            return ProvisionalPasteResult(wasDelivered: false, replacementSession: nil)
+        }
+
+        let preInsertionState = captureEditableTextState(inputTarget)
+        let pasteResult = await pasteAtCursor(pastedText)
+        guard pasteResult == .commandPosted else {
+            return ProvisionalPasteResult(wasDelivered: false, replacementSession: nil)
+        }
+
+        let replacementSession = preInsertionState.flatMap { state in
+            ProvisionalTextReplacementSession(
+                target: inputTarget,
+                preInsertionState: state,
+                insertedText: pastedText,
+                replacementText: text,
+                onUserInteraction: onUserInteraction
+            )
+        }
+        return ProvisionalPasteResult(wasDelivered: true, replacementSession: replacementSession)
+    }
+
+    func completeProvisionalDelivery(
+        _ session: ProvisionalTextReplacementSession,
+        enhancedText: String,
+        output: OutputRuntimeConfiguration,
+        inputTarget: RecordingInputTarget
+    ) async -> ProvisionalTextReplacementSession.ReplacementResult {
+        let result = await session.replace(with: enhancedText)
+        if result == .replaced, output.outputMode == .paste, output.autoSendKey.isEnabled {
+            scheduleAutoSend(output.autoSendKey, inputTarget: inputTarget)
+        }
+        return result
     }
 
     func deliver(_ request: Request, actions: Actions) async {
@@ -238,15 +304,19 @@ final class TranscriptionDelivery {
 
         let autoSendKey = output.outputMode == .paste ? output.autoSendKey : .none
         if autoSendKey.isEnabled, pasteResult == .commandPosted {
-            Task { @MainActor [restoreInputTarget] in
-                try? await Task.sleep(nanoseconds: 500_000_000)
-                if let inputTarget,
-                    await restoreInputTarget(inputTarget) == .unavailable
-                {
-                    return
-                }
-                CursorPaster.performAutoSend(autoSendKey)
+            scheduleAutoSend(autoSendKey, inputTarget: inputTarget)
+        }
+    }
+
+    private func scheduleAutoSend(_ key: AutoSendKey, inputTarget: RecordingInputTarget?) {
+        Task { @MainActor [restoreInputTarget] in
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            if let inputTarget,
+                await restoreInputTarget(inputTarget) == .unavailable
+            {
+                return
             }
+            CursorPaster.performAutoSend(key)
         }
     }
 
