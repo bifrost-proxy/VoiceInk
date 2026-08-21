@@ -54,8 +54,25 @@ struct RecorderOverlayPanelTests {
         #expect(panel.isVisible)
     }
 
+    @Test("A newly presented recorder is reasserted while its full-screen Space settles")
+    func reassertsNewRecorderAfterInitialPresentation() async throws {
+        let panel = MiniRecorderPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 540, height: 430)
+        )
+        defer { panel.close() }
+
+        panel.presentRecorderOverlay()
+        panel.orderOut(nil)
+        #expect(panel.isRecorderPresented)
+        #expect(!panel.isVisible)
+
+        try await Task.sleep(for: .milliseconds(550))
+
+        #expect(panel.isVisible)
+    }
+
     @Test("A dismissed recorder is not restored by a delayed Space callback")
-    func doesNotRestoreDismissedRecorder() {
+    func doesNotRestoreDismissedRecorder() async throws {
         let panel = MiniRecorderPanel(
             contentRect: NSRect(x: 0, y: 0, width: 540, height: 430)
         )
@@ -64,6 +81,7 @@ struct RecorderOverlayPanelTests {
         panel.presentRecorderOverlay()
         panel.dismissRecorderOverlay()
         panel.reassertRecorderOverlay()
+        try await Task.sleep(for: .milliseconds(550))
 
         #expect(!panel.isRecorderPresented)
         #expect(!panel.isVisible)
