@@ -16,7 +16,8 @@
 
 VoiceInk 是一款 macOS 原生应用，可以快速将语音转换为文字。本分支完全免费，不包含付费许可证、激活流程或试用限制。
 
-![VoiceInk macOS 应用](https://github.com/user-attachments/assets/12367379-83e7-48a6-b52c-4488a6a04bba)
+<img width="986" height="902" alt="image" src="https://github.com/user-attachments/assets/8ec9022d-c883-4580-b267-ea5352cf329d" />
+
 
 项目致力于为 macOS 提供高效、注重隐私的语音转文字体验。
 
