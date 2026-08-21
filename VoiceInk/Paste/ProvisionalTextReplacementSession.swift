@@ -11,6 +11,10 @@ final class ProvisionalTextReplacementSession {
         case canceledByUser
         case targetChanged
         case unavailable
+
+        var shouldPersistEnhancement: Bool {
+            self == .replaced
+        }
     }
 
     typealias ReadState = @MainActor (RecordingInputTarget) -> RecordingEditableTextState?

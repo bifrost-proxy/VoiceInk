@@ -237,12 +237,15 @@ class TranscriptionPipeline {
                     {
                         didAttemptProvisionalDelivery = true
                         onProvisionalDeliveryWillBegin()
+                        let provisionalDeliveryStartedAt = Date()
                         let provisionalResult = await delivery.deliverOriginalProvisionally(
                             cleanedText,
                             inputTarget: inputTarget,
                             dismiss: onDismiss,
                             onUserInteraction: onProvisionalInteraction
                         )
+                        deliveryDuration = (deliveryDuration ?? 0)
+                            + Date().timeIntervalSince(provisionalDeliveryStartedAt)
                         didDeliverOriginalEarly = provisionalResult.wasDelivered
                         provisionalReplacementSession = provisionalResult.replacementSession
                     }
@@ -260,29 +263,39 @@ class TranscriptionPipeline {
                             if shouldBypassEnhancement() {
                                 finalText = cleanedText
                             } else {
-                                transcription.enhancedText = enhancedText
-                                transcription.aiEnhancementModelName =
-                                    resolvedEnhancementConfiguration.modelName
-                                    ?? resolvedEnhancementConfiguration.provider?.defaultModel
-                                transcription.promptName = promptName
-                                transcription.enhancementDuration = enhancementDuration
-                                transcription.aiRequestSystemMessage = enhancementService.lastSystemMessageSent
-                                transcription.aiRequestUserMessage = enhancementService.lastUserMessageSent
-                                finalText = enhancedText
+                                var shouldPersistEnhancement = !didDeliverOriginalEarly
 
                                 if didDeliverOriginalEarly,
                                     let provisionalReplacementSession,
                                     let inputTarget
                                 {
+                                    let replacementStartedAt = Date()
                                     let replacementResult = await delivery.completeProvisionalDelivery(
                                         provisionalReplacementSession,
                                         enhancedText: enhancedText,
                                         output: resolvedOutputConfiguration,
                                         inputTarget: inputTarget
                                     )
+                                    deliveryDuration = (deliveryDuration ?? 0)
+                                        + Date().timeIntervalSince(replacementStartedAt)
+                                    shouldPersistEnhancement = replacementResult.shouldPersistEnhancement
                                     logger.notice(
                                         "Provisional transcript completion result=\(String(describing: replacementResult), privacy: .public)"
                                     )
+                                }
+
+                                if shouldPersistEnhancement {
+                                    transcription.enhancedText = enhancedText
+                                    transcription.aiEnhancementModelName =
+                                        resolvedEnhancementConfiguration.modelName
+                                        ?? resolvedEnhancementConfiguration.provider?.defaultModel
+                                    transcription.promptName = promptName
+                                    transcription.enhancementDuration = enhancementDuration
+                                    transcription.aiRequestSystemMessage = enhancementService.lastSystemMessageSent
+                                    transcription.aiRequestUserMessage = enhancementService.lastUserMessageSent
+                                    finalText = enhancedText
+                                } else {
+                                    finalText = cleanedText
                                 }
                             }
                         }
@@ -412,7 +425,7 @@ class TranscriptionPipeline {
                     failResponse: assistant.failResponse
                 )
             )
-            deliveryDuration = Date().timeIntervalSince(deliveryStartedAt)
+            deliveryDuration = (deliveryDuration ?? 0) + Date().timeIntervalSince(deliveryStartedAt)
         }
 
         saveTranscriptionAndPostCompletion()

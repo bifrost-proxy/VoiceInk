@@ -5,6 +5,13 @@ import Testing
 
 @MainActor
 struct ProvisionalTextReplacementSessionTests {
+    @Test func onlySuccessfulReplacementPersistsEnhancement() {
+        #expect(ProvisionalTextReplacementSession.ReplacementResult.replaced.shouldPersistEnhancement)
+        #expect(!ProvisionalTextReplacementSession.ReplacementResult.canceledByUser.shouldPersistEnhancement)
+        #expect(!ProvisionalTextReplacementSession.ReplacementResult.targetChanged.shouldPersistEnhancement)
+        #expect(!ProvisionalTextReplacementSession.ReplacementResult.unavailable.shouldPersistEnhancement)
+    }
+
     @Test func replacesOnlyOriginalUTF16RangeAndPreservesSurroundingText() async throws {
         let originalValue = "前😀被选中后"
         let selectedRange = (originalValue as NSString).range(of: "被选中")

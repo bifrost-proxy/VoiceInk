@@ -167,7 +167,10 @@ enum RecordingInputTargetService {
     ) -> Bool {
         guard let currentState = editableTextState(for: target),
             currentState.value == expectedCurrentValue,
+            currentState.selectedTextRange.location == fallbackCaret.location,
+            currentState.selectedTextRange.length == fallbackCaret.length,
             isValid(range, in: expectedCurrentValue),
+            isPlainTextElement(target.element),
             isAttributeSettable(kAXValueAttribute, on: target.element),
             isAttributeSettable(kAXSelectedTextRangeAttribute, on: target.element)
         else {
@@ -178,13 +181,15 @@ enum RecordingInputTargetService {
             in: NSRange(location: range.location, length: range.length),
             with: replacement
         )
-        guard AXUIElementSetAttributeValue(
+        let valueWriteResult = AXUIElementSetAttributeValue(
             target.element,
             kAXValueAttribute as CFString,
             expectedValue as CFString
-        ) == .success,
+        )
+        guard valueWriteResult == .success,
             copyStringAttribute(kAXValueAttribute, from: target.element) == expectedValue
         else {
+            _ = restoreEditableTextState(currentState, on: target.element)
             return false
         }
 
@@ -193,7 +198,14 @@ enum RecordingInputTargetService {
             location: range.location + (replacement as NSString).length + trailingLength,
             length: 0
         )
-        return setRange(finalCaret, on: target.element)
+        guard setRange(finalCaret, on: target.element) else {
+            let didRollback = restoreEditableTextState(currentState, on: target.element)
+            if !didRollback {
+                logger.error("Failed to roll back a provisional text replacement after caret restoration failed")
+            }
+            return false
+        }
+        return true
     }
 
     private static func restoreSelectionIfSupported(_ range: CFRange?, on element: AXUIElement) -> Bool {
@@ -229,14 +241,64 @@ enum RecordingInputTargetService {
             && isSettable.boolValue
     }
 
+    /// AXValue replacement reconstructs the complete string, so it must never run against a rich
+    /// editor where doing so could discard formatting or attachments. Unknown roles and controls
+    /// exposing rich-text range APIs fail closed and keep the already-pasted raw transcript.
+    private static func isPlainTextElement(_ element: AXUIElement) -> Bool {
+        guard let role = copyStringAttribute(kAXRoleAttribute, from: element),
+            role == kAXTextFieldRole as String || role == kAXTextAreaRole as String
+        else {
+            return false
+        }
+
+        if copyStringAttribute(kAXSubroleAttribute, from: element) == kAXSecureTextFieldSubrole as String {
+            return false
+        }
+
+        var names: CFArray?
+        guard AXUIElementCopyParameterizedAttributeNames(element, &names) == .success,
+            let parameterizedAttributes = names as? [String]
+        else {
+            return false
+        }
+
+        let richTextAttributes: Set<String> = [
+            kAXRTFForRangeParameterizedAttribute as String,
+            kAXAttributedStringForRangeParameterizedAttribute as String,
+            kAXStyleRangeForIndexParameterizedAttribute as String,
+        ]
+        return richTextAttributes.isDisjoint(with: parameterizedAttributes)
+    }
+
     private static func setRange(_ range: CFRange, on element: AXUIElement) -> Bool {
         var mutableRange = range
         guard let value = AXValueCreate(.cfRange, &mutableRange) else { return false }
-        return AXUIElementSetAttributeValue(
+        guard AXUIElementSetAttributeValue(
             element,
             kAXSelectedTextRangeAttribute as CFString,
             value
-        ) == .success
+        ) == .success,
+            let actualRange = copyRangeAttribute(kAXSelectedTextRangeAttribute, from: element)
+        else {
+            return false
+        }
+        return actualRange.location == range.location && actualRange.length == range.length
+    }
+
+    private static func restoreEditableTextState(
+        _ state: RecordingEditableTextState,
+        on element: AXUIElement
+    ) -> Bool {
+        guard AXUIElementSetAttributeValue(
+            element,
+            kAXValueAttribute as CFString,
+            state.value as CFString
+        ) == .success,
+            copyStringAttribute(kAXValueAttribute, from: element) == state.value
+        else {
+            return false
+        }
+        return setRange(state.selectedTextRange, on: element)
     }
 
     private static func isValid(_ range: CFRange, in value: String) -> Bool {
