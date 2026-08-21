@@ -21,6 +21,7 @@ class RecorderOverlayPanel: NSPanel {
     ]
 
     private(set) var isRecorderPresented = false
+    private var presentationGeneration: UInt = 0
 
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
@@ -53,11 +54,18 @@ class RecorderOverlayPanel: NSPanel {
     }
 
     func presentRecorderOverlay() {
+        presentationGeneration &+= 1
         isRecorderPresented = true
         reassertRecorderOverlay()
+
+        // A panel first ordered while another app's full-screen Space is
+        // settling can initially be attached to the previous Space. Reassert
+        // after the same settling intervals used for an explicit Space change.
+        scheduleReassertions(for: presentationGeneration)
     }
 
     func dismissRecorderOverlay() {
+        presentationGeneration &+= 1
         isRecorderPresented = false
         orderOut(nil)
     }
@@ -76,8 +84,24 @@ class RecorderOverlayPanel: NSPanel {
 
     func reassertRecorderOverlay(after delay: TimeInterval) {
         guard isRecorderPresented else { return }
+        let generation = presentationGeneration
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-            self?.reassertRecorderOverlay()
+            guard let self, self.presentationGeneration == generation else { return }
+            self.reassertRecorderOverlay()
+        }
+    }
+
+    private func scheduleReassertions(for generation: UInt) {
+        for delay in [0.1, 0.4] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                guard let self,
+                    self.isRecorderPresented,
+                    self.presentationGeneration == generation
+                else {
+                    return
+                }
+                self.reassertRecorderOverlay()
+            }
         }
     }
 
