@@ -61,7 +61,7 @@ final class FollowWindowManager {
     }
 }
 
-private final class FollowRecorderPanel: NSPanel {
+final class FollowRecorderPanel: NSPanel {
     /// Reserve room for the widest and tallest supported recorder presentation
     /// before showing the compact control bar. This keeps a recorder opened
     /// near a bottom-aligned input from growing back across that input when
@@ -71,6 +71,8 @@ private final class FollowRecorderPanel: NSPanel {
     private var anchor: NSPoint?
     private var contentSize = NSSize(width: 184, height: 40)
     private var preferredCorner = RecorderFollowCorner.topLeft
+    private(set) var usesManualPlacement = false
+    private var isApplyingManagedFrame = false
 
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
@@ -87,7 +89,8 @@ private final class FollowRecorderPanel: NSPanel {
         level = .floating
         hidesOnDeactivate = false
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
-        isMovable = false
+        isMovable = true
+        isMovableByWindowBackground = true
         backgroundColor = .clear
         isOpaque = false
         hasShadow = false
@@ -101,6 +104,18 @@ private final class FollowRecorderPanel: NSPanel {
             name: NSApplication.didChangeScreenParametersNotification,
             object: nil
         )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleWindowWillMove),
+            name: NSWindow.willMoveNotification,
+            object: self
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleWindowDidMove),
+            name: NSWindow.didMoveNotification,
+            object: self
+        )
     }
 
     convenience init(contentRect: NSRect) {
@@ -109,6 +124,7 @@ private final class FollowRecorderPanel: NSPanel {
 
     func show(anchor: NSPoint) {
         self.anchor = anchor
+        usesManualPlacement = false
         choosePreferredCorner(reserving: Self.expandedPresentationSize)
         applyPlacement()
         orderFrontRegardless()
@@ -119,15 +135,34 @@ private final class FollowRecorderPanel: NSPanel {
         guard measuredSize.width > 0, measuredSize.height > 0, measuredSize != contentSize else { return }
         contentSize = measuredSize
         guard anchor != nil else { return }
-        applyPlacement()
+        if usesManualPlacement {
+            applyManualPlacement()
+        } else {
+            applyPlacement()
+        }
     }
 
     @objc private func handleScreenParametersChange() {
         guard isVisible else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
-            self?.choosePreferredCorner(reserving: Self.expandedPresentationSize)
-            self?.applyPlacement()
+            guard let self else { return }
+            if self.usesManualPlacement {
+                self.applyManualPlacement()
+            } else {
+                self.choosePreferredCorner(reserving: Self.expandedPresentationSize)
+                self.applyPlacement()
+            }
         }
+    }
+
+    @objc private func handleWindowWillMove() {
+        guard !isApplyingManagedFrame else { return }
+        usesManualPlacement = true
+    }
+
+    @objc private func handleWindowDidMove() {
+        guard usesManualPlacement, !isApplyingManagedFrame else { return }
+        applyManualPlacement()
     }
 
     private func choosePreferredCorner(reserving reservedSize: NSSize) {
@@ -151,7 +186,25 @@ private final class FollowRecorderPanel: NSPanel {
             preferredCorner: preferredCorner
         )
         preferredCorner = placement.corner
-        setFrame(placement.frame, display: true)
+        setManagedFrame(placement.frame)
+    }
+
+    private func applyManualPlacement() {
+        let referencePoint = NSPoint(x: frame.midX, y: frame.midY)
+        let visibleFrame = visibleFrame(for: referencePoint)
+        let placement = RecorderWindowGeometry.manuallyPositionedFollowFrame(
+            currentFrame: frame,
+            panelSize: contentSize,
+            visibleFrame: visibleFrame
+        )
+        guard placement != frame else { return }
+        setManagedFrame(placement)
+    }
+
+    private func setManagedFrame(_ frame: NSRect) {
+        isApplyingManagedFrame = true
+        defer { isApplyingManagedFrame = false }
+        setFrame(frame, display: true)
     }
 
     private func visibleFrame(for anchor: NSPoint) -> NSRect {

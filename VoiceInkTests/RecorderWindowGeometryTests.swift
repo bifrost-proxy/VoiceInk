@@ -3,6 +3,24 @@ import Testing
 @testable import VoiceInk
 
 struct RecorderWindowGeometryTests {
+    @MainActor
+    @Test("Allows the follow recorder background to start a manual window drag")
+    func configuresFollowRecorderForBackgroundDragging() {
+        let panel = FollowRecorderPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 184, height: 40)
+        )
+        defer { panel.close() }
+
+        #expect(panel.isMovable)
+        #expect(panel.isMovableByWindowBackground)
+        #expect(panel.styleMask.contains(.nonactivatingPanel))
+        #expect(!panel.usesManualPlacement)
+
+        NotificationCenter.default.post(name: NSWindow.willMoveNotification, object: panel)
+
+        #expect(panel.usesManualPlacement)
+    }
+
     @Test("Selects the screen containing the mouse")
     func selectsMouseScreen() {
         let frames = [
@@ -191,5 +209,63 @@ struct RecorderWindowGeometryTests {
         #expect(placement.isConstrained)
         let edgePadding = RecorderWindowGeometry.followEdgePadding
         #expect(visibleFrame.insetBy(dx: edgePadding, dy: edgePadding).contains(placement.frame))
+    }
+
+    @Test("Keeps the dragged control bar stable when follow content expands")
+    func manuallyResizesFollowRecorderAroundBottomCenter() {
+        let currentFrame = NSRect(x: 400, y: 200, width: 184, height: 40)
+
+        let resizedFrame = RecorderWindowGeometry.manuallyPositionedFollowFrame(
+            currentFrame: currentFrame,
+            panelSize: NSSize(width: 420, height: 137),
+            visibleFrame: NSRect(x: 0, y: 0, width: 1_200, height: 900)
+        )
+
+        #expect(resizedFrame.midX == currentFrame.midX)
+        #expect(resizedFrame.minY == currentFrame.minY)
+        #expect(resizedFrame.size == NSSize(width: 420, height: 137))
+    }
+
+    @Test("Keeps a manually positioned follow recorder inside the visible screen")
+    func constrainsManuallyPositionedFollowRecorder() {
+        let visibleFrame = NSRect(x: -1_200, y: 20, width: 1_200, height: 780)
+
+        let resizedFrame = RecorderWindowGeometry.manuallyPositionedFollowFrame(
+            currentFrame: NSRect(x: -100, y: 10, width: 184, height: 40),
+            panelSize: NSSize(width: 520, height: 430),
+            visibleFrame: visibleFrame
+        )
+
+        let safeFrame = visibleFrame.insetBy(
+            dx: RecorderWindowGeometry.followEdgePadding,
+            dy: RecorderWindowGeometry.followEdgePadding
+        )
+        #expect(safeFrame.contains(resizedFrame))
+        #expect(resizedFrame.maxX == safeFrame.maxX)
+        #expect(resizedFrame.minY == safeFrame.minY)
+    }
+
+    @Test("Fits a manually positioned follow recorder on a very small screen")
+    func fitsManualFollowRecorderToSmallScreen() {
+        let visibleFrame = NSRect(x: 0, y: 0, width: 300, height: 180)
+
+        let resizedFrame = RecorderWindowGeometry.manuallyPositionedFollowFrame(
+            currentFrame: NSRect(x: 50, y: 50, width: 184, height: 40),
+            panelSize: NSSize(width: 520, height: 430),
+            visibleFrame: visibleFrame
+        )
+
+        #expect(
+            resizedFrame.size == NSSize(
+                width: visibleFrame.width - (2 * RecorderWindowGeometry.followEdgePadding),
+                height: visibleFrame.height - (2 * RecorderWindowGeometry.followEdgePadding)
+            )
+        )
+        #expect(
+            visibleFrame.insetBy(
+                dx: RecorderWindowGeometry.followEdgePadding,
+                dy: RecorderWindowGeometry.followEdgePadding
+            ).contains(resizedFrame)
+        )
     }
 }
