@@ -227,8 +227,13 @@ struct VoiceInkTests {
         let suite = "VoiceInkTests.OversizedSync.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
-        let core = ICloudDriveSyncCore(defaults: defaults, iCloudDriveRootURL: root)
-        let payload = Data(repeating: 0x5a, count: ICloudDriveSyncCore.maximumPayloadBytes + 1)
+        let payloadLimit = 1_024
+        let core = ICloudDriveSyncCore(
+            defaults: defaults,
+            iCloudDriveRootURL: root,
+            maximumPayloadBytes: payloadLimit
+        )
+        let payload = Data(repeating: 0x5a, count: payloadLimit + 1)
 
         #expect(throws: POSIXError.self) {
             _ = try core.append(
@@ -244,23 +249,27 @@ struct VoiceInkTests {
         #expect(!FileManager.default.fileExists(atPath: operations.path))
     }
 
-    @Test(.timeLimit(.minutes(1)))
-    func syncCoreSplitsLargeMutationSetsIntoValidImmutableOperations() throws {
+    @Test func syncCoreSplitsLargeMutationSetsIntoValidImmutableOperations() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("VoiceInkChunkedSync-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let suite = "VoiceInkTests.ChunkedSync.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
-        let core = ICloudDriveSyncCore(defaults: defaults, iCloudDriveRootURL: root)
+        let payloadLimit = 7 * 1_024
+        let core = ICloudDriveSyncCore(
+            defaults: defaults,
+            iCloudDriveRootURL: root,
+            maximumPayloadBytes: payloadLimit
+        )
         let mutations = [
             VoiceInkSyncMutation(
                 key: "preference/first",
-                value: Data(repeating: 0x3c, count: 4 * 1_024 * 1_024)
+                value: Data(repeating: 0x3c, count: 4 * 1_024)
             ),
             VoiceInkSyncMutation(
                 key: "preference/second",
-                value: Data(repeating: 0x4d, count: 4 * 1_024 * 1_024)
+                value: Data(repeating: 0x4d, count: 4 * 1_024)
             ),
         ]
 
@@ -269,7 +278,7 @@ struct VoiceInkTests {
         #expect(written.flatMap { $0.mutations } == mutations)
         #expect(try core.readAll(in: .configuration).count == 2)
         for item in written {
-            #expect(item.envelope.payload.count <= ICloudDriveSyncCore.maximumPayloadBytes)
+            #expect(item.envelope.payload.count <= payloadLimit)
         }
 
         let retried = try core.appendChunked(mutations, domain: .configuration)
