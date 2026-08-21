@@ -27,6 +27,7 @@ final class ProvisionalTextReplacementSession {
     enum ReplacementResult: Equatable {
         case replaced
         case originalRetained
+        case originalNotInserted
         case canceledByUser
         case targetChanged
         case unavailable
@@ -61,6 +62,15 @@ final class ProvisionalTextReplacementSession {
     )
 
     private var globalEventMonitor: Any?
+
+    private enum PastePropagationResult {
+        case inserted(RecordingEditableTextState)
+        case originalNotInserted
+        case canceledByUser
+        case targetChanged
+        case unavailable
+    }
+
     var wasCanceledByUser: Bool {
         interactionCancellation.isCanceled
     }
@@ -123,45 +133,36 @@ final class ProvisionalTextReplacementSession {
 
     func replace(with enhancedText: String) async -> ReplacementResult {
         defer { stopMonitoring() }
-        guard !wasCanceledByUser, !Task.isCancelled else { return .canceledByUser }
-
-        // A very fast local enhancer can finish before the target application processes Cmd+V.
-        // Briefly wait only while the control still has its exact pre-insertion state.
-        let clock = ContinuousClock()
-        let deadline = clock.now.advanced(by: .milliseconds(300))
-        while clock.now < deadline {
-            guard !wasCanceledByUser, !Task.isCancelled else { return .canceledByUser }
-            guard let currentState = readState(target) else { return .unavailable }
-
-            if currentState.value == expectedPostInsertionValue {
-                return replaceIfUnchanged(enhancedText, currentState: currentState)
-            }
-            guard currentState.value == preInsertionState.value else { return .targetChanged }
-            do {
-                try await Task.sleep(for: .milliseconds(20))
-            } catch {
-                return .canceledByUser
-            }
+        switch await observePastePropagation() {
+        case .inserted(let currentState):
+            return replaceIfUnchanged(enhancedText, currentState: currentState)
+        case .originalNotInserted:
+            return .originalNotInserted
+        case .canceledByUser:
+            return .canceledByUser
+        case .targetChanged:
+            return .targetChanged
+        case .unavailable:
+            return .unavailable
         }
-
-        guard !wasCanceledByUser, !Task.isCancelled else { return .canceledByUser }
-        guard let currentState = readState(target) else { return .unavailable }
-        return replaceIfUnchanged(enhancedText, currentState: currentState)
     }
 
     /// Ends the transaction without replacing the raw text. Auto-send callers use this to verify
     /// that the target still contains the exact provisional value and caret after enhancement fails.
-    func finishKeepingOriginal() -> ReplacementResult {
+    func finishKeepingOriginal() async -> ReplacementResult {
         defer { stopMonitoring() }
-        guard !wasCanceledByUser, !Task.isCancelled else { return .canceledByUser }
-        guard let currentState = readState(target) else { return .unavailable }
-        guard currentState.value == expectedPostInsertionValue,
-            currentState.selectedTextRange.location == expectedCaret.location,
-            currentState.selectedTextRange.length == expectedCaret.length
-        else {
+        switch await observePastePropagation() {
+        case .inserted:
+            return .originalRetained
+        case .originalNotInserted:
+            return .originalNotInserted
+        case .canceledByUser:
+            return .canceledByUser
+        case .targetChanged:
             return .targetChanged
+        case .unavailable:
+            return .unavailable
         }
-        return .originalRetained
     }
 
     func registerUserInteraction() {
@@ -185,10 +186,7 @@ final class ProvisionalTextReplacementSession {
         currentState: RecordingEditableTextState
     ) -> ReplacementResult {
         guard !wasCanceledByUser, !Task.isCancelled else { return .canceledByUser }
-        guard currentState.value == expectedPostInsertionValue,
-            currentState.selectedTextRange.location == expectedCaret.location,
-            currentState.selectedTextRange.length == expectedCaret.length
-        else {
+        guard isExpectedPostInsertionState(currentState) else {
             return .targetChanged
         }
 
@@ -206,6 +204,39 @@ final class ProvisionalTextReplacementSession {
             logger.notice("The provisional transcript target did not support a verified replacement")
         }
         return didReplace ? .replaced : .unavailable
+    }
+
+    private func isExactPreInsertionState(_ state: RecordingEditableTextState) -> Bool {
+        state == preInsertionState
+    }
+
+    private func isExpectedPostInsertionState(_ state: RecordingEditableTextState) -> Bool {
+        state.value == expectedPostInsertionValue
+            && state.selectedTextRange.location == expectedCaret.location
+            && state.selectedTextRange.length == expectedCaret.length
+    }
+
+    /// A fast enhancement (or failure) can complete before the target processes Cmd+V. Wait only
+    /// while both the full value and selection remain at the exact pre-insertion snapshot.
+    private func observePastePropagation() async -> PastePropagationResult {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .milliseconds(300))
+        while clock.now < deadline {
+            guard !wasCanceledByUser, !Task.isCancelled else { return .canceledByUser }
+            guard let currentState = readState(target) else { return .unavailable }
+            if isExpectedPostInsertionState(currentState) { return .inserted(currentState) }
+            guard isExactPreInsertionState(currentState) else { return .targetChanged }
+            do {
+                try await Task.sleep(for: .milliseconds(20))
+            } catch {
+                return .canceledByUser
+            }
+        }
+
+        guard !wasCanceledByUser, !Task.isCancelled else { return .canceledByUser }
+        guard let currentState = readState(target) else { return .unavailable }
+        if isExpectedPostInsertionState(currentState) { return .inserted(currentState) }
+        return isExactPreInsertionState(currentState) ? .originalNotInserted : .targetChanged
     }
 
     private func beginMonitoringUserInteraction() -> Bool {

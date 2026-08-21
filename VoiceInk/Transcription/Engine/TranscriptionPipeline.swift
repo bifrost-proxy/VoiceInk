@@ -65,6 +65,7 @@ class TranscriptionPipeline {
         shouldCancel: () -> Bool,
         shouldBypassEnhancement: () -> Bool = { false },
         onProvisionalDeliveryWillBegin: @escaping () -> Void = {},
+        onProvisionalDeliveryCompleted: @escaping (Bool) -> Void = { _ in },
         onProvisionalInteraction: @escaping () -> Void = {},
         onCancel: @escaping () async -> Void,
         onDismiss: @escaping () async -> Void,
@@ -81,6 +82,7 @@ class TranscriptionPipeline {
         var deliveryDuration: TimeInterval?
         var didAttemptProvisionalDelivery = false
         var didDeliverOriginalEarly = false
+        var didPostProvisionalPasteCommand = false
         var shouldContinueEnhancement = true
         var provisionalReplacementSession: ProvisionalTextReplacementSession?
 
@@ -248,23 +250,33 @@ class TranscriptionPipeline {
                         deliveryDuration = (deliveryDuration ?? 0)
                             + Date().timeIntervalSince(provisionalDeliveryStartedAt)
                         didDeliverOriginalEarly = provisionalResult.wasDelivered
+                        didPostProvisionalPasteCommand = provisionalResult.didPostPasteCommand
                         shouldContinueEnhancement = provisionalResult.shouldContinueEnhancement
                         provisionalReplacementSession = provisionalResult.replacementSession
+                        onProvisionalDeliveryCompleted(provisionalResult.wasDelivered)
+                    }
+
+                    if shouldCancel() {
+                        provisionalReplacementSession?.stopMonitoring()
+                        await finishCanceledTranscription()
+                        return
                     }
 
                     do {
-                        if shouldBypassEnhancement() || !shouldContinueEnhancement {
-                            if !shouldContinueEnhancement {
-                                logger.notice(
-                                    "AI enhancement skipped because the provisional transcript cannot be safely replaced"
+                        if shouldBypassEnhancement() {
+                            provisionalReplacementSession?.stopMonitoring()
+                            finalText = cleanedText
+                        } else if !shouldContinueEnhancement {
+                            logger.notice(
+                                "AI enhancement skipped because the provisional transcript cannot be safely replaced"
+                            )
+                            if let inputTarget {
+                                await delivery.finishProvisionalDeliveryWithoutEnhancement(
+                                    provisionalReplacementSession,
+                                    output: resolvedOutputConfiguration,
+                                    inputTarget: inputTarget,
+                                    didPostPasteCommand: didPostProvisionalPasteCommand
                                 )
-                                if let inputTarget {
-                                    delivery.finishProvisionalDeliveryWithoutEnhancement(
-                                        provisionalReplacementSession,
-                                        output: resolvedOutputConfiguration,
-                                        inputTarget: inputTarget
-                                    )
-                                }
                             }
                             finalText = cleanedText
                         } else {
@@ -274,6 +286,11 @@ class TranscriptionPipeline {
                                 configuration: resolvedEnhancementConfiguration,
                                 contextSnapshot: contextSnapshot
                             )
+                            if shouldCancel() {
+                                provisionalReplacementSession?.stopMonitoring()
+                                await finishCanceledTranscription()
+                                return
+                            }
                             if shouldBypassEnhancement() {
                                 finalText = cleanedText
                             } else {
@@ -292,7 +309,12 @@ class TranscriptionPipeline {
                                     )
                                     deliveryDuration = (deliveryDuration ?? 0)
                                         + Date().timeIntervalSince(replacementStartedAt)
-                                    shouldPersistEnhancement = replacementResult.shouldPersistEnhancement
+                                    if replacementResult == .originalNotInserted {
+                                        didDeliverOriginalEarly = false
+                                        shouldPersistEnhancement = true
+                                    } else {
+                                        shouldPersistEnhancement = replacementResult.shouldPersistEnhancement
+                                    }
                                     logger.notice(
                                         "Provisional transcript completion result=\(String(describing: replacementResult), privacy: .public)"
                                     )
@@ -314,16 +336,24 @@ class TranscriptionPipeline {
                             }
                         }
                     } catch {
-                        if shouldBypassEnhancement() {
+                        if shouldCancel() {
+                            provisionalReplacementSession?.stopMonitoring()
+                            await finishCanceledTranscription()
+                            return
+                        } else if shouldBypassEnhancement() {
                             provisionalReplacementSession?.stopMonitoring()
                             finalText = cleanedText
                         } else {
                             if didDeliverOriginalEarly, let inputTarget {
-                                let fallbackResult = delivery.finishProvisionalDeliveryWithoutEnhancement(
+                                let fallbackResult = await delivery.finishProvisionalDeliveryWithoutEnhancement(
                                     provisionalReplacementSession,
                                     output: resolvedOutputConfiguration,
-                                    inputTarget: inputTarget
+                                    inputTarget: inputTarget,
+                                    didPostPasteCommand: didPostProvisionalPasteCommand
                                 )
+                                if fallbackResult == .originalNotInserted {
+                                    didDeliverOriginalEarly = false
+                                }
                                 logger.notice(
                                     "Provisional transcript enhancement failure result=\(String(describing: fallbackResult), privacy: .public)"
                                 )
@@ -337,10 +367,6 @@ class TranscriptionPipeline {
                                     title: failureMessage,
                                     type: .warning
                                 )
-                            }
-                            if shouldCancel() {
-                                await finishCanceledTranscription()
-                                return
                             }
                         }
                     }

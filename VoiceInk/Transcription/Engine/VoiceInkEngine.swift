@@ -1102,6 +1102,12 @@ class VoiceInkEngine: NSObject, ObservableObject {
                 guard let self, self.activePipelineTranscriptionID == transcriptionID else { return }
                 self.provisionalDeliveryTranscriptionIDs.insert(transcriptionID)
             },
+            onProvisionalDeliveryCompleted: { [weak self] wasDelivered in
+                guard let self, self.activePipelineTranscriptionID == transcriptionID else { return }
+                if !wasDelivered {
+                    self.provisionalDeliveryTranscriptionIDs.remove(transcriptionID)
+                }
+            },
             onProvisionalInteraction: { [weak self] in
                 guard let self, self.activePipelineTranscriptionID == transcriptionID else { return }
                 self.enhancementBypassTranscriptionIDs.insert(transcriptionID)

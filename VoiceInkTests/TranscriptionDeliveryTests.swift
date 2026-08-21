@@ -64,6 +64,7 @@ struct TranscriptionDeliveryTests {
         result.replacementSession?.stopMonitoring()
 
         #expect(result.wasDelivered)
+        #expect(result.didPostPasteCommand)
         #expect(result.replacementSession != nil)
         #expect(events == ["dismissed", "restored", "pasted:raw "])
     }
@@ -84,6 +85,7 @@ struct TranscriptionDeliveryTests {
         )
 
         #expect(result.wasDelivered)
+        #expect(result.didPostPasteCommand)
         #expect(result.replacementSession == nil)
         #expect(!result.shouldContinueEnhancement)
     }
@@ -104,8 +106,66 @@ struct TranscriptionDeliveryTests {
         )
 
         #expect(!result.wasDelivered)
+        #expect(!result.didPostPasteCommand)
         #expect(result.replacementSession == nil)
         #expect(result.shouldContinueEnhancement)
+    }
+
+    @Test func clipboardFallbackIsDeliveredButNeverEligibleForAutoSend() async {
+        var scheduledKeys: [AutoSendKey] = []
+        let delivery = TranscriptionDelivery(
+            restoreInputTarget: { _ in .unavailable },
+            copyToClipboard: { _ in true },
+            notifyUnavailableTarget: {},
+            appendTrailingSpace: { false },
+            autoSendScheduler: { key, _ in scheduledKeys.append(key) }
+        )
+        let target = makeInputTarget()
+        let result = await delivery.deliverOriginalProvisionally(
+            "raw",
+            inputTarget: target,
+            dismiss: {},
+            onUserInteraction: {}
+        )
+        let completion = await delivery.finishProvisionalDeliveryWithoutEnhancement(
+            result.replacementSession,
+            output: OutputRuntimeConfiguration(
+                mode: nil,
+                outputMode: .paste,
+                autoSendKey: .enter,
+                customCommand: nil
+            ),
+            inputTarget: target,
+            didPostPasteCommand: result.didPostPasteCommand
+        )
+
+        #expect(result.wasDelivered)
+        #expect(!result.didPostPasteCommand)
+        #expect(completion == .originalRetained)
+        #expect(scheduledKeys.isEmpty)
+    }
+
+    @Test func postedRawTextWithoutReplacementSupportRetainsAutoSend() async {
+        var scheduledKeys: [AutoSendKey] = []
+        let delivery = TranscriptionDelivery(
+            appendTrailingSpace: { false },
+            autoSendScheduler: { key, _ in scheduledKeys.append(key) }
+        )
+
+        let completion = await delivery.finishProvisionalDeliveryWithoutEnhancement(
+            nil,
+            output: OutputRuntimeConfiguration(
+                mode: nil,
+                outputMode: .paste,
+                autoSendKey: .enter,
+                customCommand: nil
+            ),
+            inputTarget: makeInputTarget(),
+            didPostPasteCommand: true
+        )
+
+        #expect(completion == .originalRetained)
+        #expect(scheduledKeys == [.enter])
     }
 
     @Test func skippingEnhancementPastesOriginalTextWithoutAutoSend() async {
@@ -265,20 +325,22 @@ struct TranscriptionDeliveryTests {
             customCommand: nil
         )
 
-        let retained = delivery.finishProvisionalDeliveryWithoutEnhancement(
+        let retained = await delivery.finishProvisionalDeliveryWithoutEnhancement(
             session,
             output: output,
-            inputTarget: makeInputTarget()
+            inputTarget: makeInputTarget(),
+            didPostPasteCommand: true
         )
 
         #expect(retained == .originalRetained)
         #expect(scheduledKeys == [.enter])
 
         session.registerUserInteraction()
-        let canceled = delivery.finishProvisionalDeliveryWithoutEnhancement(
+        let canceled = await delivery.finishProvisionalDeliveryWithoutEnhancement(
             session,
             output: output,
-            inputTarget: makeInputTarget()
+            inputTarget: makeInputTarget(),
+            didPostPasteCommand: true
         )
 
         #expect(canceled == .canceledByUser)

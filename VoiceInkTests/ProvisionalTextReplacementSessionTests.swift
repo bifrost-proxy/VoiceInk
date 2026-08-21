@@ -8,9 +8,24 @@ struct ProvisionalTextReplacementSessionTests {
     @Test func onlySuccessfulReplacementPersistsEnhancement() {
         #expect(ProvisionalTextReplacementSession.ReplacementResult.replaced.shouldPersistEnhancement)
         #expect(!ProvisionalTextReplacementSession.ReplacementResult.originalRetained.shouldPersistEnhancement)
+        #expect(!ProvisionalTextReplacementSession.ReplacementResult.originalNotInserted.shouldPersistEnhancement)
         #expect(!ProvisionalTextReplacementSession.ReplacementResult.canceledByUser.shouldPersistEnhancement)
         #expect(!ProvisionalTextReplacementSession.ReplacementResult.targetChanged.shouldPersistEnhancement)
         #expect(!ProvisionalTextReplacementSession.ReplacementResult.unavailable.shouldPersistEnhancement)
+    }
+
+    @Test func unchangedPreInsertionStateReportsDroppedPasteCommand() async throws {
+        let session = try #require(makeSession(
+            currentState: RecordingEditableTextState(
+                value: "prefix suffix",
+                selectedTextRange: CFRange(location: 7, length: 0)
+            ),
+            replaceText: { _, _, _, _, _, _ in true }
+        ))
+
+        let result = await session.replace(with: "enhanced")
+
+        #expect(result == .originalNotInserted)
     }
 
     @Test func rollbackOwnershipRejectsCancellationAndConcurrentEdits() {

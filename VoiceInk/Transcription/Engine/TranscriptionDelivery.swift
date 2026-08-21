@@ -74,6 +74,7 @@ final class TranscriptionDelivery {
 
     struct ProvisionalPasteResult {
         let wasDelivered: Bool
+        let didPostPasteCommand: Bool
         let replacementSession: ProvisionalTextReplacementSession?
 
         /// Continue enhancement only when its result can still be delivered. A failed provisional
@@ -130,15 +131,27 @@ final class TranscriptionDelivery {
         guard await restoreInputTarget(inputTarget) == .restored else {
             if copyToClipboard(pastedText) {
                 notifyUnavailableTarget()
-                return ProvisionalPasteResult(wasDelivered: true, replacementSession: nil)
+                return ProvisionalPasteResult(
+                    wasDelivered: true,
+                    didPostPasteCommand: false,
+                    replacementSession: nil
+                )
             }
-            return ProvisionalPasteResult(wasDelivered: false, replacementSession: nil)
+            return ProvisionalPasteResult(
+                wasDelivered: false,
+                didPostPasteCommand: false,
+                replacementSession: nil
+            )
         }
 
         let preInsertionState = captureEditableTextState(inputTarget)
         let pasteResult = await pasteAtCursor(pastedText)
         guard pasteResult == .commandPosted else {
-            return ProvisionalPasteResult(wasDelivered: false, replacementSession: nil)
+            return ProvisionalPasteResult(
+                wasDelivered: false,
+                didPostPasteCommand: false,
+                replacementSession: nil
+            )
         }
 
         let replacementSession = preInsertionState.flatMap { state in
@@ -150,7 +163,11 @@ final class TranscriptionDelivery {
                 onUserInteraction: onUserInteraction
             )
         }
-        return ProvisionalPasteResult(wasDelivered: true, replacementSession: replacementSession)
+        return ProvisionalPasteResult(
+            wasDelivered: true,
+            didPostPasteCommand: true,
+            replacementSession: replacementSession
+        )
     }
 
     func completeProvisionalDelivery(
@@ -173,10 +190,12 @@ final class TranscriptionDelivery {
     func finishProvisionalDeliveryWithoutEnhancement(
         _ session: ProvisionalTextReplacementSession?,
         output: OutputRuntimeConfiguration,
-        inputTarget: RecordingInputTarget
-    ) -> ProvisionalTextReplacementSession.ReplacementResult {
-        let result = session?.finishKeepingOriginal() ?? .originalRetained
-        if result == .originalRetained,
+        inputTarget: RecordingInputTarget,
+        didPostPasteCommand: Bool
+    ) async -> ProvisionalTextReplacementSession.ReplacementResult {
+        let result = await session?.finishKeepingOriginal() ?? .originalRetained
+        if didPostPasteCommand,
+            result == .originalRetained,
             output.outputMode == .paste,
             output.autoSendKey.isEnabled
         {
