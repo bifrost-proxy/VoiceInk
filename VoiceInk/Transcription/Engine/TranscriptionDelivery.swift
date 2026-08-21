@@ -133,6 +133,7 @@ final class TranscriptionDelivery {
         inputTarget: RecordingInputTarget,
         dismiss: @escaping () async -> Void,
         shouldCancel: @escaping @MainActor () -> Bool,
+        shouldRecoverCanceledPaste: @escaping @MainActor () -> Bool = { false },
         onUserInteraction: @escaping @MainActor () -> Void
     ) async -> ProvisionalPasteResult {
         guard !shouldCancel() else {
@@ -208,6 +209,22 @@ final class TranscriptionDelivery {
             let wasCanceledByUser = replacementSession?.wasCanceledByUser == true
             replacementSession?.stopMonitoring()
             if wasCanceledByUser && !shouldCancel() {
+                // The recording shortcut itself is also visible to the global interaction monitor.
+                // Give its handler one MainActor turn to mark an explicit "skip enhancement"
+                // request. That intent must fall back to a fresh raw paste, whereas arbitrary user
+                // input must suppress any further automatic write.
+                await waitForExplicitPasteRecoveryIntent()
+                if !Self.shouldSuppressRecoveryAfterInterruptedProvisionalPaste(
+                    wasCanceledByUser: true,
+                    recordingCanceled: shouldCancel(),
+                    explicitRecoveryRequested: shouldRecoverCanceledPaste()
+                ) {
+                    return ProvisionalPasteResult(
+                        wasDelivered: false,
+                        didPostPasteCommand: false,
+                        replacementSession: nil
+                    )
+                }
                 reportOriginalNotInsertedAfterInteraction()
                 return ProvisionalPasteResult(
                     wasDelivered: true,
@@ -228,6 +245,20 @@ final class TranscriptionDelivery {
             didPostPasteCommand: true,
             replacementSession: replacementSession
         )
+    }
+
+    static func shouldSuppressRecoveryAfterInterruptedProvisionalPaste(
+        wasCanceledByUser: Bool,
+        recordingCanceled: Bool,
+        explicitRecoveryRequested: Bool
+    ) -> Bool {
+        wasCanceledByUser && !recordingCanceled && !explicitRecoveryRequested
+    }
+
+    private func waitForExplicitPasteRecoveryIntent() async {
+        await Task.detached {
+            try? await Task.sleep(for: .milliseconds(30))
+        }.value
     }
 
     /// A user interaction makes another automatic paste and any clipboard overwrite unsafe. The

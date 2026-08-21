@@ -226,6 +226,22 @@ struct TranscriptionDeliveryTests {
         #expect(interruptedNotificationCount == 1)
     }
 
+    @Test func ordinaryInteractionSuppressesASecondAutomaticPaste() {
+        #expect(TranscriptionDelivery.shouldSuppressRecoveryAfterInterruptedProvisionalPaste(
+            wasCanceledByUser: true,
+            recordingCanceled: false,
+            explicitRecoveryRequested: false
+        ))
+    }
+
+    @Test func explicitEnhancementBypassRecoversACanceledPrePasteAttempt() {
+        #expect(!TranscriptionDelivery.shouldSuppressRecoveryAfterInterruptedProvisionalPaste(
+            wasCanceledByUser: true,
+            recordingCanceled: false,
+            explicitRecoveryRequested: true
+        ))
+    }
+
     @Test func fullCancellationBeforeReplacementPreventsMutationAndAutoSend() async throws {
         var isCanceled = false
         var replacementCount = 0

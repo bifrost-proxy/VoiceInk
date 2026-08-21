@@ -64,6 +64,7 @@ class TranscriptionPipeline {
         onStateChange: @escaping (RecordingState) -> Void,
         shouldCancel: @escaping () -> Bool,
         shouldBypassEnhancement: () -> Bool = { false },
+        shouldRecoverCanceledProvisionalPaste: @escaping () -> Bool = { false },
         onProvisionalDeliveryWillBegin: @escaping () -> Void = {},
         onProvisionalDeliveryCompleted: @escaping (Bool) -> Void = { _ in },
         onProvisionalInteraction: @escaping () -> Void = {},
@@ -246,6 +247,7 @@ class TranscriptionPipeline {
                             inputTarget: inputTarget,
                             dismiss: onDismiss,
                             shouldCancel: shouldCancel,
+                            shouldRecoverCanceledPaste: shouldRecoverCanceledProvisionalPaste,
                             onUserInteraction: onProvisionalInteraction
                         )
                         deliveryDuration = (deliveryDuration ?? 0)
