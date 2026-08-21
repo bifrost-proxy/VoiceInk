@@ -38,7 +38,7 @@ class NotchWindowManager {
     }
 
     func hide() {
-        panel?.orderOut(nil)
+        panel?.dismissRecorderOverlay()
     }
 
     func destroyWindow() {
@@ -61,7 +61,7 @@ class NotchWindowManager {
     }
 
     private func deinitializeWindow() {
-        panel?.orderOut(nil)
+        panel?.dismissRecorderOverlay()
         windowController?.close()
         windowController = nil
         panel = nil

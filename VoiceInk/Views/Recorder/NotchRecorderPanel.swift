@@ -1,15 +1,7 @@
 import AppKit
 import SwiftUI
 
-class KeyablePanel: NSPanel {
-    override var canBecomeKey: Bool { true }
-    override var canBecomeMain: Bool { true }
-}
-
-class NotchRecorderPanel: KeyablePanel {
-    override var canBecomeKey: Bool { true }
-    override var canBecomeMain: Bool { true }
-
+class NotchRecorderPanel: RecorderOverlayPanel {
     var onMetricsChange: (((frame: NSRect, notchWidth: CGFloat, notchHeight: CGFloat)) -> Void)?
 
     init(contentRect: NSRect) {
@@ -20,16 +12,11 @@ class NotchRecorderPanel: KeyablePanel {
             defer: false
         )
 
-        self.isFloatingPanel = true
-        self.canHide = false
-        self.level = .statusBar + 3
         self.backgroundColor = .clear
         self.isOpaque = false
         self.alphaValue = 1.0
         self.hasShadow = false
         self.isMovableByWindowBackground = false
-        self.hidesOnDeactivate = false
-        self.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
         self.appearance = NSAppearance(named: .darkAqua)
         self.styleMask.remove(.titled)
         self.titlebarAppearsTransparent = true
@@ -75,19 +62,17 @@ class NotchRecorderPanel: KeyablePanel {
     }
 
     func show() {
-        let metrics = NotchRecorderPanel.calculateWindowMetrics()
-        onMetricsChange?(metrics)
-        setFrame(metrics.frame, display: true)
-        orderFrontRegardless()
+        presentRecorderOverlay()
     }
 
     @objc private func handleScreenParametersChange() {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
-            guard let self else { return }
-            let metrics = NotchRecorderPanel.calculateWindowMetrics()
-            self.onMetricsChange?(metrics)
-            self.setFrame(metrics.frame, display: true)
-        }
+        reassertRecorderOverlay(after: 0.1)
+    }
+
+    override func prepareRecorderOverlayForPresentation() {
+        let metrics = NotchRecorderPanel.calculateWindowMetrics()
+        onMetricsChange?(metrics)
+        setFrame(metrics.frame, display: true)
     }
 
     deinit {
