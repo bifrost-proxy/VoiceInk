@@ -9,6 +9,7 @@ enum UpdatePreparationProgress: Equatable, Sendable {
 
 struct UpdateInstallationPlan: Sendable {
     let helperURL: URL
+    let watchdogReadyURL: URL
     let arguments: [String]
 
     func launch() throws {
@@ -16,6 +17,20 @@ struct UpdateInstallationPlan: Sendable {
         process.executableURL = URL(fileURLWithPath: "/bin/zsh")
         process.arguments = [helperURL.path] + arguments
         try process.run()
+
+        let deadline = Date().addingTimeInterval(2)
+        while process.isRunning, Date() < deadline {
+            if FileManager.default.fileExists(atPath: watchdogReadyURL.path) {
+                return
+            }
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        guard FileManager.default.fileExists(atPath: watchdogReadyURL.path) else {
+            if process.isRunning {
+                process.terminate()
+            }
+            throw UpdateInstaller.Failure.helperCreationFailed
+        }
     }
 }
 
@@ -242,6 +257,7 @@ enum UpdateInstaller {
         let backup = currentApp.deletingLastPathComponent()
             .appendingPathComponent(".VoiceInk-update-backup-\(UUID().uuidString).app")
         let marker = root.appendingPathComponent("launch-healthy")
+        let watchdogReady = root.appendingPathComponent("watchdog-ready")
         let logDirectory = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Logs/VoiceInk", isDirectory: true)
         try FileManager.default.createDirectory(
@@ -262,6 +278,7 @@ enum UpdateInstaller {
 
         return UpdateInstallationPlan(
             helperURL: helper,
+            watchdogReadyURL: watchdogReady,
             arguments: [
                 String(ProcessInfo.processInfo.processIdentifier),
                 currentApp.path,
@@ -271,6 +288,7 @@ enum UpdateInstaller {
                 root.path,
                 log.path,
                 version,
+                watchdogReady.path,
             ]
         )
     }
@@ -289,8 +307,8 @@ enum UpdateInstaller {
             update_root="$6"
             log_file="$7"
             expected_version="$8"
+            watchdog_ready="$9"
             expected_architecture="\(expectedArchitecture.rawValue)"
-            old_executable="$current_app/Contents/MacOS/VoiceInk"
             exec >>"$log_file" 2>&1
 
             \(processExitWatchdogScript())
@@ -358,50 +376,84 @@ enum UpdateInstaller {
         let forcedAttempts = max(forcedExitAttempts, 1)
 
         return """
-            wait_for_old_process_exit() {
-              local maximum_attempts="$1"
-              local attempt=0
-              while (( attempt < maximum_attempts )); do
-                if ! old_process_is_running; then
-                  return 0
-                fi
-                /bin/sleep 0.2
-                (( attempt += 1 ))
-              done
-              return 1
+            if ! /usr/bin/osascript -l JavaScript - \
+              "$old_pid" \
+              "\(gracefulAttempts)" "\(terminationAttempts)" "\(forcedAttempts)" \
+              "$watchdog_ready" <<'VOICEINK_WATCHDOG_JXA'
+            ObjC.import('AppKit')
+
+            function run(argv) {
+              const oldPid = Number(argv[0])
+              const gracefulAttempts = Number(argv[1])
+              const terminationAttempts = Number(argv[2])
+              const forcedAttempts = Number(argv[3])
+              const readyPath = argv[4]
+              const application = $.NSRunningApplication.runningApplicationWithProcessIdentifier(oldPid)
+
+              function markReady() {
+                const data = $.NSString.stringWithString('ready').dataUsingEncoding($.NSUTF8StringEncoding)
+                const created = $.NSFileManager.defaultManager
+                  .createFileAtPathContentsAttributes(readyPath, data, $())
+                if (!Boolean(created)) {
+                  throw new Error('Could not create the update watchdog readiness marker.')
+                }
+              }
+
+              if (application.isNil()) {
+                markReady()
+                return 'VoiceInk exited before the update watchdog attached.'
+              }
+
+              const bundleIdentifier = application.bundleIdentifier
+              if (bundleIdentifier.isNil()) {
+                throw new Error('Could not verify the running VoiceInk application identity.')
+              }
+              if (ObjC.unwrap(bundleIdentifier) !== 'com.prakashjoshipax.VoiceInk') {
+                markReady()
+                return 'The original VoiceInk PID has already exited and been reused.'
+              }
+
+              // Keep this application object for the full watchdog lifetime. Unlike a PID,
+              // it cannot be retargeted if the original process exits and its PID is reused.
+              markReady()
+
+              function waitForExit(maximumAttempts) {
+                for (let attempt = 0; attempt < maximumAttempts; attempt += 1) {
+                  if (Boolean(application.terminated)) {
+                    return true
+                  }
+                  $.NSRunLoop.currentRunLoop.runUntilDate(
+                    $.NSDate.dateWithTimeIntervalSinceNow(0.2)
+                  )
+                }
+                return Boolean(application.terminated)
+              }
+
+              if (waitForExit(gracefulAttempts)) {
+                return 'VoiceInk exited gracefully.'
+              }
+
+              console.log('VoiceInk did not exit after a graceful quit; requesting termination.')
+              application.terminate
+              if (waitForExit(terminationAttempts)) {
+                return 'VoiceInk exited after the termination request.'
+              }
+
+              console.log('VoiceInk did not exit after the termination request; forcing termination.')
+              if (!Boolean(application.forceTerminate)) {
+                throw new Error('Could not force the original VoiceInk process to terminate.')
+              }
+
+              while (!waitForExit(forcedAttempts)) {
+                console.log('Waiting for the force-terminated VoiceInk process to disappear.')
+              }
+              return 'VoiceInk exited after forced termination.'
             }
-
-            old_process_is_running() {
-              if ! /bin/kill -0 "$old_pid" 2>/dev/null; then
-                return 1
-              fi
-              local running_executable
-              local expected_identity
-              local running_identity
-              running_executable=$(/bin/ps -p "$old_pid" -o comm= 2>/dev/null || true)
-              expected_identity=$(/usr/bin/stat -f '%d:%i' "$old_executable" 2>/dev/null || true)
-              running_identity=$(/usr/bin/stat -f '%d:%i' "$running_executable" 2>/dev/null || true)
-              [[ -n "$expected_identity" && "$running_identity" == "$expected_identity" ]]
-            }
-
-            if ! wait_for_old_process_exit \(gracefulAttempts); then
-              if old_process_is_running; then
-                print -r -- "VoiceInk did not exit after a graceful quit; sending TERM to PID $old_pid."
-                /bin/kill -TERM "$old_pid" 2>/dev/null || true
-              fi
-
-              if ! wait_for_old_process_exit \(terminationAttempts); then
-                if old_process_is_running; then
-                  print -r -- "VoiceInk did not exit after TERM; sending KILL to PID $old_pid."
-                  /bin/kill -KILL "$old_pid" 2>/dev/null || true
-                fi
-
-                if ! wait_for_old_process_exit \(forcedAttempts); then
-                  print -r -- "VoiceInk PID $old_pid remained alive after KILL; aborting update."
-                  /bin/rm -rf "$update_root"
-                  exit 1
-                fi
-              fi
+            VOICEINK_WATCHDOG_JXA
+            then
+              print -r -- "Could not safely stop the original VoiceInk process; aborting update."
+              /bin/rm -rf "$update_root"
+              exit 1
             fi
             """
     }

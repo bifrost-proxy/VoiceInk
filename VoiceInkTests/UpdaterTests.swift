@@ -8,6 +8,23 @@ struct UpdaterTests {
         .urls(for: .cachesDirectory, in: .userDomainMask)[0]
         .appendingPathComponent("VoiceInk/Updates/.artifact-test-app-path")
 
+    private static var artifactTestURL: URL? {
+        if let configuredPath = try? String(contentsOf: artifactTestPathURL, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+            !configuredPath.isEmpty
+        {
+            return URL(fileURLWithPath: configuredPath, isDirectory: true)
+        }
+
+        let testHost = Bundle.main.bundleURL
+        guard testHost.pathExtension == "app",
+            Bundle.main.bundleIdentifier == "com.prakashjoshipax.VoiceInk"
+        else {
+            return nil
+        }
+        return testHost
+    }
+
     @Test func semanticVersionsUseNumericOrdering() {
         #expect(UpdateService.isNewer("2.3.0", than: "2.2.9"))
         #expect(UpdateService.isNewer("3.0.0", than: "2.99.99"))
@@ -135,33 +152,11 @@ struct UpdaterTests {
         #expect(process.terminationStatus == 0)
     }
 
-    @Test func installationWatchdogForcesAStuckOldProcessToExit() throws {
+    @Test func installationWatchdogUsesAStableApplicationHandle() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("voiceink-updater-watchdog-tests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
-
-        let readyURL = directory.appendingPathComponent("ready")
-        let stubbornProcess = Process()
-        stubbornProcess.executableURL = URL(fileURLWithPath: "/usr/bin/perl")
-        stubbornProcess.arguments = [
-            "-e",
-            "$SIG{TERM} = 'IGNORE'; open(my $ready, '>', $ARGV[0]) or die $!; "
-                + "print {$ready} 'ready'; close($ready); sleep 1 while 1;",
-            readyURL.path,
-        ]
-        try stubbornProcess.run()
-        defer {
-            if stubbornProcess.isRunning {
-                _ = kill(stubbornProcess.processIdentifier, SIGKILL)
-            }
-        }
-
-        let readinessDeadline = Date().addingTimeInterval(2)
-        while !FileManager.default.fileExists(atPath: readyURL.path), Date() < readinessDeadline {
-            Thread.sleep(forTimeInterval: 0.02)
-        }
-        #expect(FileManager.default.fileExists(atPath: readyURL.path))
 
         let scriptURL = directory.appendingPathComponent("watchdog.zsh")
         let watchdog = UpdateInstaller.processExitWatchdogScript(
@@ -171,50 +166,26 @@ struct UpdaterTests {
         )
         let script = """
             #!/bin/zsh
-            old_pid="\(stubbornProcess.processIdentifier)"
-            old_executable="/usr/bin/perl"
+            old_pid="99999999"
+            watchdog_ready="\(directory.appendingPathComponent("watchdog-ready").path)"
             update_root="\(directory.path)"
             \(watchdog)
             """
         try Data(script.utf8).write(to: scriptURL)
 
-        #expect(script.contains("/bin/kill -TERM \"$old_pid\""))
-        #expect(script.contains("/bin/kill -KILL \"$old_pid\""))
-        #expect(script.contains("running_executable=$(/bin/ps -p \"$old_pid\" -o comm="))
-
-        let watchdogOutputURL = directory.appendingPathComponent("watchdog-output.log")
-        FileManager.default.createFile(atPath: watchdogOutputURL.path, contents: nil)
-        let watchdogOutput = try FileHandle(forWritingTo: watchdogOutputURL)
-        defer { try? watchdogOutput.close() }
+        #expect(script.contains("NSRunningApplication.runningApplicationWithProcessIdentifier"))
+        #expect(script.contains("application.terminate"))
+        #expect(script.contains("application.forceTerminate"))
+        #expect(!script.contains("/bin/kill -TERM"))
+        #expect(!script.contains("/bin/kill -KILL"))
 
         let watchdogProcess = Process()
         watchdogProcess.executableURL = URL(fileURLWithPath: "/bin/zsh")
         watchdogProcess.arguments = [scriptURL.path]
-        watchdogProcess.standardOutput = watchdogOutput
-        watchdogProcess.standardError = watchdogOutput
         try watchdogProcess.run()
-
-        let exitDeadline = Date().addingTimeInterval(5)
-        while watchdogProcess.isRunning, Date() < exitDeadline {
-            Thread.sleep(forTimeInterval: 0.02)
-        }
-        if watchdogProcess.isRunning {
-            watchdogProcess.terminate()
-        }
         watchdogProcess.waitUntilExit()
-        try watchdogOutput.close()
-        let output = try String(contentsOf: watchdogOutputURL, encoding: .utf8)
 
         #expect(watchdogProcess.terminationStatus == 0)
-        #expect(output.contains("sending TERM"))
-        #expect(output.contains("sending KILL"))
-        let stubbornProcessExited = waitUntil(timeout: 2) { !stubbornProcess.isRunning }
-        #expect(stubbornProcessExited)
-        if stubbornProcessExited {
-            stubbornProcess.waitUntilExit()
-            #expect(stubbornProcess.terminationReason == .uncaughtSignal)
-            #expect(stubbornProcess.terminationStatus == SIGKILL)
-        }
     }
 
     @Test func installationWatchdogDoesNotSignalAReusedPID() throws {
@@ -237,7 +208,7 @@ struct UpdaterTests {
         let script = """
             #!/bin/zsh
             old_pid="\(unrelatedProcess.processIdentifier)"
-            old_executable="/Applications/VoiceInk.app/Contents/MacOS/VoiceInk"
+            watchdog_ready="\(directory.appendingPathComponent("watchdog-ready").path)"
             \(UpdateInstaller.processExitWatchdogScript(
                 gracefulExitAttempts: 1,
                 terminationExitAttempts: 1,
@@ -249,6 +220,8 @@ struct UpdaterTests {
         let watchdogProcess = Process()
         watchdogProcess.executableURL = URL(fileURLWithPath: "/bin/zsh")
         watchdogProcess.arguments = [scriptURL.path]
+        watchdogProcess.standardOutput = FileHandle.nullDevice
+        watchdogProcess.standardError = FileHandle.nullDevice
         try watchdogProcess.run()
         watchdogProcess.waitUntilExit()
 
@@ -257,14 +230,11 @@ struct UpdaterTests {
     }
 
     @Test(
-        .enabled(if: FileManager.default.fileExists(atPath: artifactTestPathURL.path))
+        .enabled(if: artifactTestURL != nil)
     )
     func installationHelperReplacesAndRelaunchesARealArtifact() throws {
         let environment = ProcessInfo.processInfo.environment
-        let artifactPath = try String(contentsOf: Self.artifactTestPathURL, encoding: .utf8)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        #expect(!artifactPath.isEmpty)
-        let artifact = URL(fileURLWithPath: artifactPath, isDirectory: true)
+        let artifact = try #require(Self.artifactTestURL)
         let infoPlist = artifact.appendingPathComponent("Contents/Info.plist")
         let executable = artifact.appendingPathComponent("Contents/MacOS/VoiceInk")
         #expect(FileManager.default.fileExists(atPath: infoPlist.path))
@@ -299,6 +269,7 @@ struct UpdaterTests {
         try FileManager.default.createDirectory(at: updateRoot, withIntermediateDirectories: true)
         try copyApp(artifact, to: currentApp)
         try copyApp(artifact, to: stagedApp)
+        try signApp(stagedApp)
         try Data(UpdateInstaller.installationHelperScript().utf8).write(to: helperURL)
 
         defer {
@@ -307,28 +278,34 @@ struct UpdaterTests {
             try? FileManager.default.removeItem(at: updateRoot)
         }
 
-        let oldProcess = Process()
-        oldProcess.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        oldProcess.arguments = [
-            "-c",
-            "trap '' TERM; exec \"$1\"",
-            "artifact-test",
-            currentExecutable.path,
-        ]
-        oldProcess.environment = environment.merging([
+        let helperEnvironment = environment.merging([
             "HOME": isolatedHome.path,
             "CFFIXED_USER_HOME": isolatedHome.path,
         ]) { _, isolated in isolated }
-        try oldProcess.run()
-        #expect(waitUntil(timeout: 5) {
-            processIDs(executableURL: currentExecutable).contains(oldProcess.processIdentifier)
-        })
+        let launcher = Process()
+        launcher.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        launcher.arguments = [
+            "-n",
+            "--env", "HOME=\(isolatedHome.path)",
+            "--env", "CFFIXED_USER_HOME=\(isolatedHome.path)",
+            currentApp.path,
+        ]
+        try launcher.run()
+        launcher.waitUntilExit()
+        #expect(launcher.terminationStatus == 0)
+        let oldPID = try #require(waitForProcess(executableURL: currentExecutable, timeout: 5))
+        #expect(kill(oldPID, SIGSTOP) == 0)
+        defer {
+            if kill(oldPID, 0) == 0 {
+                _ = kill(oldPID, SIGKILL)
+            }
+        }
 
         let helperProcess = Process()
         helperProcess.executableURL = URL(fileURLWithPath: "/bin/zsh")
         helperProcess.arguments = [
             helperURL.path,
-            String(oldProcess.processIdentifier),
+            String(oldPID),
             currentApp.path,
             stagedApp.path,
             backupApp.path,
@@ -336,19 +313,23 @@ struct UpdaterTests {
             updateRoot.path,
             logURL.path,
             version,
+            updateRoot.appendingPathComponent("watchdog-ready").path,
         ]
-        helperProcess.environment = oldProcess.environment
+        helperProcess.environment = helperEnvironment
         try helperProcess.run()
         helperProcess.waitUntilExit()
-        oldProcess.waitUntilExit()
+
+        let oldProcessExited = waitUntil(timeout: 5) { kill(oldPID, 0) != 0 }
+        #expect(oldProcessExited)
+        if !oldProcessExited {
+            _ = kill(oldPID, SIGKILL)
+        }
 
         #expect(helperProcess.terminationStatus == 0)
-        #expect(oldProcess.terminationReason == .uncaughtSignal)
-        #expect(oldProcess.terminationStatus == SIGKILL)
         #expect(FileManager.default.fileExists(atPath: currentApp.path))
         #expect(!FileManager.default.fileExists(atPath: backupApp.path))
         #expect(!FileManager.default.fileExists(atPath: updateRoot.path))
-        #expect(try String(contentsOf: logURL, encoding: .utf8).contains("sending KILL"))
+        #expect(try String(contentsOf: logURL, encoding: .utf8).contains("forcing termination"))
         #expect(waitUntil(timeout: 5) { !processIDs(executableURL: currentExecutable).isEmpty })
     }
 
@@ -356,6 +337,15 @@ struct UpdaterTests {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
         process.arguments = [source.path, destination.path]
+        try process.run()
+        process.waitUntilExit()
+        #expect(process.terminationStatus == 0)
+    }
+
+    private func signApp(_ app: URL) throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
+        process.arguments = ["--force", "--deep", "--sign", "-", app.path]
         try process.run()
         process.waitUntilExit()
         #expect(process.terminationStatus == 0)
@@ -370,6 +360,15 @@ struct UpdaterTests {
             Thread.sleep(forTimeInterval: 0.05)
         }
         return condition()
+    }
+
+    private func waitForProcess(executableURL: URL, timeout: TimeInterval) -> pid_t? {
+        var pid: pid_t?
+        _ = waitUntil(timeout: timeout) {
+            pid = processIDs(executableURL: executableURL).first
+            return pid != nil
+        }
+        return pid
     }
 
     private func processIDs(executableURL: URL) -> [pid_t] {
