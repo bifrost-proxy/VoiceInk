@@ -143,11 +143,11 @@ struct UpdaterTests {
 
         let readyURL = directory.appendingPathComponent("ready")
         let stubbornProcess = Process()
-        stubbornProcess.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        stubbornProcess.executableURL = URL(fileURLWithPath: "/usr/bin/perl")
         stubbornProcess.arguments = [
-            "-c",
-            "trap '' TERM; print -r -- ready > \"$1\"; while true; do :; done",
-            "watchdog-test",
+            "-e",
+            "$SIG{TERM} = 'IGNORE'; open(my $ready, '>', $ARGV[0]) or die $!; "
+                + "print {$ready} 'ready'; close($ready); sleep 1 while 1;",
             readyURL.path,
         ]
         try stubbornProcess.run()
@@ -172,7 +172,7 @@ struct UpdaterTests {
         let script = """
             #!/bin/zsh
             old_pid="\(stubbornProcess.processIdentifier)"
-            old_executable="/bin/zsh"
+            old_executable="/usr/bin/perl"
             update_root="\(directory.path)"
             \(watchdog)
             """
@@ -183,8 +183,11 @@ struct UpdaterTests {
         #expect(script.contains("running_executable=$(/bin/ps -p \"$old_pid\" -o comm="))
 
         let watchdogProcess = Process()
+        let watchdogOutput = Pipe()
         watchdogProcess.executableURL = URL(fileURLWithPath: "/bin/zsh")
         watchdogProcess.arguments = [scriptURL.path]
+        watchdogProcess.standardOutput = watchdogOutput
+        watchdogProcess.standardError = watchdogOutput
         try watchdogProcess.run()
 
         let exitDeadline = Date().addingTimeInterval(5)
@@ -195,8 +198,14 @@ struct UpdaterTests {
             watchdogProcess.terminate()
         }
         watchdogProcess.waitUntilExit()
+        let output = String(
+            data: watchdogOutput.fileHandleForReading.readDataToEndOfFile(),
+            encoding: .utf8
+        ) ?? ""
 
         #expect(watchdogProcess.terminationStatus == 0)
+        #expect(output.contains("sending TERM"))
+        #expect(output.contains("sending KILL"))
         let stubbornProcessExited = waitUntil(timeout: 2) { !stubbornProcess.isRunning }
         #expect(stubbornProcessExited)
         if stubbornProcessExited {
