@@ -66,7 +66,7 @@ class NotchRecorderPanel: RecorderOverlayPanel {
     }
 
     @objc private func handleScreenParametersChange() {
-        reassertRecorderOverlay(after: 0.1)
+        reassertRecorderOverlay(after: 0.1, prepareFrame: true)
     }
 
     override func prepareRecorderOverlayForPresentation() {

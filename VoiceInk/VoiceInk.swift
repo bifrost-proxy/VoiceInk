@@ -36,6 +36,10 @@ struct VoiceInkApp: App {
     @StateObject private var cloudSpeechPreconnectionService: CloudSpeechPreconnectionService
 
     init() {
+        // Recorder panels are created lazily, so capture screen-saver, lock,
+        // sleep, and session transitions for the whole application lifetime.
+        _ = RecorderOverlaySystemStateMonitor.shared
+
         UpdateInstaller.markUpdateLaunchHealthyIfNeeded()
 
         // Disable HTTP response caching — prevents API responses from being stored in Cache.db
