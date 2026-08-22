@@ -362,7 +362,7 @@ enum UpdateInstaller {
               local maximum_attempts="$1"
               local attempt=0
               while (( attempt < maximum_attempts )); do
-                if ! /bin/kill -0 "$old_pid" 2>/dev/null; then
+                if ! old_process_is_running; then
                   return 0
                 fi
                 /bin/sleep 0.2
@@ -371,30 +371,30 @@ enum UpdateInstaller {
               return 1
             }
 
-            old_process_is_expected() {
+            old_process_is_running() {
               if ! /bin/kill -0 "$old_pid" 2>/dev/null; then
-                return 0
+                return 1
               fi
               local running_executable
+              local expected_identity
+              local running_identity
               running_executable=$(/bin/ps -p "$old_pid" -o comm= 2>/dev/null || true)
-              [[ -z "$running_executable" || "$running_executable" == "$old_executable" ]]
-            }
-
-            abort_for_unexpected_process() {
-              print -r -- "Refusing to signal PID $old_pid because it is no longer $old_executable."
-              /bin/rm -rf "$update_root"
-              exit 1
+              expected_identity=$(/usr/bin/stat -f '%d:%i' "$old_executable" 2>/dev/null || true)
+              running_identity=$(/usr/bin/stat -f '%d:%i' "$running_executable" 2>/dev/null || true)
+              [[ -n "$expected_identity" && "$running_identity" == "$expected_identity" ]]
             }
 
             if ! wait_for_old_process_exit \(gracefulAttempts); then
-              old_process_is_expected || abort_for_unexpected_process
-              print -r -- "VoiceInk did not exit after a graceful quit; sending TERM to PID $old_pid."
-              /bin/kill -TERM "$old_pid" 2>/dev/null || true
+              if old_process_is_running; then
+                print -r -- "VoiceInk did not exit after a graceful quit; sending TERM to PID $old_pid."
+                /bin/kill -TERM "$old_pid" 2>/dev/null || true
+              fi
 
               if ! wait_for_old_process_exit \(terminationAttempts); then
-                old_process_is_expected || abort_for_unexpected_process
-                print -r -- "VoiceInk did not exit after TERM; sending KILL to PID $old_pid."
-                /bin/kill -KILL "$old_pid" 2>/dev/null || true
+                if old_process_is_running; then
+                  print -r -- "VoiceInk did not exit after TERM; sending KILL to PID $old_pid."
+                  /bin/kill -KILL "$old_pid" 2>/dev/null || true
+                fi
 
                 if ! wait_for_old_process_exit \(forcedAttempts); then
                   print -r -- "VoiceInk PID $old_pid remained alive after KILL; aborting update."

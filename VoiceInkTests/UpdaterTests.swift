@@ -4,6 +4,10 @@ import Testing
 @testable import VoiceInk
 
 struct UpdaterTests {
+    private static let artifactTestPathURL = FileManager.default
+        .urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("VoiceInk/Updates/.artifact-test-app-path")
+
     @Test func semanticVersionsUseNumericOrdering() {
         #expect(UpdateService.isNewer("2.3.0", than: "2.2.9"))
         #expect(UpdateService.isNewer("3.0.0", than: "2.99.99"))
@@ -194,5 +198,205 @@ struct UpdaterTests {
 
         #expect(watchdogProcess.terminationStatus == 0)
         #expect(!stubbornProcess.isRunning)
+    }
+
+    @Test func installationWatchdogDoesNotSignalAReusedPID() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("voiceink-updater-pid-tests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let unrelatedProcess = Process()
+        unrelatedProcess.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        unrelatedProcess.arguments = ["30"]
+        try unrelatedProcess.run()
+        defer {
+            if unrelatedProcess.isRunning {
+                unrelatedProcess.terminate()
+            }
+        }
+
+        let scriptURL = directory.appendingPathComponent("watchdog.zsh")
+        let script = """
+            #!/bin/zsh
+            old_pid="\(unrelatedProcess.processIdentifier)"
+            old_executable="/Applications/VoiceInk.app/Contents/MacOS/VoiceInk"
+            \(UpdateInstaller.processExitWatchdogScript(
+                gracefulExitAttempts: 1,
+                terminationExitAttempts: 1,
+                forcedExitAttempts: 1
+            ))
+            """
+        try Data(script.utf8).write(to: scriptURL)
+
+        let watchdogProcess = Process()
+        watchdogProcess.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        watchdogProcess.arguments = [scriptURL.path]
+        try watchdogProcess.run()
+        watchdogProcess.waitUntilExit()
+
+        #expect(watchdogProcess.terminationStatus == 0)
+        #expect(unrelatedProcess.isRunning)
+    }
+
+    @Test(
+        .enabled(if: FileManager.default.fileExists(atPath: artifactTestPathURL.path))
+    )
+    func installationHelperReplacesAndRelaunchesARealArtifact() throws {
+        let environment = ProcessInfo.processInfo.environment
+        let artifactPath = try String(contentsOf: Self.artifactTestPathURL, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        #expect(!artifactPath.isEmpty)
+        let artifact = URL(fileURLWithPath: artifactPath, isDirectory: true)
+        let infoPlist = artifact.appendingPathComponent("Contents/Info.plist")
+        let executable = artifact.appendingPathComponent("Contents/MacOS/VoiceInk")
+        #expect(FileManager.default.fileExists(atPath: infoPlist.path))
+        #expect(FileManager.default.isExecutableFile(atPath: executable.path))
+
+        let version = try #require(
+            Bundle(url: artifact)?.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+        )
+        let testRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("voiceink-updater-artifact-tests-\(UUID().uuidString)", isDirectory: true)
+        let currentApp = testRoot.appendingPathComponent("Current/VoiceInk.app", isDirectory: true)
+        let stagedApp = testRoot.appendingPathComponent("Staged/VoiceInk.app", isDirectory: true)
+        let backupApp = testRoot.appendingPathComponent("Backup.app", isDirectory: true)
+        let isolatedHome = testRoot.appendingPathComponent("Home", isDirectory: true)
+        let logURL = testRoot.appendingPathComponent("update.log")
+        let updateRoot = isolatedHome.appendingPathComponent("Library/Caches", isDirectory: true)
+            .appendingPathComponent("VoiceInk/Updates", isDirectory: true)
+            .appendingPathComponent("artifact-test-\(UUID().uuidString)", isDirectory: true)
+        let markerURL = updateRoot.appendingPathComponent("launch-healthy")
+        let helperURL = updateRoot.appendingPathComponent("install-update.zsh")
+        let currentExecutable = currentApp.appendingPathComponent("Contents/MacOS/VoiceInk")
+
+        try FileManager.default.createDirectory(
+            at: currentApp.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            at: stagedApp.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(at: isolatedHome, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: updateRoot, withIntermediateDirectories: true)
+        try copyApp(artifact, to: currentApp)
+        try copyApp(artifact, to: stagedApp)
+        try Data(UpdateInstaller.installationHelperScript().utf8).write(to: helperURL)
+
+        defer {
+            terminateProcesses(executableURL: currentExecutable)
+            try? FileManager.default.removeItem(at: testRoot)
+            try? FileManager.default.removeItem(at: updateRoot)
+        }
+
+        let oldProcess = Process()
+        oldProcess.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        oldProcess.arguments = [
+            "-c",
+            "trap '' TERM; exec \"$1\"",
+            "artifact-test",
+            currentExecutable.path,
+        ]
+        oldProcess.environment = environment.merging([
+            "HOME": isolatedHome.path,
+            "CFFIXED_USER_HOME": isolatedHome.path,
+        ]) { _, isolated in isolated }
+        try oldProcess.run()
+        #expect(waitUntil(timeout: 5) {
+            processIDs(executableURL: currentExecutable).contains(oldProcess.processIdentifier)
+        })
+
+        let helperProcess = Process()
+        helperProcess.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        helperProcess.arguments = [
+            helperURL.path,
+            String(oldProcess.processIdentifier),
+            currentApp.path,
+            stagedApp.path,
+            backupApp.path,
+            markerURL.path,
+            updateRoot.path,
+            logURL.path,
+            version,
+        ]
+        helperProcess.environment = oldProcess.environment
+        try helperProcess.run()
+        helperProcess.waitUntilExit()
+        oldProcess.waitUntilExit()
+
+        #expect(helperProcess.terminationStatus == 0)
+        #expect(oldProcess.terminationReason == .uncaughtSignal)
+        #expect(oldProcess.terminationStatus == SIGKILL)
+        #expect(FileManager.default.fileExists(atPath: currentApp.path))
+        #expect(!FileManager.default.fileExists(atPath: backupApp.path))
+        #expect(!FileManager.default.fileExists(atPath: updateRoot.path))
+        #expect(try String(contentsOf: logURL, encoding: .utf8).contains("sending KILL"))
+        #expect(waitUntil(timeout: 5) { !processIDs(executableURL: currentExecutable).isEmpty })
+    }
+
+    private func copyApp(_ source: URL, to destination: URL) throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+        process.arguments = [source.path, destination.path]
+        try process.run()
+        process.waitUntilExit()
+        #expect(process.terminationStatus == 0)
+    }
+
+    private func waitUntil(timeout: TimeInterval, condition: () -> Bool) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if condition() {
+                return true
+            }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        return condition()
+    }
+
+    private func processIDs(executableURL: URL) -> [pid_t] {
+        let process = Process()
+        let output = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/bin/ps")
+        process.arguments = ["-axo", "pid=,comm="]
+        process.standardOutput = output
+        guard (try? process.run()) != nil else {
+            return []
+        }
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard let text = String(data: data, encoding: .utf8) else {
+            return []
+        }
+        guard let expectedIdentity = fileIdentity(atPath: executableURL.path) else {
+            return []
+        }
+        return text.split(separator: "\n").compactMap { line in
+            let fields = line.split(maxSplits: 1, whereSeparator: \.isWhitespace)
+            guard fields.count == 2,
+                fileIdentity(atPath: String(fields[1])) == expectedIdentity,
+                let pid = pid_t(String(fields[0]))
+            else {
+                return nil
+            }
+            return pid
+        }
+    }
+
+    private func fileIdentity(atPath path: String) -> String? {
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: path),
+            let device = attributes[.systemNumber] as? NSNumber,
+            let inode = attributes[.systemFileNumber] as? NSNumber
+        else {
+            return nil
+        }
+        return "\(device):\(inode)"
+    }
+
+    private func terminateProcesses(executableURL: URL) {
+        for pid in processIDs(executableURL: executableURL) {
+            _ = kill(pid, SIGKILL)
+        }
     }
 }
