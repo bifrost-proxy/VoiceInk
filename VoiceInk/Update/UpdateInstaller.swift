@@ -290,11 +290,10 @@ enum UpdateInstaller {
             log_file="$7"
             expected_version="$8"
             expected_architecture="\(expectedArchitecture.rawValue)"
+            old_executable="$current_app/Contents/MacOS/VoiceInk"
             exec >>"$log_file" 2>&1
 
-            while /bin/kill -0 "$old_pid" 2>/dev/null; do
-              /bin/sleep 0.2
-            done
+            \(processExitWatchdogScript())
 
             restore_previous() {
               /bin/rm -rf "$current_app"
@@ -346,6 +345,64 @@ enum UpdateInstaller {
               restore_previous
             fi
             exit 1
+            """
+    }
+
+    static func processExitWatchdogScript(
+        gracefulExitAttempts: Int = 25,
+        terminationExitAttempts: Int = 15,
+        forcedExitAttempts: Int = 10
+    ) -> String {
+        let gracefulAttempts = max(gracefulExitAttempts, 1)
+        let terminationAttempts = max(terminationExitAttempts, 1)
+        let forcedAttempts = max(forcedExitAttempts, 1)
+
+        return """
+            wait_for_old_process_exit() {
+              local maximum_attempts="$1"
+              local attempt=0
+              while (( attempt < maximum_attempts )); do
+                if ! /bin/kill -0 "$old_pid" 2>/dev/null; then
+                  return 0
+                fi
+                /bin/sleep 0.2
+                (( attempt += 1 ))
+              done
+              return 1
+            }
+
+            old_process_is_expected() {
+              if ! /bin/kill -0 "$old_pid" 2>/dev/null; then
+                return 0
+              fi
+              local running_executable
+              running_executable=$(/bin/ps -p "$old_pid" -o comm= 2>/dev/null || true)
+              [[ -z "$running_executable" || "$running_executable" == "$old_executable" ]]
+            }
+
+            abort_for_unexpected_process() {
+              print -r -- "Refusing to signal PID $old_pid because it is no longer $old_executable."
+              /bin/rm -rf "$update_root"
+              exit 1
+            }
+
+            if ! wait_for_old_process_exit \(gracefulAttempts); then
+              old_process_is_expected || abort_for_unexpected_process
+              print -r -- "VoiceInk did not exit after a graceful quit; sending TERM to PID $old_pid."
+              /bin/kill -TERM "$old_pid" 2>/dev/null || true
+
+              if ! wait_for_old_process_exit \(terminationAttempts); then
+                old_process_is_expected || abort_for_unexpected_process
+                print -r -- "VoiceInk did not exit after TERM; sending KILL to PID $old_pid."
+                /bin/kill -KILL "$old_pid" 2>/dev/null || true
+
+                if ! wait_for_old_process_exit \(forcedAttempts); then
+                  print -r -- "VoiceInk PID $old_pid remained alive after KILL; aborting update."
+                  /bin/rm -rf "$update_root"
+                  exit 1
+                fi
+              fi
+            fi
             """
     }
 

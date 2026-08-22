@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import Testing
 @testable import VoiceInk
@@ -128,5 +129,70 @@ struct UpdaterTests {
         try process.run()
         process.waitUntilExit()
         #expect(process.terminationStatus == 0)
+    }
+
+    @Test func installationWatchdogForcesAStuckOldProcessToExit() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("voiceink-updater-watchdog-tests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let readyURL = directory.appendingPathComponent("ready")
+        let stubbornProcess = Process()
+        stubbornProcess.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        stubbornProcess.arguments = [
+            "-c",
+            "trap '' TERM; print -r -- ready > \"$1\"; while true; do /bin/sleep 1; done",
+            "watchdog-test",
+            readyURL.path,
+        ]
+        try stubbornProcess.run()
+        defer {
+            if stubbornProcess.isRunning {
+                _ = kill(stubbornProcess.processIdentifier, SIGKILL)
+            }
+        }
+
+        let readinessDeadline = Date().addingTimeInterval(2)
+        while !FileManager.default.fileExists(atPath: readyURL.path), Date() < readinessDeadline {
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        #expect(FileManager.default.fileExists(atPath: readyURL.path))
+
+        let scriptURL = directory.appendingPathComponent("watchdog.zsh")
+        let watchdog = UpdateInstaller.processExitWatchdogScript(
+            gracefulExitAttempts: 1,
+            terminationExitAttempts: 1,
+            forcedExitAttempts: 5
+        )
+        let script = """
+            #!/bin/zsh
+            old_pid="\(stubbornProcess.processIdentifier)"
+            old_executable="/bin/zsh"
+            update_root="\(directory.path)"
+            \(watchdog)
+            """
+        try Data(script.utf8).write(to: scriptURL)
+
+        #expect(script.contains("/bin/kill -TERM \"$old_pid\""))
+        #expect(script.contains("/bin/kill -KILL \"$old_pid\""))
+        #expect(script.contains("running_executable=$(/bin/ps -p \"$old_pid\" -o comm="))
+
+        let watchdogProcess = Process()
+        watchdogProcess.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        watchdogProcess.arguments = [scriptURL.path]
+        try watchdogProcess.run()
+
+        let exitDeadline = Date().addingTimeInterval(5)
+        while watchdogProcess.isRunning, Date() < exitDeadline {
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        if watchdogProcess.isRunning {
+            watchdogProcess.terminate()
+        }
+        watchdogProcess.waitUntilExit()
+
+        #expect(watchdogProcess.terminationStatus == 0)
+        #expect(!stubbornProcess.isRunning)
     }
 }
