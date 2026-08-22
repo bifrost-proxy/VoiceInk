@@ -146,7 +146,7 @@ struct UpdaterTests {
         stubbornProcess.executableURL = URL(fileURLWithPath: "/bin/zsh")
         stubbornProcess.arguments = [
             "-c",
-            "trap '' TERM; print -r -- ready > \"$1\"; while true; do /bin/sleep 1; done",
+            "trap '' TERM; print -r -- ready > \"$1\"; while true; do :; done",
             "watchdog-test",
             readyURL.path,
         ]
@@ -197,7 +197,13 @@ struct UpdaterTests {
         watchdogProcess.waitUntilExit()
 
         #expect(watchdogProcess.terminationStatus == 0)
-        #expect(!stubbornProcess.isRunning)
+        let stubbornProcessExited = waitUntil(timeout: 2) { !stubbornProcess.isRunning }
+        #expect(stubbornProcessExited)
+        if stubbornProcessExited {
+            stubbornProcess.waitUntilExit()
+            #expect(stubbornProcess.terminationReason == .uncaughtSignal)
+            #expect(stubbornProcess.terminationStatus == SIGKILL)
+        }
     }
 
     @Test func installationWatchdogDoesNotSignalAReusedPID() throws {
