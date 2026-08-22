@@ -95,6 +95,10 @@ jobs:
             # Cross-architecture WMO builds can exhaust the hosted arm64 runner
             # when several package targets compile at once.
             xcodebuild_args+=(-jobs 1)
+            xcodebuild_args+=(
+              SWIFT_COMPILATION_MODE=singlefile
+              SWIFT_OPTIMIZATION_LEVEL=-Onone
+            )
           fi
           xcodebuild "${xcodebuild_args[@]}" \
             ARCHS="$architecture" \
