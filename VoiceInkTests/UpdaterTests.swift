@@ -182,8 +182,12 @@ struct UpdaterTests {
         #expect(script.contains("/bin/kill -KILL \"$old_pid\""))
         #expect(script.contains("running_executable=$(/bin/ps -p \"$old_pid\" -o comm="))
 
+        let watchdogOutputURL = directory.appendingPathComponent("watchdog-output.log")
+        FileManager.default.createFile(atPath: watchdogOutputURL.path, contents: nil)
+        let watchdogOutput = try FileHandle(forWritingTo: watchdogOutputURL)
+        defer { try? watchdogOutput.close() }
+
         let watchdogProcess = Process()
-        let watchdogOutput = Pipe()
         watchdogProcess.executableURL = URL(fileURLWithPath: "/bin/zsh")
         watchdogProcess.arguments = [scriptURL.path]
         watchdogProcess.standardOutput = watchdogOutput
@@ -198,10 +202,8 @@ struct UpdaterTests {
             watchdogProcess.terminate()
         }
         watchdogProcess.waitUntilExit()
-        let output = String(
-            data: watchdogOutput.fileHandleForReading.readDataToEndOfFile(),
-            encoding: .utf8
-        ) ?? ""
+        try watchdogOutput.close()
+        let output = try String(contentsOf: watchdogOutputURL, encoding: .utf8)
 
         #expect(watchdogProcess.terminationStatus == 0)
         #expect(output.contains("sending TERM"))
