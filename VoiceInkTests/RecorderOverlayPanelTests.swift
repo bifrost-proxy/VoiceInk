@@ -386,8 +386,12 @@ struct RecorderOverlayPanelTests {
     func activeSpaceReattachmentPreservesFrame() async throws {
         let panel = VisibilityRecoveryTrackingPanel()
         defer { panel.close() }
-        panel.testRecoveryIntervals = [0.01, 0.01]
-        panel.recorderOverlayOnScreenProvider = { _ in false }
+        panel.testRecoveryIntervals = [0.01, 0.01, 0.01]
+        var visibilityChecks = 0
+        panel.recorderOverlayOnScreenProvider = { _ in
+            visibilityChecks += 1
+            return visibilityChecks >= 3
+        }
 
         panel.presentRecorderOverlay()
         let manuallyChosenFrame = NSRect(x: 71, y: 93, width: 160, height: 40)
@@ -397,6 +401,7 @@ struct RecorderOverlayPanelTests {
         #expect(panel.frame == manuallyChosenFrame)
         #expect(panel.collectionBehavior == RecorderOverlayPanel.overlayCollectionBehavior)
         #expect(panel.isVisible)
+        #expect(visibilityChecks == 3)
     }
 
     @Test("A dismissed recorder is not restored by a delayed Space callback")
