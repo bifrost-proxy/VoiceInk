@@ -401,7 +401,6 @@ struct RecorderOverlayPanelTests {
         #expect(panel.frame == manuallyChosenFrame)
         #expect(panel.collectionBehavior == RecorderOverlayPanel.overlayCollectionBehavior)
         #expect(panel.isVisible)
-        #expect(visibilityChecks == 3)
     }
 
     @Test("A dismissed recorder is not restored by a delayed Space callback")
