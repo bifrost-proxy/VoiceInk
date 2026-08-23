@@ -23,6 +23,20 @@ struct RecorderOverlayPanelTests {
         }
     }
 
+    private final class VisibilityRecoveryTrackingPanel: RecorderOverlayPanel {
+        var testRecoveryIntervals: [TimeInterval] = [0.01, 0.01, 0.01, 0.01]
+        override var visibilityRecoveryIntervals: [TimeInterval] { testRecoveryIntervals }
+
+        convenience init() {
+            self.init(
+                contentRect: NSRect(x: 0, y: 0, width: 160, height: 40),
+                styleMask: [.nonactivatingPanel],
+                backing: .buffered,
+                defer: false
+            )
+        }
+    }
+
     @Test("Every recorder style can join other applications in full screen")
     func recorderPanelsUseCrossApplicationOverlayPolicy() {
         let panels: [RecorderOverlayPanel] = [
@@ -71,6 +85,7 @@ struct RecorderOverlayPanelTests {
         // so this verifies the server-side layer rather than racing AppKit's
         // local `isVisible` state.
         var actualLayer: Int?
+        var isOnScreen = false
         for _ in 0..<20 {
             let windowInfo = CGWindowListCopyWindowInfo(
                 [.optionAll],
@@ -80,11 +95,13 @@ struct RecorderOverlayPanelTests {
                 ($0[kCGWindowNumber as String] as? NSNumber)?.intValue == panel.windowNumber
             }
             actualLayer = (recorderInfo?[kCGWindowLayer as String] as? NSNumber)?.intValue
-            if actualLayer == RecorderOverlayPanel.overlayLevel.rawValue { break }
+            isOnScreen = panel.isRecorderOverlayOnScreen()
+            if actualLayer == RecorderOverlayPanel.overlayLevel.rawValue, isOnScreen { break }
             try await Task.sleep(for: .milliseconds(25))
         }
 
         #expect(actualLayer == RecorderOverlayPanel.overlayLevel.rawValue)
+        #expect(isOnScreen)
     }
 
     @Test("A manually moved recorder keeps its position and restores its overlay policy")
@@ -279,6 +296,106 @@ struct RecorderOverlayPanelTests {
 
         try await Task.sleep(for: .milliseconds(550))
 
+        #expect(panel.isVisible)
+    }
+
+    @Test("Visibility recovery stops once WindowServer reports the recorder on screen")
+    func stopsRecoveryAfterServerSideVisibilityReturns() async throws {
+        let panel = VisibilityRecoveryTrackingPanel()
+        defer { panel.close() }
+        var visibilityChecks = 0
+        var reattachments = 0
+        panel.recorderOverlayOnScreenProvider = { _ in
+            visibilityChecks += 1
+            return visibilityChecks >= 2
+        }
+        panel.activeSpaceReattachmentHandler = { reattachments += 1 }
+
+        panel.presentRecorderOverlay()
+        try await Task.sleep(for: .milliseconds(100))
+
+        #expect(visibilityChecks == 2)
+        #expect(reattachments == 0)
+    }
+
+    @Test("A recorder still off screen after the grace check is reattached to the active Space")
+    func reattachesRecorderThatRemainsOffScreen() async throws {
+        let panel = VisibilityRecoveryTrackingPanel()
+        defer { panel.close() }
+        var reattachments = 0
+        panel.recorderOverlayOnScreenProvider = { _ in false }
+        panel.activeSpaceReattachmentHandler = { reattachments += 1 }
+
+        panel.presentRecorderOverlay()
+        try await Task.sleep(for: .milliseconds(100))
+
+        #expect(reattachments == panel.visibilityRecoveryIntervals.count - 1)
+    }
+
+    @Test("Dismissing a recorder cancels pending server-side visibility recovery")
+    func dismissalCancelsVisibilityRecovery() async throws {
+        let panel = VisibilityRecoveryTrackingPanel()
+        defer { panel.close() }
+        var visibilityChecks = 0
+        var reattachments = 0
+        panel.recorderOverlayOnScreenProvider = { _ in
+            visibilityChecks += 1
+            return false
+        }
+        panel.activeSpaceReattachmentHandler = { reattachments += 1 }
+
+        panel.presentRecorderOverlay()
+        panel.dismissRecorderOverlay()
+        try await Task.sleep(for: .milliseconds(100))
+
+        #expect(visibilityChecks == 0)
+        #expect(reattachments == 0)
+        #expect(!panel.isVisible)
+    }
+
+    @Test("System suppression cancels pending server-side visibility recovery")
+    func suppressionCancelsVisibilityRecovery() async throws {
+        let panel = VisibilityRecoveryTrackingPanel()
+        defer { panel.close() }
+        var visibilityChecks = 0
+        var reattachments = 0
+        panel.recorderOverlayOnScreenProvider = { _ in
+            visibilityChecks += 1
+            return false
+        }
+        panel.activeSpaceReattachmentHandler = { reattachments += 1 }
+
+        panel.presentRecorderOverlay()
+        NSWorkspace.shared.notificationCenter.post(
+            name: NSWorkspace.screensDidSleepNotification,
+            object: NSWorkspace.shared
+        )
+        try await Task.sleep(for: .milliseconds(100))
+
+        #expect(visibilityChecks == 0)
+        #expect(reattachments == 0)
+        #expect(!panel.isVisible)
+
+        NSWorkspace.shared.notificationCenter.post(
+            name: NSWorkspace.screensDidWakeNotification,
+            object: NSWorkspace.shared
+        )
+    }
+
+    @Test("Strong Space recovery preserves a manually selected frame")
+    func activeSpaceReattachmentPreservesFrame() async throws {
+        let panel = VisibilityRecoveryTrackingPanel()
+        defer { panel.close() }
+        panel.testRecoveryIntervals = [0.01, 0.01]
+        panel.recorderOverlayOnScreenProvider = { _ in false }
+
+        panel.presentRecorderOverlay()
+        let manuallyChosenFrame = NSRect(x: 71, y: 93, width: 160, height: 40)
+        panel.setFrame(manuallyChosenFrame, display: false)
+        try await Task.sleep(for: .milliseconds(100))
+
+        #expect(panel.frame == manuallyChosenFrame)
+        #expect(panel.collectionBehavior == RecorderOverlayPanel.overlayCollectionBehavior)
         #expect(panel.isVisible)
     }
 
