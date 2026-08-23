@@ -1,5 +1,6 @@
 import AppKit
 import CoreGraphics
+import OSLog
 
 enum RecorderOverlaySystemSuppressionReason: Hashable {
     case inactiveSession
@@ -128,10 +129,15 @@ final class RecorderOverlaySystemStateMonitor: NSObject {
 ///
 /// Recorder panels are system-style overlays: they must remain available in
 /// every Space, including full-screen Spaces owned by another application.
-/// AppKit can temporarily report an ordered panel as not visible while Spaces
-/// are transitioning, so presentation state is tracked independently from
-/// `isVisible` and the overlay is explicitly reasserted after each transition.
+/// AppKit's `isVisible` only reflects local ordering state; WindowServer can
+/// still leave an ordered panel detached from the current full-screen Space.
+/// Presentation state is therefore tracked independently and server-side
+/// visibility is verified after every transition.
 class RecorderOverlayPanel: NSPanel {
+    private static let logger = Logger(
+        subsystem: "com.prakashjoshipax.voiceink",
+        category: "RecorderOverlay"
+    )
     // Some full-screen players and presentation apps use the screen-saver
     // level themselves. A recorder at the same level then depends on which
     // application orders its window last. The public assistive-technology
@@ -147,11 +153,28 @@ class RecorderOverlayPanel: NSPanel {
         .stationary,
         .ignoresCycle,
     ]
+    static let activeSpaceRecoveryCollectionBehavior: NSWindow.CollectionBehavior = [
+        .moveToActiveSpace,
+        .canJoinAllApplications,
+        .fullScreenAuxiliary,
+        .stationary,
+        .ignoresCycle,
+    ]
 
     private(set) var isRecorderPresented = false
     private var presentationGeneration: UInt = 0
+    private var visibilityRecoveryGeneration: UInt = 0
+    private var isVisibilityRecoveryActive = false
     private var systemSuppressionReasons: Set<RecorderOverlaySystemSuppressionReason> = []
     private var needsFramePreparation = false
+    private var isReattachingToActiveSpace = false
+
+    // The checks span the normal full-screen animation and a short settling
+    // period. They stop as soon as WindowServer reports the panel on screen.
+    // Internal overrides keep the state machine deterministic in unit tests.
+    var visibilityRecoveryIntervals: [TimeInterval] { [0.15, 0.25, 0.35, 0.45] }
+    var recorderOverlayOnScreenProvider: ((CGWindowID) -> Bool)?
+    var activeSpaceReattachmentHandler: (() -> Void)?
 
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
@@ -261,14 +284,13 @@ class RecorderOverlayPanel: NSPanel {
             orderOut(nil)
         }
 
-        // A panel first ordered while another app's full-screen Space is
-        // settling can initially be attached to the previous Space. Reassert
-        // after the same settling intervals used for an explicit Space change.
-        scheduleReassertions(for: presentationGeneration)
+        beginVisibilityRecovery()
     }
 
     func dismissRecorderOverlay() {
         presentationGeneration &+= 1
+        visibilityRecoveryGeneration &+= 1
+        isVisibilityRecoveryActive = false
         isRecorderPresented = false
         needsFramePreparation = false
         orderOut(nil)
@@ -322,45 +344,166 @@ class RecorderOverlayPanel: NSPanel {
         }
     }
 
-    private func scheduleReassertions(for generation: UInt) {
-        for delay in [0.1, 0.4] {
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-                guard let self,
-                    self.isRecorderPresented,
-                    self.presentationGeneration == generation
+    func isRecorderOverlayOnScreen() -> Bool {
+        guard isVisible else { return false }
+        let windowID = CGWindowID(windowNumber)
+        if let recorderOverlayOnScreenProvider {
+            return recorderOverlayOnScreenProvider(windowID)
+        }
+
+        guard windowID != kCGNullWindowID,
+            let windowInfo = CGWindowListCopyWindowInfo(.optionAll, kCGNullWindowID)
+                as? [[String: Any]],
+            let recorderInfo = windowInfo.first(where: {
+                ($0[kCGWindowNumber as String] as? NSNumber)?.uint32Value == windowID
+            })
+        else {
+            return false
+        }
+
+        return (recorderInfo[kCGWindowIsOnscreen as String] as? NSNumber)?.boolValue == true
+    }
+
+    private func beginVisibilityRecovery(restart: Bool = false) {
+        guard isRecorderPresented, systemSuppressionReasons.isEmpty else { return }
+        restoreRecorderOverlayPolicyAndOrdering(prepareFrame: false)
+        guard restart || !isVisibilityRecoveryActive else { return }
+        isVisibilityRecoveryActive = true
+        visibilityRecoveryGeneration &+= 1
+        let recoveryGeneration = visibilityRecoveryGeneration
+        let presentationGeneration = presentationGeneration
+
+        runVisibilityRecoveryCheck(
+            at: 0,
+            recoveryGeneration: recoveryGeneration,
+            presentationGeneration: presentationGeneration
+        )
+    }
+
+    private func runVisibilityRecoveryCheck(
+        at index: Int,
+        recoveryGeneration: UInt,
+        presentationGeneration: UInt
+    ) {
+        guard index < visibilityRecoveryIntervals.count else {
+            if visibilityRecoveryGeneration == recoveryGeneration,
+                self.presentationGeneration == presentationGeneration
+            {
+                isVisibilityRecoveryActive = false
+            }
+            return
+        }
+        let delay = visibilityRecoveryIntervals[index]
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self,
+                self.isRecorderPresented,
+                self.systemSuppressionReasons.isEmpty,
+                self.visibilityRecoveryGeneration == recoveryGeneration,
+                self.presentationGeneration == presentationGeneration
+            else {
+                return
+            }
+
+            guard !self.isRecorderOverlayOnScreen() else {
+                self.isVisibilityRecoveryActive = false
+                return
+            }
+
+            if index == 0 {
+                // During the animation, a normal reassertion is enough in the
+                // common case and avoids unnecessary server-side reattachment.
+                self.restoreRecorderOverlayPolicyAndOrdering(prepareFrame: false)
+            } else {
+                self.reattachRecorderOverlayToActiveSpace(
+                    recoveryGeneration: recoveryGeneration,
+                    presentationGeneration: presentationGeneration
+                )
+            }
+
+            self.runVisibilityRecoveryCheck(
+                at: index + 1,
+                recoveryGeneration: recoveryGeneration,
+                presentationGeneration: presentationGeneration
+            )
+        }
+    }
+
+    private func reattachRecorderOverlayToActiveSpace(
+        recoveryGeneration: UInt,
+        presentationGeneration: UInt
+    ) {
+        if let activeSpaceReattachmentHandler {
+            activeSpaceReattachmentHandler()
+            return
+        }
+
+        Self.logger.notice(
+            "Recorder window \(self.windowNumber, privacy: .public) remains off screen; reattaching to the active Space"
+        )
+
+        // Preserve both SwiftUI content and the user-selected frame. Ordering
+        // out and briefly using moveToActiveSpace gives WindowServer an
+        // explicit opportunity to attach this same panel to the destination
+        // Space; the all-Spaces policy is restored on the next run-loop turn.
+        let preservedFrame = frame
+        isReattachingToActiveSpace = true
+        orderOut(nil)
+
+        DispatchQueue.main.async { [weak self] in
+            guard let self,
+                self.isRecorderPresented,
+                self.systemSuppressionReasons.isEmpty,
+                self.visibilityRecoveryGeneration == recoveryGeneration,
+                self.presentationGeneration == presentationGeneration
+            else {
+                self?.isReattachingToActiveSpace = false
+                return
+            }
+            self.collectionBehavior = Self.activeSpaceRecoveryCollectionBehavior
+            self.setFrame(preservedFrame, display: false)
+            self.orderFrontRegardless()
+
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                guard self.isRecorderPresented,
+                    self.systemSuppressionReasons.isEmpty,
+                    self.visibilityRecoveryGeneration == recoveryGeneration,
+                    self.presentationGeneration == presentationGeneration
                 else {
+                    self.isReattachingToActiveSpace = false
                     return
                 }
-                self.reassertRecorderOverlay()
+                self.restoreRecorderOverlayPolicyAndOrdering(prepareFrame: false)
+                self.isReattachingToActiveSpace = false
             }
         }
     }
 
     @objc private func handleActiveSpaceChange() {
         guard isRecorderPresented else { return }
-
-        // Reorder once immediately after the Space changes and once after the
-        // full-screen transition settles. The second pass closes the race in
-        // which the destination app finishes ordering its full-screen window
-        // after AppKit posts the active-Space notification.
-        reassertRecorderOverlay(after: 0.1)
-        reassertRecorderOverlay(after: 0.4)
+        beginVisibilityRecovery(restart: true)
     }
 
     @objc private func handleApplicationActivation() {
-        reassertRecorderOverlay()
+        beginVisibilityRecovery()
     }
 
     @objc private func handleOverlayWindowDidMove() {
         // Interactive movement is handed off to WindowServer. Reapply only
         // the overlay invariants afterwards so a manually chosen position is
         // never replaced by automatic recorder geometry.
+        guard !isReattachingToActiveSpace else { return }
         reassertRecorderOverlay()
     }
 
     @objc private func handleWindowOcclusionChange() {
-        guard isRecorderPresented, !occlusionState.contains(.visible) else { return }
-        reassertRecorderOverlay()
+        guard isRecorderPresented,
+            !isReattachingToActiveSpace,
+            !occlusionState.contains(.visible)
+        else {
+            return
+        }
+        beginVisibilityRecovery()
     }
 
     @objc private func handleSessionDidResignActive() {
@@ -398,6 +541,8 @@ class RecorderOverlayPanel: NSPanel {
     private func suppressRecorderOverlay(for reason: RecorderOverlaySystemSuppressionReason) {
         systemSuppressionReasons.insert(reason)
         presentationGeneration &+= 1
+        visibilityRecoveryGeneration &+= 1
+        isVisibilityRecoveryActive = false
         guard isRecorderPresented else { return }
         orderOut(nil)
     }
@@ -407,7 +552,14 @@ class RecorderOverlayPanel: NSPanel {
         guard isRecorderPresented, systemSuppressionReasons.isEmpty else { return }
         presentationGeneration &+= 1
         restoreRecorderOverlayPolicyAndOrdering(prepareFrame: needsFramePreparation)
-        scheduleReassertions(for: presentationGeneration)
+        beginVisibilityRecovery()
+    }
+
+    override func close() {
+        if isRecorderPresented {
+            dismissRecorderOverlay()
+        }
+        super.close()
     }
 
     deinit {
