@@ -20,7 +20,7 @@ final class LocalAudioDeduplicationService {
         subsystem: "com.prakashjoshipax.voiceink",
         category: "LocalAudioDeduplicationService"
     )
-    private let completionKey = "HasCompletedLocalAudioDeduplicationV1"
+    private let completionKey = "HasCompletedLocalAudioDeduplicationV2"
     private var isRunning = false
 
     private init() {}
