@@ -685,6 +685,31 @@ struct VoiceInkTests {
         #expect(!FileManager.default.fileExists(atPath: duplicate.path))
     }
 
+    @Test func localAudioDeduplicationUsesSuppliedSyncContextSnapshot() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("VoiceInkLocalAudioDedupSyncContext-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let audioData = Data(repeating: 0x6d, count: 4_096)
+        let referenced = root.appendingPathComponent("synced-record.wav")
+        let staleOrphan = root.appendingPathComponent("legacy-record.wav")
+        try audioData.write(to: referenced)
+        try audioData.write(to: staleOrphan)
+
+        let result = try LocalAudioDeduplicationService.removeSafeDuplicateOrphans(
+            referencedPaths: [referenced.standardizedFileURL.path],
+            recordingsDirectory: root
+        )
+
+        #expect(result == LocalAudioDeduplicationResult(
+            deletedFileCount: 1,
+            reclaimedByteCount: Int64(audioData.count)
+        ))
+        #expect(FileManager.default.fileExists(atPath: referenced.path))
+        #expect(!FileManager.default.fileExists(atPath: staleOrphan.path))
+    }
+
     @Test func historyStorageCapacityUsesDefaultAndClampsSupportedRange() throws {
         let suiteName = "VoiceInkTests.HistoryStorageCapacity.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suiteName))

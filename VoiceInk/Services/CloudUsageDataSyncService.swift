@@ -197,6 +197,7 @@ final class CloudUsageDataSyncService: ObservableObject {
         let didChangeLocalStore: Bool
         let cloudAudioRecordIDs: Set<UUID>
         let latestRemoteDeviceName: String?
+        let referencedAudioPaths: Set<String>
     }
 
     private typealias AppendedBatch = (
@@ -422,7 +423,8 @@ final class CloudUsageDataSyncService: ObservableObject {
                         "Usage sync completed imports=\(outcome.importCandidateCount, privacy: .public) records=\(outcome.synchronizedRecordCount, privacy: .public) conflicts=\(outcome.conflictCount, privacy: .public)"
                     )
                     LocalAudioDeduplicationService.shared.runAfterUsageSyncIfNeeded(
-                        modelContainer: modelContainer
+                        modelContainer: modelContainer,
+                        referencedPaths: outcome.referencedAudioPaths
                     )
                 } else {
                     self.enqueueAllBeforeNextSync = self.enqueueAllBeforeNextSync || shouldEnqueueAll
@@ -702,6 +704,7 @@ final class CloudUsageDataSyncService: ObservableObject {
             defaults.set(Date(), forKey: Self.lastFullMaterializationKey)
         }
         persistAudioVerificationCacheIfNeeded()
+        let referencedAudioPaths = try Self.referencedAudioPaths(in: modelContext)
         return SyncOutcome(
             processedRecordIDs: pendingRecords,
             processedDeletionIDs: pendingDeletions,
@@ -712,8 +715,18 @@ final class CloudUsageDataSyncService: ObservableObject {
             usedLegacyScan: didScanLegacyUsage,
             didChangeLocalStore: applyResult.didChange,
             cloudAudioRecordIDs: allPendingAudioRecordIDs(),
-            latestRemoteDeviceName: loaded.latestRemoteEnvelope?.authorDisplayName
+            latestRemoteDeviceName: loaded.latestRemoteEnvelope?.authorDisplayName,
+            referencedAudioPaths: referencedAudioPaths
         )
+    }
+
+    private nonisolated static func referencedAudioPaths(
+        in modelContext: ModelContext
+    ) throws -> Set<String> {
+        let descriptor = FetchDescriptor<Transcription>()
+        return Set(try modelContext.fetch(descriptor).compactMap { transcription in
+            audioURL(from: transcription)?.standardizedFileURL.path
+        })
     }
 
     private nonisolated func appendLocalChanges(

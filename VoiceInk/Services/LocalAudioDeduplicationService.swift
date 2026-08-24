@@ -21,9 +21,9 @@ final class LocalAudioDeduplicationService {
         category: "LocalAudioDeduplicationService"
     )
     private let completionKey = "HasCompletedLocalAudioDeduplicationV2"
-    private let postUsageSyncCompletionKey = "HasCompletedLocalAudioDeduplicationV4MainContextSnapshot"
+    private let postUsageSyncCompletionKey = "HasCompletedLocalAudioDeduplicationV5SyncContextSnapshot"
     private var isRunning = false
-    private var pendingPostUsageSyncContainer: ModelContainer?
+    private var pendingPostUsageSyncRequest: (ModelContainer, Set<String>)?
 
     private init() {}
 
@@ -41,14 +41,18 @@ final class LocalAudioDeduplicationService {
     /// as a duplicate only after the startup repair has already taken its
     /// reference snapshot. Run one final pass after the first successful sync.
     @discardableResult
-    func runAfterUsageSyncIfNeeded(modelContainer: ModelContainer) -> Task<Void, Never>? {
+    func runAfterUsageSyncIfNeeded(
+        modelContainer: ModelContainer,
+        referencedPaths: Set<String>
+    ) -> Task<Void, Never>? {
         guard !UserDefaults.standard.bool(forKey: postUsageSyncCompletionKey) else { return nil }
         guard !isRunning else {
-            pendingPostUsageSyncContainer = modelContainer
+            pendingPostUsageSyncRequest = (modelContainer, referencedPaths)
             return nil
         }
         return startRepair(
             modelContainer: modelContainer,
+            referencedPaths: referencedPaths,
             completionKey: postUsageSyncCompletionKey,
             phase: "post-usage-sync"
         )
@@ -56,6 +60,7 @@ final class LocalAudioDeduplicationService {
 
     private func startRepair(
         modelContainer: ModelContainer,
+        referencedPaths suppliedReferencedPaths: Set<String>? = nil,
         completionKey: String,
         phase: String
     ) -> Task<Void, Never> {
@@ -65,12 +70,14 @@ final class LocalAudioDeduplicationService {
         let recordingsDirectory = Self.defaultRecordingsDirectory
         return Task { @MainActor in
             do {
-                // Capture SwiftData state from the app's main context before
-                // leaving the actor. A background context can lag a sync that
-                // just committed a new audio association in a split store.
-                let referencedPaths = try Self.referencedAudioPaths(
-                    modelContainer: modelContainer
-                )
+                let referencedPaths: Set<String>
+                if let suppliedReferencedPaths {
+                    referencedPaths = suppliedReferencedPaths
+                } else {
+                    referencedPaths = try Self.referencedAudioPaths(
+                        modelContainer: modelContainer
+                    )
+                }
                 let result = try await Task.detached(priority: .utility) {
                     try Self.removeSafeDuplicateOrphans(
                         referencedPaths: referencedPaths,
@@ -89,9 +96,12 @@ final class LocalAudioDeduplicationService {
 
             let service = LocalAudioDeduplicationService.shared
             service.isRunning = false
-            if let pendingContainer = service.pendingPostUsageSyncContainer {
-                service.pendingPostUsageSyncContainer = nil
-                service.runAfterUsageSyncIfNeeded(modelContainer: pendingContainer)
+            if let (pendingContainer, pendingPaths) = service.pendingPostUsageSyncRequest {
+                service.pendingPostUsageSyncRequest = nil
+                service.runAfterUsageSyncIfNeeded(
+                    modelContainer: pendingContainer,
+                    referencedPaths: pendingPaths
+                )
             }
         }
     }
@@ -117,7 +127,7 @@ final class LocalAudioDeduplicationService {
         })
     }
 
-    nonisolated private static func removeSafeDuplicateOrphans(
+    nonisolated static func removeSafeDuplicateOrphans(
         referencedPaths: Set<String>,
         recordingsDirectory: URL,
         fileManager: FileManager = .default
