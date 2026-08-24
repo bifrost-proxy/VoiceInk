@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import IOKit
 
 enum VoiceInkSyncDomain: String, Codable, CaseIterable, Sendable {
     case configuration
@@ -250,19 +251,28 @@ struct VoiceInkSyncRegisterState: Codable, Equatable, Sendable {
 /// Shared append-only transport for every VoiceInk iCloud Drive sync domain.
 /// iCloud Drive copies immutable operation files; domain reducers own merge semantics.
 final class ICloudDriveSyncCore: @unchecked Sendable {
+    private enum IdentityCollisionScanResult {
+        case collision
+        case clear
+        case retry
+    }
+
     static let shared = ICloudDriveSyncCore()
     static let maximumPayloadBytes = 7 * 1_024 * 1_024
     private static let maximumEnvelopeBytes = 8 * 1_024 * 1_024
 
     private static let metadataPrefix = "VoiceInkSyncV3."
     private static let deviceIDKey = metadataPrefix + "deviceID"
+    private static let deviceNameKey = metadataPrefix + "deviceName"
+    private static let deviceFingerprintKey = metadataPrefix + "deviceFingerprint"
+    private static let identityCollisionCheckKey = metadataPrefix + "identityCollisionCheckVersion"
     private static let sequenceKey = metadataPrefix + "sequence"
     private static let frontierKey = metadataPrefix + "frontier"
 
     private let defaults: UserDefaults
     private let fileManager: FileManager
     private let iCloudDriveRootOverride: URL?
-    let deviceID: String
+    private(set) var deviceID: String
     let deviceName: String
     private(set) var frontierWriteCountForTesting = 0
     private(set) var registerCheckpointWriteCountForTesting = 0
@@ -278,21 +288,147 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
         self.defaults = defaults
         self.fileManager = fileManager
         self.iCloudDriveRootOverride = iCloudDriveRootURL
-        if let existing = defaults.string(forKey: Self.deviceIDKey), UUID(uuidString: existing) != nil {
-            self.deviceID = existing
+        let normalizedName = deviceName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedName = normalizedName?.isEmpty == false
+            ? normalizedName!
+            : Host.current().localizedName ?? "Mac"
+        let currentDeviceName = String(resolvedName.prefix(120))
+        self.deviceName = currentDeviceName
+
+        let existingDeviceID = defaults.string(forKey: Self.deviceIDKey).flatMap { value in
+            UUID(uuidString: value).map { _ in value }
+        }
+        let currentFingerprint = Self.currentDeviceFingerprint()
+        let copiedIdentity = existingDeviceID != nil
+            && defaults.string(forKey: Self.deviceFingerprintKey).flatMap { persisted in
+                currentFingerprint.map { persisted != $0 }
+            } == true
+        if let existingDeviceID, !copiedIdentity {
+            self.deviceID = existingDeviceID
         } else {
             let created = UUID().uuidString
             defaults.set(created, forKey: Self.deviceIDKey)
             self.deviceID = created
         }
-        let normalizedName = deviceName?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let resolvedName = normalizedName?.isEmpty == false
-            ? normalizedName!
-            : Host.current().localizedName ?? "Mac"
-        self.deviceName = String(resolvedName.prefix(120))
+        defaults.set(currentDeviceName, forKey: Self.deviceNameKey)
+        if let currentFingerprint {
+            defaults.set(currentFingerprint, forKey: Self.deviceFingerprintKey)
+        }
         if iCloudDriveRootURL == nil {
             pruneOrphanedSyncCaches()
         }
+    }
+
+    /// Repairs identities copied before the local hardware fingerprint existed. This is called
+    /// on the serial utility queue before synchronization, never during app-launch construction.
+    func prepareDeviceIdentity() {
+        if let persisted = defaults.string(forKey: Self.deviceIDKey), persisted != deviceID {
+            deviceID = persisted
+        }
+        guard defaults.integer(forKey: Self.identityCollisionCheckKey) < 1 else { return }
+        switch Self.scanCloudLogForIdentityCollision(
+            fileManager: fileManager,
+            iCloudDriveRootURL: iCloudDriveRootOverride,
+            deviceID: deviceID
+        ) {
+        case .collision:
+            let created = UUID().uuidString
+            defaults.set(created, forKey: Self.deviceIDKey)
+            deviceID = created
+            defaults.set(1, forKey: Self.identityCollisionCheckKey)
+            pruneOrphanedSyncCaches()
+        case .clear:
+            defaults.set(1, forKey: Self.identityCollisionCheckKey)
+        case .retry:
+            break
+        }
+    }
+
+    private static func currentDeviceFingerprint() -> String? {
+        let service = IOServiceGetMatchingService(
+            kIOMainPortDefault, IOServiceMatching("IOPlatformExpertDevice"))
+        guard service != IO_OBJECT_NULL else { return nil }
+        defer { IOObjectRelease(service) }
+        guard let value = IORegistryEntryCreateCFProperty(
+            service, "IOPlatformUUID" as CFString, kCFAllocatorDefault, 0
+        )?.takeRetainedValue() as? String else { return nil }
+        return VoiceInkSyncEnvelope.sha256(Data(value.utf8))
+    }
+
+    private static func scanCloudLogForIdentityCollision(
+        fileManager: FileManager,
+        iCloudDriveRootURL: URL?,
+        deviceID: String
+    ) -> IdentityCollisionScanResult {
+        let cloudRoot = iCloudDriveRootURL ?? fileManager.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Mobile Documents/com~apple~CloudDocs", isDirectory: true)
+        let operationsRoot = cloudRoot.appendingPathComponent(
+            "VoiceInk/Sync/v3/Operations", isDirectory: true)
+        guard let domains = try? fileManager.contentsOfDirectory(
+            at: operationsRoot,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else { return .retry }
+
+        var inspectedFileCount = 0
+        var authorNames = Set<String>()
+        var foundDeviceDirectory = false
+        var foundValidEnvelope = false
+        var encounteredUnavailableItem = false
+        for domain in domains {
+            let deviceRoot = domain.appendingPathComponent(deviceID, isDirectory: true)
+            guard fileManager.fileExists(atPath: deviceRoot.path) else { continue }
+            foundDeviceDirectory = true
+            guard let enumerator = fileManager.enumerator(
+                at: deviceRoot,
+                includingPropertiesForKeys: [
+                    .isRegularFileKey, .fileSizeKey, .isUbiquitousItemKey,
+                    .ubiquitousItemDownloadingStatusKey,
+                ],
+                options: [.skipsHiddenFiles]
+            ) else {
+                encounteredUnavailableItem = true
+                continue
+            }
+            for case let url as URL in enumerator where url.pathExtension == "syncop" {
+                let values = try? url.resourceValues(forKeys: [
+                    .isRegularFileKey, .fileSizeKey, .isUbiquitousItemKey,
+                    .ubiquitousItemDownloadingStatusKey,
+                ])
+                guard values?.isRegularFile == true, (values?.fileSize ?? .max) <= 256 * 1_024 else {
+                    encounteredUnavailableItem = true
+                    continue
+                }
+                if values?.isUbiquitousItem == true,
+                    values?.ubiquitousItemDownloadingStatus != .current
+                {
+                    encounteredUnavailableItem = true
+                    continue
+                }
+                inspectedFileCount += 1
+                if let data = try? Data(contentsOf: url),
+                    data.count <= maximumEnvelopeBytes,
+                    let envelope = try? PropertyListDecoder().decode(
+                        VoiceInkSyncEnvelope.self, from: data),
+                    envelope.isValid,
+                    envelope.authorDeviceID == deviceID,
+                    let authorName = envelope.authorDeviceName?
+                        .trimmingCharacters(in: .whitespacesAndNewlines),
+                    !authorName.isEmpty
+                {
+                    foundValidEnvelope = true
+                    authorNames.insert(authorName)
+                    if authorNames.count > 1 { return .collision }
+                } else {
+                    encounteredUnavailableItem = true
+                }
+                if inspectedFileCount >= 512 { return .retry }
+            }
+        }
+        guard foundDeviceDirectory, foundValidEnvelope, !encounteredUnavailableItem else {
+            return .retry
+        }
+        return .clear
     }
 
     var rootURL: URL? {

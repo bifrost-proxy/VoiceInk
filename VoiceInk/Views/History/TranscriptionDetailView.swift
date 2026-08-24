@@ -3,15 +3,16 @@ import SwiftUI
 struct TranscriptionDetailView: View {
     let transcription: Transcription
     var onInfoTap: (() -> Void)?
+    @ObservedObject private var usageSync = CloudUsageDataSyncService.shared
 
-    private var hasAudioFile: Bool {
-        if let urlString = transcription.audioFileURL,
-            let url = URL(string: urlString),
+    private var hasAudio: Bool {
+        if let value = transcription.audioFileURL,
+            let url = URL(string: value),
             FileManager.default.fileExists(atPath: url.path)
         {
             return true
         }
-        return false
+        return usageSync.hasCloudAudio(for: transcription.id)
     }
 
     var body: some View {
@@ -35,13 +36,11 @@ struct TranscriptionDetailView: View {
                 .padding(16)
             }
 
-            if hasAudioFile, let urlString = transcription.audioFileURL,
-                let url = URL(string: urlString)
-            {
+            if hasAudio {
                 VStack(spacing: 0) {
                     Divider()
 
-                    AudioPlayerView(url: url, transcription: transcription, onInfoTap: onInfoTap)
+                    CloudBackedAudioPlayerView(transcription: transcription, onInfoTap: onInfoTap)
                         .padding(.horizontal, 10)
                         .padding(.vertical, 6)
                         .background(

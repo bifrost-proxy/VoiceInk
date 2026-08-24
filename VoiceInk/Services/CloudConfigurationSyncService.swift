@@ -496,6 +496,7 @@ final class CloudConfigurationSyncService: ObservableObject {
             )
         }
         guard syncCore.rootURL != nil else { throw CocoaError(.fileNoSuchFile) }
+        syncCore.prepareDeviceIdentity()
 
         try migrateLegacyConfigurationIfNeeded()
         if applyDictionary { try migrateLegacyDictionaryIfNeeded() }
