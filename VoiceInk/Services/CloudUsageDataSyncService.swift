@@ -421,6 +421,9 @@ final class CloudUsageDataSyncService: ObservableObject {
                     self.logger.notice(
                         "Usage sync completed imports=\(outcome.importCandidateCount, privacy: .public) records=\(outcome.synchronizedRecordCount, privacy: .public) conflicts=\(outcome.conflictCount, privacy: .public)"
                     )
+                    LocalAudioDeduplicationService.shared.runAfterUsageSyncIfNeeded(
+                        modelContainer: modelContainer
+                    )
                 } else {
                     self.enqueueAllBeforeNextSync = self.enqueueAllBeforeNextSync || shouldEnqueueAll
                 }
