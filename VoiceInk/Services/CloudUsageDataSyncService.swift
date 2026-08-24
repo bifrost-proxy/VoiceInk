@@ -128,6 +128,7 @@ final class CloudUsageDataSyncService: ObservableObject {
     @Published private(set) var lastSyncUsedLegacyScan = false
     @Published private(set) var localDeviceName: String
     @Published private(set) var lastRemoteDeviceName: String?
+    @Published private(set) var cloudAudioRecordIDs: Set<UUID> = []
 
     var statusText: String { state.displayText }
     var errorText: String? {
@@ -145,7 +146,6 @@ final class CloudUsageDataSyncService: ObservableObject {
     nonisolated private static let localBootstrapCompletedKey = metadataPrefix + "localBootstrapCompleted"
     nonisolated private static let legacyMigrationCompletedKey = metadataPrefix + "legacyMigrationCompleted"
     nonisolated private static let legacyMigratedPathsKey = metadataPrefix + "legacyMigratedPaths"
-    nonisolated private static let legacyPendingAudioDescriptorsKey = metadataPrefix + "legacyPendingAudioDescriptors"
     nonisolated private static let pendingAudioRecordIDsKey = metadataPrefix + "pendingAudioRecordIDsBySHA"
     nonisolated private static let lastFullMaterializationKey = metadataPrefix + "lastFullMaterializationAt"
     nonisolated private static let reconciliationInterval: TimeInterval = 30 * 60
@@ -186,8 +186,6 @@ final class CloudUsageDataSyncService: ObservableObject {
     private var enqueueAllBeforeNextSync = false
     private var consecutiveFailureCount = 0
     private var syncGeneration = 0
-    private var hasPendingAudioDownloads = false
-
     private struct SyncOutcome: Sendable {
         let processedRecordIDs: Set<UUID>
         let processedDeletionIDs: Set<UUID>
@@ -197,7 +195,7 @@ final class CloudUsageDataSyncService: ObservableObject {
         let importCandidateCount: Int
         let usedLegacyScan: Bool
         let didChangeLocalStore: Bool
-        let pendingAudioDownloadCount: Int
+        let cloudAudioRecordIDs: Set<UUID>
         let latestRemoteDeviceName: String?
     }
 
@@ -231,6 +229,7 @@ final class CloudUsageDataSyncService: ObservableObject {
         self.appliedOperationIDs = Self.decodeOperationIDs(defaults.data(forKey: Self.appliedOperationIDsKey))
         self.pendingAudioRecordIDsBySHA = Self.decodePendingAudioRecordIDs(
             defaults.data(forKey: Self.pendingAudioRecordIDsKey))
+        self.cloudAudioRecordIDs = Set(pendingAudioRecordIDsBySHA.values.flatMap { $0 })
         self.locallySuppressedRecordCount = Set(
             (defaults.stringArray(forKey: Self.locallySuppressedRecordIDsKey) ?? [])
                 .compactMap(UUID.init(uuidString:))
@@ -285,13 +284,39 @@ final class CloudUsageDataSyncService: ObservableObject {
         if defaults.bool(forKey: CloudSyncSettingsKeys.usageDataSyncEnabled) {
             if enabled {
                 enqueueAllBeforeNextSync = true
-                scheduleEventDrivenSync()
+                syncNow(fullScan: true, repairLocalStore: true)
             } else {
                 pendingAudioRecordIDsBySHA.removeAll()
+                cloudAudioRecordIDs.removeAll()
                 defaults.removeObject(forKey: Self.pendingAudioRecordIDsKey)
                 syncNow(fullScan: true, repairLocalStore: false)
             }
         }
+    }
+
+    func hasCloudAudio(for transcriptionID: UUID) -> Bool {
+        cloudAudioRecordIDs.contains(transcriptionID)
+    }
+
+    /// Downloads and verifies one source-audio blob in direct response to a user action.
+    /// Metadata reconciliation never calls this method.
+    func materializeAudioOnDemand(for transcriptionID: UUID) async throws -> URL {
+        guard defaults.bool(forKey: CloudSyncSettingsKeys.usageAudioSyncEnabled) else {
+            throw CocoaError(.userCancelled)
+        }
+        let executionCoordinator = self.executionCoordinator
+        for attempt in 0..<120 {
+            let result = try await executionCoordinator.run { [self] in
+                guard let descriptor = try audioDescriptor(for: transcriptionID) else {
+                    throw CocoaError(.fileNoSuchFile)
+                }
+                return try materializeAudio(descriptor, transcriptionID: transcriptionID)
+            }
+            if case .available(let url) = result { return url }
+            guard attempt < 119 else { break }
+            try await Task.sleep(for: .milliseconds(500))
+        }
+        throw CocoaError(.fileReadNoSuchFile)
     }
 
     func syncNow(
@@ -366,7 +391,7 @@ final class CloudUsageDataSyncService: ObservableObject {
                     self.lastExportCandidateCount = outcome.exportCandidateCount
                     self.lastImportCandidateCount = outcome.importCandidateCount
                     self.lastSyncUsedLegacyScan = outcome.usedLegacyScan
-                    self.hasPendingAudioDownloads = outcome.pendingAudioDownloadCount > 0
+                    self.cloudAudioRecordIDs = outcome.cloudAudioRecordIDs
                     if let deviceName = outcome.latestRemoteDeviceName {
                         self.lastRemoteDeviceName = deviceName
                     }
@@ -598,11 +623,11 @@ final class CloudUsageDataSyncService: ObservableObject {
             pending.formUnion(allIDs)
             persistIDs(pending, forKey: Self.pendingRecordIDsKey)
         }
-        let legacyResult = try migrateLegacyUsageIfNeeded()
+        let didScanLegacyUsage = try migrateLegacyUsageIfNeeded()
         let knownOperationIDs = Set(appliedOperationIDs.values.flatMap { $0 })
         let loaded = try loadRegister(
             knownOperationIDs: knownOperationIDs,
-            fullScan: fullScan || legacyResult.didScan,
+            fullScan: fullScan || didScanLegacyUsage,
             operationURLs: operationURLs
         )
         var register = loaded.register
@@ -660,9 +685,9 @@ final class CloudUsageDataSyncService: ObservableObject {
             conflictCount: register.conflictCount,
             exportCandidateCount: pendingRecords.count + pendingDeletions.count,
             importCandidateCount: applyResult.importCount,
-            usedLegacyScan: legacyResult.didScan,
+            usedLegacyScan: didScanLegacyUsage,
             didChangeLocalStore: applyResult.didChange,
-            pendingAudioDownloadCount: legacyResult.pendingAudioCount + applyResult.pendingAudioCount,
+            cloudAudioRecordIDs: allPendingAudioRecordIDs(),
             latestRemoteDeviceName: loaded.latestRemoteEnvelope?.authorDisplayName
         )
     }
@@ -789,9 +814,9 @@ final class CloudUsageDataSyncService: ObservableObject {
         register: VoiceInkSyncRegisterState,
         affectedKeys: Set<String>,
         modelContext: ModelContext
-    ) throws -> (importCount: Int, didChange: Bool, pendingAudioCount: Int) {
+    ) throws -> (importCount: Int, didChange: Bool) {
         guard !affectedKeys.isEmpty else {
-            return (0, false, allPendingAudioRecordIDs().count)
+            return (0, false)
         }
         let suppressed = loadIDs(forKey: Self.locallySuppressedRecordIDsKey)
         let audioEnabled = defaults.bool(forKey: CloudSyncSettingsKeys.usageAudioSyncEnabled)
@@ -808,7 +833,6 @@ final class CloudUsageDataSyncService: ObservableObject {
         }
         var changed = false
         var importCount = 0
-        var pendingAudioCount = 0
 
         for key in affectedKeys.filter({ $0.hasPrefix("transcription/") }).sorted() {
             guard let recordID = Self.recordID(fromTranscriptionKey: key),
@@ -842,27 +866,14 @@ final class CloudUsageDataSyncService: ObservableObject {
             let needsApply = existing == nil
                 || Self.payload(from: transcription) != value.transcription
                 || transcription.syncRevisionID != candidate.envelope.operationID
-            var materializedAudioURL: URL?
             if audioEnabled, let audio = value.audio {
-                switch try materializeAudio(audio, transcriptionID: recordID) {
-                case .available(let url):
-                    materializedAudioURL = url
-                    removePendingAudio(audio.sha256, recordID: recordID)
-                case .pending:
-                    pendingAudioCount += 1
-                    addPendingAudio(audio.sha256, recordID: recordID)
-                }
+                addPendingAudio(audio.sha256, recordID: recordID)
             }
-            let audioNeedsApply = materializedAudioURL != nil
-                && transcription.audioFileURL != materializedAudioURL?.absoluteString
-            if needsApply || audioNeedsApply {
+            if needsApply {
                 Self.apply(value.transcription, to: transcription)
                 transcription.syncOriginDeviceID = candidate.envelope.authorDeviceID
                 transcription.syncModifiedAt = candidate.envelope.createdAt
                 transcription.syncRevisionID = candidate.envelope.operationID
-                if let localURL = materializedAudioURL {
-                    transcription.audioFileURL = localURL.absoluteString
-                }
                 changed = true
                 importCount += 1
             }
@@ -918,8 +929,7 @@ final class CloudUsageDataSyncService: ObservableObject {
             try modelContext.save()
         }
         persistPendingAudioRecordIDs()
-        pendingAudioCount = allPendingAudioRecordIDs().count
-        return (importCount, changed, pendingAudioCount)
+        return (importCount, changed)
     }
 
     private nonisolated func deleteMetrics(
@@ -1150,30 +1160,16 @@ final class CloudUsageDataSyncService: ObservableObject {
         }
     }
 
-    private func pendingRecordIDs(forAudioURL url: URL) -> Set<UUID> {
-        guard url.pathExtension != "syncop" else { return [] }
-        let sha256 = url.deletingPathExtension().lastPathComponent.lowercased()
-        guard sha256.count == 64 else { return [] }
-        let persisted = Self.decodePendingAudioRecordIDs(
-            defaults.data(forKey: Self.pendingAudioRecordIDsKey))
-        return persisted[sha256] ?? []
-    }
-
-    private nonisolated func migrateLegacyUsageIfNeeded(
-    ) throws -> (didScan: Bool, pendingAudioCount: Int) {
-        var pendingAudio = loadPendingLegacyAudioDescriptors()
-        for audio in pendingAudio {
-            if try copyLegacyAudioBlob(audio, from: legacyUsageDataDirectoryURL) {
-                pendingAudio.remove(audio)
-            }
-        }
-        persistPendingLegacyAudioDescriptors(pendingAudio)
+    private nonisolated func migrateLegacyUsageIfNeeded() throws -> Bool {
+        // Older builds queued legacy audio for eager background downloads. Source audio is now
+        // resolved from its legacy or v3 blob only when the user asks to use that recording.
+        defaults.removeObject(forKey: metadataPrefix + "legacyPendingAudioDescriptors")
         guard !defaults.bool(forKey: Self.legacyMigrationCompletedKey) else {
-            return (false, pendingAudio.count)
+            return false
         }
         guard let root = legacyUsageDataDirectoryURL, fileManager.fileExists(atPath: root.path) else {
             defaults.set(true, forKey: Self.legacyMigrationCompletedKey)
-            return (true, 0)
+            return true
         }
         let recordsRoot = root.appendingPathComponent("Records", isDirectory: true)
         let keys: [URLResourceKey] = [
@@ -1183,7 +1179,7 @@ final class CloudUsageDataSyncService: ObservableObject {
             at: recordsRoot, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles]
         ) else {
             defaults.set(true, forKey: Self.legacyMigrationCompletedKey)
-            return (true, 0)
+            return true
         }
         var seen = Set<UUID>()
         var snapshots: [(path: String, snapshot: Snapshot)] = []
@@ -1215,9 +1211,6 @@ final class CloudUsageDataSyncService: ObservableObject {
         var mutations: [VoiceInkSyncMutation] = []
         for entry in snapshots {
             let snapshot = entry.snapshot
-            if let audio = snapshot.audio {
-                if try !copyLegacyAudioBlob(audio, from: root) { pendingAudio.insert(audio) }
-            }
             mutations.append(VoiceInkSyncMutation(
                 key: Self.transcriptionKey(snapshot.transcription.id),
                 value: try Self.encode(TranscriptionValue(
@@ -1239,11 +1232,10 @@ final class CloudUsageDataSyncService: ObservableObject {
             migratedPaths.formUnion(snapshots.map(\.path))
             defaults.set(migratedPaths.sorted(), forKey: Self.legacyMigratedPathsKey)
         }
-        persistPendingLegacyAudioDescriptors(pendingAudio)
-        if hasPendingDownload { return (true, pendingAudio.count) }
+        if hasPendingDownload { return true }
         defaults.set(true, forKey: Self.legacyMigrationCompletedKey)
         defaults.removeObject(forKey: Self.legacyMigratedPathsKey)
-        return (true, pendingAudio.count)
+        return true
     }
 
     private nonisolated func coordinatedRead(from url: URL) throws -> Data {
@@ -1268,52 +1260,6 @@ final class CloudUsageDataSyncService: ObservableObject {
         return root.appendingPathComponent("VoiceInk/UsageData/v1", isDirectory: true)
     }
 
-    private nonisolated func copyLegacyAudioBlob(
-        _ audio: AudioDescriptor,
-        from legacyRoot: URL?
-    ) throws -> Bool {
-        guard audio.isValid else { throw CocoaError(.fileReadCorruptFile) }
-        guard let legacyRoot else { return false }
-        let source = legacyRoot
-            .appendingPathComponent("Blobs/Audio/\(String(audio.sha256.prefix(2)))", isDirectory: true)
-            .appendingPathComponent("\(audio.sha256).\(audio.fileExtension)")
-        guard fileManager.fileExists(atPath: source.path) else {
-            try? fileManager.startDownloadingUbiquitousItem(at: source)
-            return false
-        }
-        guard try requireCurrentUbiquitousItem(at: source) else { return false }
-        guard try verifyAudioFile(source, descriptor: audio)
-        else { throw CocoaError(.fileReadCorruptFile) }
-        do {
-            try installBlob(from: source, descriptor: audio)
-            return true
-        } catch {
-            if Self.isPendingICloudDownload(error) { return false }
-            throw error
-        }
-    }
-
-    private nonisolated func loadPendingLegacyAudioDescriptors() -> Set<AudioDescriptor> {
-        guard let data = defaults.data(forKey: Self.legacyPendingAudioDescriptorsKey),
-            let values = try? PropertyListDecoder().decode([AudioDescriptor].self, from: data)
-        else { return [] }
-        return Set(values)
-    }
-
-    private nonisolated func persistPendingLegacyAudioDescriptors(_ values: Set<AudioDescriptor>) {
-        guard !values.isEmpty else {
-            defaults.removeObject(forKey: Self.legacyPendingAudioDescriptorsKey)
-            return
-        }
-        let sorted = values.sorted { lhs, rhs in
-            if lhs.sha256 != rhs.sha256 { return lhs.sha256 < rhs.sha256 }
-            return lhs.fileExtension < rhs.fileExtension
-        }
-        if let data = try? PropertyListEncoder().encode(sorted) {
-            defaults.set(data, forKey: Self.legacyPendingAudioDescriptorsKey)
-        }
-    }
-
     private nonisolated func prepareAudioDescriptor(for transcription: Transcription) throws -> AudioDescriptor? {
         guard defaults.bool(forKey: CloudSyncSettingsKeys.usageAudioSyncEnabled),
             let source = Self.audioURL(from: transcription), fileManager.fileExists(atPath: source.path)
@@ -1336,8 +1282,11 @@ final class CloudUsageDataSyncService: ObservableObject {
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         let destination = directory.appendingPathComponent("\(descriptor.sha256).\(descriptor.fileExtension)")
         if fileManager.fileExists(atPath: destination.path) {
-            guard try requireCurrentUbiquitousItem(at: destination) else {
-                throw CocoaError(.fileReadNoSuchFile)
+            // The cloud copy may be a File Provider placeholder on this Mac. Its content hash
+            // is already carried by metadata, so do not download it merely to verify an upload
+            // that another device completed. Verification happens if the user requests audio.
+            guard try requireCurrentUbiquitousItem(at: destination, startDownload: false) else {
+                return
             }
             guard try verifyAudioFile(destination, descriptor: descriptor)
             else { throw CocoaError(.fileReadCorruptFile) }
@@ -1361,9 +1310,21 @@ final class CloudUsageDataSyncService: ObservableObject {
         try rememberVerifiedAudioFile(destination, sha256: descriptor.sha256)
     }
 
-    private enum AudioMaterialization {
+    private enum AudioMaterialization: Sendable {
         case available(URL)
         case pending
+    }
+
+    private nonisolated func audioDescriptor(for transcriptionID: UUID) throws -> AudioDescriptor? {
+        let register = try syncCore.readIncrementally(
+            in: .usage, hintedOperationURLs: [], fullScan: false
+        ).register
+        guard let candidate = register.selectedCandidate(
+            for: Self.transcriptionKey(transcriptionID), deleteWins: true),
+            let data = candidate.mutation.value,
+            let value = try? PropertyListDecoder().decode(TranscriptionValue.self, from: data)
+        else { return nil }
+        return value.audio
     }
 
     private nonisolated func materializeAudio(
@@ -1375,12 +1336,20 @@ final class CloudUsageDataSyncService: ObservableObject {
         let blob = root
             .appendingPathComponent("Blobs/Audio/\(String(audio.sha256.prefix(2)))", isDirectory: true)
             .appendingPathComponent("\(audio.sha256).\(audio.fileExtension)")
-        guard fileManager.fileExists(atPath: blob.path) else {
-            try? fileManager.startDownloadingUbiquitousItem(at: blob)
+        let legacyBlob = legacyUsageDataDirectoryURL?
+            .appendingPathComponent(
+                "Blobs/Audio/\(String(audio.sha256.prefix(2)))", isDirectory: true
+            )
+            .appendingPathComponent("\(audio.sha256).\(audio.fileExtension)")
+        let candidates = [blob, legacyBlob].compactMap { $0 }
+        guard let source = candidates.first(where: { fileManager.fileExists(atPath: $0.path) }) else {
+            for candidate in candidates {
+                try? fileManager.startDownloadingUbiquitousItem(at: candidate)
+            }
             return .pending
         }
-        guard try requireCurrentUbiquitousItem(at: blob) else { return .pending }
-        guard try verifyAudioFile(blob, descriptor: audio) else {
+        guard try requireCurrentUbiquitousItem(at: source) else { return .pending }
+        guard try verifyAudioFile(source, descriptor: audio) else {
             throw CocoaError(.fileReadCorruptFile)
         }
         let directory = localRecordingsDirectoryOverride ?? Self.localRecordingsDirectory
@@ -1393,7 +1362,7 @@ final class CloudUsageDataSyncService: ObservableObject {
         }
         let temporary = directory.appendingPathComponent(".\(UUID().uuidString).download")
         try? fileManager.removeItem(at: temporary)
-        try fileManager.copyItem(at: blob, to: temporary)
+        try fileManager.copyItem(at: source, to: temporary)
         defer { try? fileManager.removeItem(at: temporary) }
         guard Self.fileSize(at: temporary) == audio.byteCount else {
             throw CocoaError(.fileReadCorruptFile)
@@ -1408,14 +1377,19 @@ final class CloudUsageDataSyncService: ObservableObject {
         return .available(destination)
     }
 
-    private nonisolated func requireCurrentUbiquitousItem(at url: URL) throws -> Bool {
+    private nonisolated func requireCurrentUbiquitousItem(
+        at url: URL,
+        startDownload: Bool = true
+    ) throws -> Bool {
         let values = try? url.resourceValues(forKeys: [
             .isUbiquitousItemKey, .ubiquitousItemDownloadingStatusKey,
         ])
         guard values?.isUbiquitousItem == true,
             values?.ubiquitousItemDownloadingStatus != .current
         else { return true }
-        try? fileManager.startDownloadingUbiquitousItem(at: url)
+        if startDownload {
+            try? fileManager.startDownloadingUbiquitousItem(at: url)
+        }
         return false
     }
 
@@ -1424,12 +1398,10 @@ final class CloudUsageDataSyncService: ObservableObject {
         let query = NSMetadataQuery()
         query.searchScopes = [NSMetadataQueryUbiquitousDataScope]
         let usageOperations = root.appendingPathComponent("Operations/usage", isDirectory: true)
-        let audioBlobs = root.appendingPathComponent("Blobs/Audio", isDirectory: true)
         let legacyUsage = root.deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("UsageData/v1", isDirectory: true)
         query.predicate = NSCompoundPredicate(orPredicateWithSubpredicates: [
             NSPredicate(format: "%K BEGINSWITH %@", NSMetadataItemPathKey, usageOperations.path),
-            NSPredicate(format: "%K BEGINSWITH %@", NSMetadataItemPathKey, audioBlobs.path),
             NSPredicate(format: "%K BEGINSWITH %@", NSMetadataItemPathKey, legacyUsage.path),
         ])
         for name in [Notification.Name.NSMetadataQueryDidFinishGathering, .NSMetadataQueryDidUpdate] {
@@ -1469,7 +1441,6 @@ final class CloudUsageDataSyncService: ObservableObject {
             if syncCore.operationLocation(for: url) != nil {
                 return syncCore.shouldConsumeRemoteOperation(at: url, domains: [.usage])
             }
-            if hasPendingAudioDownloads, !pendingRecordIDs(forAudioURL: url).isEmpty { return true }
             if !defaults.bool(forKey: Self.legacyMigrationCompletedKey),
                 let legacyRoot, url.standardizedFileURL.path.hasPrefix(legacyRoot + "/")
             {
@@ -1481,10 +1452,8 @@ final class CloudUsageDataSyncService: ObservableObject {
             let operationURLs = Set(urls.filter {
                 syncCore.operationLocation(for: $0)?.domain == .usage
             })
-            let audioRecordIDs = Set(urls.flatMap { pendingRecordIDs(forAudioURL: $0) })
             scheduleEventDrivenSync(
-                operationURLs: operationURLs,
-                forcedRecordIDs: audioRecordIDs
+                operationURLs: operationURLs
             )
         }
     }

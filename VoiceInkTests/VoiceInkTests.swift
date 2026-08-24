@@ -294,6 +294,27 @@ struct VoiceInkTests {
         #expect(core.frontierWriteCountForTesting == writesAfterAppend)
     }
 
+    @Test func copiedSyncIdentityRotatesForAnotherMac() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("VoiceInkCopiedIdentity-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let suite = "VoiceInkTests.CopiedIdentity.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let source = ICloudDriveSyncCore(
+            defaults: defaults, iCloudDriveRootURL: root, deviceName: "Mac A")
+        let sourceID = source.deviceID
+        _ = try source.append(VoiceInkSyncMutationBatch(mutations: [
+            VoiceInkSyncMutation(key: "preference/test", value: Data("value".utf8))
+        ]), domain: .configuration)
+        defaults.removeObject(forKey: "VoiceInkSyncV3.deviceName")
+
+        let copiedInstallation = ICloudDriveSyncCore(
+            defaults: defaults, iCloudDriveRootURL: root, deviceName: "Mac B")
+        #expect(copiedInstallation.deviceID != sourceID)
+    }
+
     @Test func readingManyRemoteOperationsUpdatesTheFrontierOnce() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("VoiceInkBatchFrontier-\(UUID().uuidString)", isDirectory: true)
@@ -1197,7 +1218,9 @@ struct VoiceInkTests {
         #expect(imported.id == record.id)
         #expect(imported.text == "v3 history")
         #expect(try containerB.mainContext.fetch(FetchDescriptor<SessionMetric>()).count == 2)
-        let importedAudio = try #require(imported.audioFileURL.flatMap(URL.init(string:)))
+        #expect(imported.audioFileURL == nil)
+        #expect(serviceB.hasCloudAudio(for: imported.id))
+        let importedAudio = try await serviceB.materializeAudioOnDemand(for: imported.id)
         #expect(try Data(contentsOf: importedAudio) == Data(repeating: 0x5a, count: 8_192))
         #expect(try syncOperationFiles(root: root, domain: .usage).count == 1)
 
@@ -1446,6 +1469,7 @@ struct VoiceInkTests {
         let imported = try #require(container.mainContext.fetch(FetchDescriptor<Transcription>()).first)
         #expect(imported.text == "text survives pending audio")
         #expect(imported.audioFileURL == nil)
+        #expect(service.hasCloudAudio(for: imported.id))
         #expect(try container.mainContext.fetch(FetchDescriptor<SessionMetric>()).first?.id == metricID)
         #expect(service.state == .synced)
         #expect(service.lastRemoteDeviceName == "Audio Source Mac")
@@ -1544,7 +1568,10 @@ struct VoiceInkTests {
         #expect(imported.id == recordID)
         #expect(imported.text == "legacy v1")
         #expect(try container.mainContext.fetch(FetchDescriptor<SessionMetric>()).first?.id == metricID)
-        #expect(imported.audioFileURL.flatMap(URL.init(string:)).map { try? Data(contentsOf: $0) } == audioData)
+        #expect(imported.audioFileURL == nil)
+        #expect(service.hasCloudAudio(for: imported.id))
+        let importedAudio = try await service.materializeAudioOnDemand(for: imported.id)
+        #expect(try Data(contentsOf: importedAudio) == audioData)
         #expect(service.lastSyncUsedLegacyScan)
         let operationCount = try syncOperationFiles(root: root, domain: .usage).count
         #expect(operationCount == 1)

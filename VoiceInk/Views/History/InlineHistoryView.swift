@@ -481,6 +481,7 @@ private struct HistoryCardRow: View {
     let onShowInfo: () -> Void
 
     @State private var selectedTab: TranscriptionTab = .original
+    @ObservedObject private var usageSync = CloudUsageDataSyncService.shared
 
     private var displayText: String {
         switch selectedTab {
@@ -499,6 +500,10 @@ private struct HistoryCardRow: View {
             return true
         }
         return false
+    }
+
+    private var hasAudio: Bool {
+        hasAudioFile || usageSync.hasCloudAudio(for: transcription.id)
     }
 
     var body: some View {
@@ -584,11 +589,9 @@ private struct HistoryCardRow: View {
             .frame(maxHeight: 350)
             .hoverCopyButton(textToCopy: displayText)
 
-            if hasAudioFile, let urlString = transcription.audioFileURL,
-                let url = URL(string: urlString)
-            {
+            if hasAudio {
                 Divider()
-                AudioPlayerView(url: url, transcription: transcription, onInfoTap: onShowInfo)
+                CloudBackedAudioPlayerView(transcription: transcription, onInfoTap: onShowInfo)
                     .padding(.vertical, 4)
             } else {
                 HStack {

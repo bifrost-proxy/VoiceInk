@@ -346,6 +346,68 @@ private enum OperationFeedback: Equatable {
 
 // MARK: - AudioPlayerView
 
+struct CloudBackedAudioPlayerView: View {
+    let transcription: Transcription
+    var onInfoTap: (() -> Void)?
+    @ObservedObject private var usageSync = CloudUsageDataSyncService.shared
+    @Environment(\.modelContext) private var modelContext
+    @State private var isDownloading = false
+    @State private var downloadError: String?
+
+    private var localURL: URL? {
+        guard let value = transcription.audioFileURL,
+            let url = URL(string: value),
+            FileManager.default.fileExists(atPath: url.path)
+        else { return nil }
+        return url
+    }
+
+    var body: some View {
+        if let localURL {
+            AudioPlayerView(url: localURL, transcription: transcription, onInfoTap: onInfoTap)
+        } else if usageSync.hasCloudAudio(for: transcription.id) {
+            VStack(spacing: 6) {
+                Button {
+                    downloadAudio()
+                } label: {
+                    if isDownloading {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Label("Download", systemImage: "icloud.and.arrow.down")
+                    }
+                }
+                .buttonStyle(.borderless)
+                .disabled(isDownloading)
+
+                if let downloadError {
+                    Text(downloadError)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 8)
+        }
+    }
+
+    private func downloadAudio() {
+        guard !isDownloading else { return }
+        isDownloading = true
+        downloadError = nil
+        Task { @MainActor in
+            defer { isDownloading = false }
+            do {
+                let url = try await usageSync.materializeAudioOnDemand(for: transcription.id)
+                transcription.audioFileURL = url.absoluteString
+                try modelContext.save()
+            } catch {
+                downloadError = error.localizedDescription
+            }
+        }
+    }
+}
+
 struct AudioPlayerView: View {
     let url: URL
     let transcription: Transcription?

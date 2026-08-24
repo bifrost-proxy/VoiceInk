@@ -256,6 +256,7 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
 
     private static let metadataPrefix = "VoiceInkSyncV3."
     private static let deviceIDKey = metadataPrefix + "deviceID"
+    private static let deviceNameKey = metadataPrefix + "deviceName"
     private static let sequenceKey = metadataPrefix + "sequence"
     private static let frontierKey = metadataPrefix + "frontier"
 
@@ -278,21 +279,94 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
         self.defaults = defaults
         self.fileManager = fileManager
         self.iCloudDriveRootOverride = iCloudDriveRootURL
-        if let existing = defaults.string(forKey: Self.deviceIDKey), UUID(uuidString: existing) != nil {
-            self.deviceID = existing
-        } else {
-            let created = UUID().uuidString
-            defaults.set(created, forKey: Self.deviceIDKey)
-            self.deviceID = created
-        }
         let normalizedName = deviceName?.trimmingCharacters(in: .whitespacesAndNewlines)
         let resolvedName = normalizedName?.isEmpty == false
             ? normalizedName!
             : Host.current().localizedName ?? "Mac"
         self.deviceName = String(resolvedName.prefix(120))
+
+        let existingDeviceID = defaults.string(forKey: Self.deviceIDKey).flatMap { value in
+            UUID(uuidString: value).map { _ in value }
+        }
+        let persistedDeviceName = defaults.string(forKey: Self.deviceNameKey)
+        let copiedIdentity = persistedDeviceName.map { $0 != self.deviceName } ?? false
+        let cloudIdentityCollision = existingDeviceID.map { deviceID in
+            persistedDeviceName == nil && Self.cloudLog(
+                fileManager: fileManager,
+                iCloudDriveRootURL: iCloudDriveRootURL,
+                containsDeviceID: deviceID,
+                authoredByNameDifferentFrom: self.deviceName
+            )
+        } ?? false
+        if let existingDeviceID, !copiedIdentity, !cloudIdentityCollision {
+            self.deviceID = existingDeviceID
+        } else {
+            let created = UUID().uuidString
+            defaults.set(created, forKey: Self.deviceIDKey)
+            self.deviceID = created
+        }
+        defaults.set(self.deviceName, forKey: Self.deviceNameKey)
         if iCloudDriveRootURL == nil {
             pruneOrphanedSyncCaches()
         }
+    }
+
+    /// UserDefaults can be copied by Migration Assistant or a machine setup tool. A copied
+    /// sync identity makes two Macs share one operation directory, so each treats the other's
+    /// metadata events as local. The remembered device name handles future copies cheaply; the
+    /// bounded cloud scan repairs installations created before that marker existed.
+    private static func cloudLog(
+        fileManager: FileManager,
+        iCloudDriveRootURL: URL?,
+        containsDeviceID deviceID: String,
+        authoredByNameDifferentFrom deviceName: String
+    ) -> Bool {
+        let cloudRoot = iCloudDriveRootURL ?? fileManager.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Mobile Documents/com~apple~CloudDocs", isDirectory: true)
+        let operationsRoot = cloudRoot.appendingPathComponent(
+            "VoiceInk/Sync/v3/Operations", isDirectory: true)
+        guard let domains = try? fileManager.contentsOfDirectory(
+            at: operationsRoot,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else { return false }
+
+        var inspectedFileCount = 0
+        for domain in domains {
+            let deviceRoot = domain.appendingPathComponent(deviceID, isDirectory: true)
+            guard let enumerator = fileManager.enumerator(
+                at: deviceRoot,
+                includingPropertiesForKeys: [
+                    .isRegularFileKey, .isUbiquitousItemKey, .ubiquitousItemDownloadingStatusKey,
+                ],
+                options: [.skipsHiddenFiles]
+            ) else { continue }
+            for case let url as URL in enumerator where url.pathExtension == "syncop" {
+                let values = try? url.resourceValues(forKeys: [
+                    .isRegularFileKey, .isUbiquitousItemKey, .ubiquitousItemDownloadingStatusKey,
+                ])
+                guard values?.isRegularFile == true else { continue }
+                if values?.isUbiquitousItem == true,
+                    values?.ubiquitousItemDownloadingStatus != .current
+                {
+                    continue
+                }
+                inspectedFileCount += 1
+                if let data = try? Data(contentsOf: url),
+                    data.count <= maximumEnvelopeBytes,
+                    let envelope = try? PropertyListDecoder().decode(
+                        VoiceInkSyncEnvelope.self, from: data),
+                    envelope.isValid,
+                    envelope.authorDeviceID == deviceID,
+                    envelope.authorDeviceName != nil,
+                    envelope.authorDeviceName != deviceName
+                {
+                    return true
+                }
+                if inspectedFileCount >= 512 { return false }
+            }
+        }
+        return false
     }
 
     var rootURL: URL? {
