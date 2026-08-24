@@ -598,6 +598,58 @@ struct VoiceInkTests {
         defaults.removePersistentDomain(forName: suiteName)
     }
 
+    @MainActor
+    @Test func localAudioDeduplicationDeletesOnlyOldUnreferencedExactCopies() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("VoiceInkLocalAudioDedup-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let duplicateData = Data(repeating: 0x2a, count: 4_096)
+        let uniqueData = Data(repeating: 0x7b, count: 2_048)
+        let referenced = root.appendingPathComponent("referenced.wav")
+        let oldDuplicate = root.appendingPathComponent("old-duplicate.wav")
+        let oldUnique = root.appendingPathComponent("old-unique.wav")
+        let recentDuplicate = root.appendingPathComponent("recent-duplicate.wav")
+        try duplicateData.write(to: referenced)
+        try duplicateData.write(to: oldDuplicate)
+        try uniqueData.write(to: oldUnique)
+        try duplicateData.write(to: recentDuplicate)
+
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let oldDate = now.addingTimeInterval(-(OrphanAudioCleanupPolicy.minimumFileAge + 60))
+        for url in [referenced, oldDuplicate, oldUnique] {
+            try FileManager.default.setAttributes(
+                [.modificationDate: oldDate], ofItemAtPath: url.path)
+        }
+        try FileManager.default.setAttributes(
+            [.modificationDate: now], ofItemAtPath: recentDuplicate.path)
+
+        let container = try ModelContainer(
+            for: Schema([Transcription.self, SessionMetric.self]),
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        let transcription = Transcription(
+            text: "keep", duration: 1, audioFileURL: referenced.absoluteString)
+        container.mainContext.insert(transcription)
+        try container.mainContext.save()
+
+        let result = try LocalAudioDeduplicationService.removeSafeDuplicateOrphans(
+            modelContainer: container,
+            recordingsDirectory: root,
+            now: now
+        )
+
+        #expect(result == LocalAudioDeduplicationResult(
+            deletedFileCount: 1,
+            reclaimedByteCount: Int64(duplicateData.count)
+        ))
+        #expect(FileManager.default.fileExists(atPath: referenced.path))
+        #expect(!FileManager.default.fileExists(atPath: oldDuplicate.path))
+        #expect(FileManager.default.fileExists(atPath: oldUnique.path))
+        #expect(FileManager.default.fileExists(atPath: recentDuplicate.path))
+    }
+
     @Test func historyStorageCapacityUsesDefaultAndClampsSupportedRange() throws {
         let suiteName = "VoiceInkTests.HistoryStorageCapacity.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suiteName))
@@ -1250,8 +1302,15 @@ struct VoiceInkTests {
         #expect(try containerB.mainContext.fetch(FetchDescriptor<SessionMetric>()).count == 2)
         #expect(imported.audioFileURL == nil)
         #expect(serviceB.hasCloudAudio(for: imported.id))
+        try FileManager.default.createDirectory(at: recordingsB, withIntermediateDirectories: true)
+        let obsoleteAudio = recordingsB
+            .appendingPathComponent("synced_\(imported.id.uuidString).m4a")
+        try Data(repeating: 0x11, count: 64).write(to: obsoleteAudio)
         let importedAudio = try await serviceB.materializeAudioOnDemand(for: imported.id)
         #expect(try Data(contentsOf: importedAudio) == Data(repeating: 0x5a, count: 8_192))
+        #expect(importedAudio.lastPathComponent == "synced_\(imported.id.uuidString).wav")
+        #expect(!FileManager.default.fileExists(atPath: obsoleteAudio.path))
+        #expect(try await serviceB.materializeAudioOnDemand(for: imported.id) == importedAudio)
         #expect(try syncOperationFiles(root: root, domain: .usage).count == 1)
 
         let deleteStart = try #require(serviceB.lastSyncedAt)
