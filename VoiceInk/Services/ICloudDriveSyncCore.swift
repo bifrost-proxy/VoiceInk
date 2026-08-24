@@ -251,6 +251,12 @@ struct VoiceInkSyncRegisterState: Codable, Equatable, Sendable {
 /// Shared append-only transport for every VoiceInk iCloud Drive sync domain.
 /// iCloud Drive copies immutable operation files; domain reducers own merge semantics.
 final class ICloudDriveSyncCore: @unchecked Sendable {
+    private enum IdentityCollisionScanResult {
+        case collision
+        case clear
+        case retry
+    }
+
     static let shared = ICloudDriveSyncCore()
     static let maximumPayloadBytes = 7 * 1_024 * 1_024
     private static let maximumEnvelopeBytes = 8 * 1_024 * 1_024
@@ -320,17 +326,22 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
             deviceID = persisted
         }
         guard defaults.integer(forKey: Self.identityCollisionCheckKey) < 1 else { return }
-        defer { defaults.set(1, forKey: Self.identityCollisionCheckKey) }
-        guard Self.cloudLogHasConflictingAuthorNames(
+        switch Self.scanCloudLogForIdentityCollision(
             fileManager: fileManager,
             iCloudDriveRootURL: iCloudDriveRootOverride,
             deviceID: deviceID
-        ) else { return }
-
-        let created = UUID().uuidString
-        defaults.set(created, forKey: Self.deviceIDKey)
-        deviceID = created
-        pruneOrphanedSyncCaches()
+        ) {
+        case .collision:
+            let created = UUID().uuidString
+            defaults.set(created, forKey: Self.deviceIDKey)
+            deviceID = created
+            defaults.set(1, forKey: Self.identityCollisionCheckKey)
+            pruneOrphanedSyncCaches()
+        case .clear:
+            defaults.set(1, forKey: Self.identityCollisionCheckKey)
+        case .retry:
+            break
+        }
     }
 
     private static func currentDeviceFingerprint() -> String? {
@@ -344,11 +355,11 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
         return VoiceInkSyncEnvelope.sha256(Data(value.utf8))
     }
 
-    private static func cloudLogHasConflictingAuthorNames(
+    private static func scanCloudLogForIdentityCollision(
         fileManager: FileManager,
         iCloudDriveRootURL: URL?,
         deviceID: String
-    ) -> Bool {
+    ) -> IdentityCollisionScanResult {
         let cloudRoot = iCloudDriveRootURL ?? fileManager.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Mobile Documents/com~apple~CloudDocs", isDirectory: true)
         let operationsRoot = cloudRoot.appendingPathComponent(
@@ -357,12 +368,17 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
             at: operationsRoot,
             includingPropertiesForKeys: [.isDirectoryKey],
             options: [.skipsHiddenFiles]
-        ) else { return false }
+        ) else { return .retry }
 
         var inspectedFileCount = 0
         var authorNames = Set<String>()
+        var foundDeviceDirectory = false
+        var foundValidEnvelope = false
+        var encounteredUnavailableItem = false
         for domain in domains {
             let deviceRoot = domain.appendingPathComponent(deviceID, isDirectory: true)
+            guard fileManager.fileExists(atPath: deviceRoot.path) else { continue }
+            foundDeviceDirectory = true
             guard let enumerator = fileManager.enumerator(
                 at: deviceRoot,
                 includingPropertiesForKeys: [
@@ -370,18 +386,23 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
                     .ubiquitousItemDownloadingStatusKey,
                 ],
                 options: [.skipsHiddenFiles]
-            ) else { continue }
+            ) else {
+                encounteredUnavailableItem = true
+                continue
+            }
             for case let url as URL in enumerator where url.pathExtension == "syncop" {
                 let values = try? url.resourceValues(forKeys: [
                     .isRegularFileKey, .fileSizeKey, .isUbiquitousItemKey,
                     .ubiquitousItemDownloadingStatusKey,
                 ])
                 guard values?.isRegularFile == true, (values?.fileSize ?? .max) <= 256 * 1_024 else {
+                    encounteredUnavailableItem = true
                     continue
                 }
                 if values?.isUbiquitousItem == true,
                     values?.ubiquitousItemDownloadingStatus != .current
                 {
+                    encounteredUnavailableItem = true
                     continue
                 }
                 inspectedFileCount += 1
@@ -395,13 +416,19 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
                         .trimmingCharacters(in: .whitespacesAndNewlines),
                     !authorName.isEmpty
                 {
+                    foundValidEnvelope = true
                     authorNames.insert(authorName)
-                    if authorNames.count > 1 { return true }
+                    if authorNames.count > 1 { return .collision }
+                } else {
+                    encounteredUnavailableItem = true
                 }
-                if inspectedFileCount >= 512 { return false }
+                if inspectedFileCount >= 512 { return .retry }
             }
         }
-        return false
+        guard foundDeviceDirectory, foundValidEnvelope, !encounteredUnavailableItem else {
+            return .retry
+        }
+        return .clear
     }
 
     var rootURL: URL? {

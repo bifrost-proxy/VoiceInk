@@ -305,6 +305,8 @@ struct VoiceInkTests {
         let source = ICloudDriveSyncCore(
             defaults: defaults, iCloudDriveRootURL: root, deviceName: "Mac A")
         let sourceID = source.deviceID
+        source.prepareDeviceIdentity()
+        #expect(defaults.integer(forKey: "VoiceInkSyncV3.identityCollisionCheckVersion") == 0)
         _ = try source.append(VoiceInkSyncMutationBatch(mutations: [
             VoiceInkSyncMutation(key: "preference/test", value: Data("value".utf8))
         ]), domain: .configuration)
