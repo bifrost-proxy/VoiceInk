@@ -283,19 +283,20 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
         let resolvedName = normalizedName?.isEmpty == false
             ? normalizedName!
             : Host.current().localizedName ?? "Mac"
-        self.deviceName = String(resolvedName.prefix(120))
+        let currentDeviceName = String(resolvedName.prefix(120))
+        self.deviceName = currentDeviceName
 
         let existingDeviceID = defaults.string(forKey: Self.deviceIDKey).flatMap { value in
             UUID(uuidString: value).map { _ in value }
         }
         let persistedDeviceName = defaults.string(forKey: Self.deviceNameKey)
-        let copiedIdentity = persistedDeviceName.map { $0 != self.deviceName } ?? false
+        let copiedIdentity = persistedDeviceName.map { $0 != currentDeviceName } ?? false
         let cloudIdentityCollision = existingDeviceID.map { deviceID in
             persistedDeviceName == nil && Self.cloudLog(
                 fileManager: fileManager,
                 iCloudDriveRootURL: iCloudDriveRootURL,
                 containsDeviceID: deviceID,
-                authoredByNameDifferentFrom: self.deviceName
+                authoredByNameDifferentFrom: currentDeviceName
             )
         } ?? false
         if let existingDeviceID, !copiedIdentity, !cloudIdentityCollision {
@@ -305,7 +306,7 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
             defaults.set(created, forKey: Self.deviceIDKey)
             self.deviceID = created
         }
-        defaults.set(self.deviceName, forKey: Self.deviceNameKey)
+        defaults.set(currentDeviceName, forKey: Self.deviceNameKey)
         if iCloudDriveRootURL == nil {
             pruneOrphanedSyncCaches()
         }
