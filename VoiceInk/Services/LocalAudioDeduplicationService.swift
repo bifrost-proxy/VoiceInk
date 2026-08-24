@@ -21,7 +21,7 @@ final class LocalAudioDeduplicationService {
         category: "LocalAudioDeduplicationService"
     )
     private let completionKey = "HasCompletedLocalAudioDeduplicationV2"
-    private let postUsageSyncCompletionKey = "HasCompletedLocalAudioDeduplicationV3PostUsageSync"
+    private let postUsageSyncCompletionKey = "HasCompletedLocalAudioDeduplicationV4MainContextSnapshot"
     private var isRunning = false
     private var pendingPostUsageSyncContainer: ModelContainer?
 
@@ -63,12 +63,20 @@ final class LocalAudioDeduplicationService {
 
         let logger = logger
         let recordingsDirectory = Self.defaultRecordingsDirectory
-        return Task.detached(priority: .utility) {
+        return Task { @MainActor in
             do {
-                let result = try Self.removeSafeDuplicateOrphans(
-                    modelContainer: modelContainer,
-                    recordingsDirectory: recordingsDirectory
+                // Capture SwiftData state from the app's main context before
+                // leaving the actor. A background context can lag a sync that
+                // just committed a new audio association in a split store.
+                let referencedPaths = try Self.referencedAudioPaths(
+                    modelContainer: modelContainer
                 )
+                let result = try await Task.detached(priority: .utility) {
+                    try Self.removeSafeDuplicateOrphans(
+                        referencedPaths: referencedPaths,
+                        recordingsDirectory: recordingsDirectory
+                    )
+                }.value
                 UserDefaults.standard.set(true, forKey: completionKey)
                 logger.notice(
                     "Completed local audio deduplication phase=\(phase, privacy: .public) files=\(result.deletedFileCount, privacy: .public) bytes=\(result.reclaimedByteCount, privacy: .public)"
@@ -79,34 +87,44 @@ final class LocalAudioDeduplicationService {
                 )
             }
 
-            await MainActor.run {
-                let service = LocalAudioDeduplicationService.shared
-                service.isRunning = false
-                if let pendingContainer = service.pendingPostUsageSyncContainer {
-                    service.pendingPostUsageSyncContainer = nil
-                    service.runAfterUsageSyncIfNeeded(modelContainer: pendingContainer)
-                }
+            let service = LocalAudioDeduplicationService.shared
+            service.isRunning = false
+            if let pendingContainer = service.pendingPostUsageSyncContainer {
+                service.pendingPostUsageSyncContainer = nil
+                service.runAfterUsageSyncIfNeeded(modelContainer: pendingContainer)
             }
         }
     }
 
-    nonisolated static func removeSafeDuplicateOrphans(
+    static func removeSafeDuplicateOrphans(
         modelContainer: ModelContainer,
+        recordingsDirectory: URL,
+        fileManager: FileManager = .default
+    ) throws -> LocalAudioDeduplicationResult {
+        try removeSafeDuplicateOrphans(
+            referencedPaths: referencedAudioPaths(modelContainer: modelContainer),
+            recordingsDirectory: recordingsDirectory,
+            fileManager: fileManager
+        )
+    }
+
+    private static func referencedAudioPaths(modelContainer: ModelContainer) throws -> Set<String> {
+        let descriptor = FetchDescriptor<Transcription>()
+        return Set(try modelContainer.mainContext.fetch(descriptor).compactMap { transcription in
+            guard let value = transcription.audioFileURL else { return nil }
+            let url = URL(string: value) ?? URL(fileURLWithPath: value)
+            return url.standardizedFileURL.path
+        })
+    }
+
+    nonisolated private static func removeSafeDuplicateOrphans(
+        referencedPaths: Set<String>,
         recordingsDirectory: URL,
         fileManager: FileManager = .default
     ) throws -> LocalAudioDeduplicationResult {
         guard fileManager.fileExists(atPath: recordingsDirectory.path) else {
             return LocalAudioDeduplicationResult(deletedFileCount: 0, reclaimedByteCount: 0)
         }
-
-        let context = ModelContext(modelContainer)
-        var descriptor = FetchDescriptor<Transcription>()
-        descriptor.propertiesToFetch = [\.audioFileURL]
-        let referencedPaths: Set<String> = Set(try context.fetch(descriptor).compactMap { transcription in
-            guard let value = transcription.audioFileURL else { return nil }
-            let url = URL(string: value) ?? URL(fileURLWithPath: value)
-            return url.standardizedFileURL.path
-        })
 
         let propertyKeys: Set<URLResourceKey> = [
             .contentModificationDateKey, .fileSizeKey, .isRegularFileKey, .isSymbolicLinkKey,
