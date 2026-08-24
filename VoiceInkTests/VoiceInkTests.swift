@@ -35,6 +35,17 @@ private final class ICloudSyncConcurrencyProbe: @unchecked Sendable {
     var hasBlockerStarted: Bool { lock.withLock { blockerStarted } }
 }
 
+private final class DownloadRequestRecordingFileManager: FileManager, @unchecked Sendable {
+    private let lock = NSLock()
+    private var recordedURLs: [URL] = []
+
+    override func startDownloadingUbiquitousItem(at url: URL) throws {
+        lock.withLock { recordedURLs.append(url.standardizedFileURL) }
+    }
+
+    var downloadRequests: [URL] { lock.withLock { recordedURLs } }
+}
+
 struct VoiceInkTests {
     @Test func whisperPCMReaderConvertsSamplesWithoutPerSampleDataAllocations() throws {
         let url = FileManager.default.temporaryDirectory
@@ -898,6 +909,42 @@ struct VoiceInkTests {
         #expect(remaining.map(\.text) == ["record-1", "record-2"])
     }
 
+
+    @MainActor
+    @Test func cloudUsageSyncRequestsOnlyTheUsageOperationDirectory() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "VoiceInkUsageDownloadRequest-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let suite = "VoiceInkTests.UsageDownloadRequest.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(true, forKey: CloudSyncSettingsKeys.usageDataSyncEnabled)
+
+        let fileManager = DownloadRequestRecordingFileManager()
+        let schema = Schema([Transcription.self, SessionMetric.self])
+        let container = try ModelContainer(
+            for: schema,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        let service = CloudUsageDataSyncService(
+            defaults: defaults,
+            fileManager: fileManager,
+            iCloudDriveRootURL: root
+        )
+
+        service.start(modelContext: container.mainContext)
+        try await waitForUsageSync(service)
+        service.setEnabled(false)
+
+        let expectedUsageDirectory = root.appendingPathComponent(
+            "VoiceInk/Sync/v3/Operations/usage", isDirectory: true
+        ).standardizedFileURL
+        #expect(!fileManager.downloadRequests.isEmpty)
+        #expect(fileManager.downloadRequests.allSatisfy { $0 == expectedUsageDirectory })
+    }
 
     @MainActor
     @Test func cloudUsageBulkSyncImportsHistoryWithoutReexportingAtSteadyState() async throws {

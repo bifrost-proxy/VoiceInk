@@ -435,6 +435,14 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
         iCloudDriveRootURL?.appendingPathComponent("VoiceInk/Sync/v3", isDirectory: true)
     }
 
+    /// Requests local materialization of one operation domain without pulling sibling domains
+    /// or large blob trees. File Provider may complete the request asynchronously; the existing
+    /// per-file checks and retry policy remain the authoritative readiness signal.
+    func requestDownload(in domain: VoiceInkSyncDomain) {
+        guard let domainURL = operationsURL(for: domain) else { return }
+        try? fileManager.startDownloadingUbiquitousItem(at: domainURL)
+    }
+
     func append(_ batch: VoiceInkSyncMutationBatch, domain: VoiceInkSyncDomain) throws -> VoiceInkSyncEnvelope {
         let payload = try PropertyListEncoder.voiceInkSync.encode(batch)
         guard payload.count <= Self.maximumPayloadBytes else { throw POSIXError(.EFBIG) }

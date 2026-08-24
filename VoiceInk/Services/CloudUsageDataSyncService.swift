@@ -631,6 +631,11 @@ final class CloudUsageDataSyncService: ObservableObject {
         repairLocalStore: Bool
     ) throws -> SyncOutcome {
         dispatchPrecondition(condition: .notOnQueue(.main))
+        // Finder can expose an iCloud directory before its descendants are locally materialized.
+        // Request the usage operation tree on every startup/retry so remote history arrives
+        // without requiring the user to choose Download Now in Finder. This intentionally does
+        // not request Blobs/Audio, which remains an independent opt-in, on-demand path.
+        syncCore.requestDownload(in: .usage)
         syncCore.prepareDeviceIdentity()
         let modelContext = ModelContext(modelContainer)
         if enqueueAll {
