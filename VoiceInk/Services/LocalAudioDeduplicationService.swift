@@ -65,7 +65,7 @@ final class LocalAudioDeduplicationService {
         let context = ModelContext(modelContainer)
         var descriptor = FetchDescriptor<Transcription>()
         descriptor.propertiesToFetch = [\.audioFileURL]
-        let referencedPaths = Set(try context.fetch(descriptor).compactMap { transcription in
+        let referencedPaths: Set<String> = Set(try context.fetch(descriptor).compactMap { transcription in
             guard let value = transcription.audioFileURL else { return nil }
             let url = URL(string: value) ?? URL(fileURLWithPath: value)
             return url.standardizedFileURL.path
@@ -112,7 +112,7 @@ final class LocalAudioDeduplicationService {
                     now: now
                 )
         }
-        let candidateSizes = Set(orphanCandidates.map(\.byteCount))
+        let candidateSizes: Set<Int64> = Set(orphanCandidates.map { $0.byteCount })
 
         var referencedHashesBySize: [Int64: Set<String>] = [:]
         for file in referencedFiles where candidateSizes.contains(file.byteCount) {
