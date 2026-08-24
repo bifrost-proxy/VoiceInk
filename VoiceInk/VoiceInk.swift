@@ -364,6 +364,9 @@ struct VoiceInkApp: App {
                             })
                 }
             }
+            .onChange(of: hasCompletedOnboardingV2) { _, _ in
+                recordingShortcutManager.refreshForOnboardingStateChange()
+            }
         }
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: AppWindowLayout.width, height: AppWindowLayout.minimumHeight)

@@ -6,6 +6,11 @@ import Testing
 
 @MainActor
 struct RecordingPermissionPreflightTests {
+    @Test func recordingRuntimeWaitsForOnboardingToComplete() {
+        #expect(!OnboardingRuntimeGate.allowsRecordingRuntime(hasCompletedOnboarding: false))
+        #expect(OnboardingRuntimeGate.allowsRecordingRuntime(hasCompletedOnboarding: true))
+    }
+
     @Test func microphonePermissionHasHighestPriority() {
         #expect(
             RecordingPermissionRequirements.firstMissingPermission(
