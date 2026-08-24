@@ -1386,6 +1386,7 @@ final class CloudUsageDataSyncService: ObservableObject {
         if fileManager.fileExists(atPath: destination.path),
             try verifyAudioFile(destination, descriptor: audio)
         {
+            removeObsoleteMaterializations(for: transcriptionID, keeping: destination, in: directory)
             return .available(destination)
         }
         let temporary = directory.appendingPathComponent(".\(UUID().uuidString).download")
@@ -1402,7 +1403,30 @@ final class CloudUsageDataSyncService: ObservableObject {
             try fileManager.moveItem(at: temporary, to: destination)
         }
         try rememberVerifiedAudioFile(destination, sha256: audio.sha256)
+        removeObsoleteMaterializations(for: transcriptionID, keeping: destination, in: directory)
         return .available(destination)
+    }
+
+    /// A synchronized record owns one stable local materialization. If the
+    /// remote audio format changes, remove the superseded extension only after
+    /// the replacement has been fully copied and verified.
+    private nonisolated func removeObsoleteMaterializations(
+        for transcriptionID: UUID,
+        keeping destination: URL,
+        in directory: URL
+    ) {
+        let canonicalStem = "synced_\(transcriptionID.uuidString)"
+        guard let entries = try? fileManager.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else { return }
+        for entry in entries where entry.standardizedFileURL != destination.standardizedFileURL {
+            guard entry.deletingPathExtension().lastPathComponent == canonicalStem,
+                (try? entry.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+            else { continue }
+            try? fileManager.removeItem(at: entry)
+        }
     }
 
     private nonisolated func requireCurrentUbiquitousItem(

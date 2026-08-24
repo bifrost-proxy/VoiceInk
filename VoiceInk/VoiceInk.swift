@@ -185,6 +185,7 @@ struct VoiceInkApp: App {
         }
         CloudUsageDataSyncService.shared.start(modelContext: resolvedContainer.mainContext)
         HistoryStorageManager.shared.startMonitoring(modelContext: resolvedContainer.mainContext)
+        LocalAudioDeduplicationService.shared.runIfNeeded(modelContainer: resolvedContainer)
 
         // Ensure no lingering recording state from previous runs
         Task {
