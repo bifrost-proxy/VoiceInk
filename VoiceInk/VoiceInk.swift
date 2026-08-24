@@ -21,6 +21,7 @@ struct VoiceInkApp: App {
     @StateObject private var aiService: AIService
     @StateObject private var enhancementService: AIEnhancementService
     @StateObject private var activeWindowService = ActiveWindowService.shared
+    @StateObject private var updater = UpdateManager.shared
     @AppStorage("hasCompletedOnboardingV2") private var hasCompletedOnboardingV2 = false
     @State private var showMenuBarIcon = true
     @State private var didShowLaunchReminders = false
@@ -376,6 +377,12 @@ struct VoiceInkApp: App {
             CommandGroup(replacing: .newItem) {}
         }
 
+        Window("Software Update", id: AppWindowID.softwareUpdate) {
+            UpdateWindowView()
+        }
+        .defaultSize(width: 420, height: 250)
+        .windowResizability(.contentSize)
+
         MenuBarExtra(isInserted: $showMenuBarIcon) {
             MenuBarView()
                 .environmentObject(engine)
@@ -396,8 +403,21 @@ struct VoiceInkApp: App {
                 return $0
             }(NSImage(named: "menuBarIcon")!)
 
-            Image(nsImage: image)
-                .background(MainWindowRequestBridge(menuBarManager: menuBarManager))
+            ZStack(alignment: .topTrailing) {
+                Image(nsImage: image)
+
+                if updater.showsMenuBarUpdateBadge {
+                    Image(systemName: "arrow.down.circle.fill")
+                        .font(.system(size: 10, weight: .bold))
+                        .symbolRenderingMode(.palette)
+                        .foregroundStyle(.white, .blue)
+                        .offset(x: 3, y: -2)
+                        .accessibilityHidden(true)
+                }
+            }
+            .frame(width: 26, height: 22)
+            .accessibilityLabel(menuBarAccessibilityLabel)
+            .background(MainWindowRequestBridge(menuBarManager: menuBarManager))
         }
         .menuBarExtraStyle(.menu)
 
@@ -408,6 +428,13 @@ struct VoiceInkApp: App {
                 }
             }
         #endif
+    }
+
+    private var menuBarAccessibilityLabel: Text {
+        if let release = updater.availableRelease {
+            return Text("VoiceInk \(release.version) is available.")
+        }
+        return Text("VoiceInk")
     }
 
     /// Only one notification fits on screen, so show at most one launch reminder.

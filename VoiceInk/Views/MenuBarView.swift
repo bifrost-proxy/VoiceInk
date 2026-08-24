@@ -17,6 +17,7 @@ struct MenuBarView: View {
     @EnvironmentObject var aiService: AIService
     @ObservedObject private var modeManager = ModeManager.shared
     @ObservedObject var audioDeviceManager = AudioDeviceManager.shared
+    @ObservedObject private var updater = UpdateManager.shared
     @AppStorage("hasCompletedOnboardingV2") private var hasCompletedOnboardingV2 = false
     @State private var launchAtLoginEnabled = LaunchAtLogin.isEnabled
 
@@ -35,6 +36,10 @@ struct MenuBarView: View {
             Button("Complete Onboarding") {
                 showMainWindow(reason: "Complete Onboarding")
             }
+
+            Divider()
+
+            updateMenuItem
 
             Divider()
 
@@ -151,10 +156,48 @@ struct MenuBarView: View {
             }
             .keyboardShortcut(",", modifiers: .command)
 
+            updateMenuItem
+
             Button("Quit VoiceInk") {
                 NSApplication.shared.terminate(nil)
             }
         }
+    }
+
+    @ViewBuilder
+    private var updateMenuItem: some View {
+        switch updater.menuAction {
+        case .showProgress:
+            Button {
+                presentUpdateWindow(reason: "View Update Progress")
+            } label: {
+                Label(updater.statusText, systemImage: "arrow.down.circle")
+            }
+        case .install(let version):
+            Button {
+                presentUpdateWindow(reason: "Install Available Update")
+                updater.installAvailableUpdate()
+            } label: {
+                Label {
+                    Text("Update to VoiceInk \(version)")
+                } icon: {
+                    Image(systemName: "arrow.down.circle.fill")
+                }
+            }
+        case .check:
+            Button {
+                presentUpdateWindow(reason: "Check for Updates")
+                Task { _ = await updater.checkForUpdates() }
+            } label: {
+                Label("Check for Updates…", systemImage: "arrow.clockwise")
+            }
+        }
+    }
+
+    private func presentUpdateWindow(reason: String) {
+        logger.notice("🧭 Menu bar requested software update window. reason=\(reason, privacy: .public)")
+        menuBarManager.activateForPresentedWindow(reason: reason)
+        openWindow(id: AppWindowID.softwareUpdate)
     }
 
     private func showMainWindow(reason: String) {
@@ -188,5 +231,143 @@ struct MenuBarView: View {
             "🧭 Menu bar navigation state updated. reason=\(reason, privacy: .public); destination=\(destination, privacy: .public); selectedAfter=\(self.mainWindowNavigation.selectedView.rawValue, privacy: .public)"
         )
         showMainWindow(reason: reason)
+    }
+}
+
+struct UpdateWindowView: View {
+    @Environment(\.dismissWindow) private var dismissWindow
+    @ObservedObject private var updater = UpdateManager.shared
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            HStack(alignment: .top, spacing: 16) {
+                Image(systemName: statusSymbol)
+                    .font(.system(size: 34, weight: .semibold))
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(statusColor)
+                    .frame(width: 42, height: 42)
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(statusTitle)
+                        .font(.title2.weight(.semibold))
+
+                    statusContent
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            Divider()
+
+            HStack {
+                Spacer()
+                Button("Close") {
+                    dismissWindow(id: AppWindowID.softwareUpdate)
+                }
+
+                actionButton
+            }
+        }
+        .padding(24)
+        .frame(width: 420)
+        .accessibilityIdentifier("software-update.window")
+    }
+
+    private var statusTitle: String {
+        switch updater.activity {
+        case .failed:
+            return String(localized: "Update Failed")
+        case .checking:
+            return String(localized: "Checking for Updates…")
+        case .downloading, .verifying, .preparing, .installing:
+            return updater.statusText
+        case .idle:
+            if let release = updater.availableRelease {
+                return String(format: String(localized: "Update to VoiceInk %@"), release.version)
+            }
+            return updater.lastCheckMessage ?? String(localized: "Software Update")
+        }
+    }
+
+    private var statusSymbol: String {
+        switch updater.activity {
+        case .failed:
+            return "exclamationmark.triangle.fill"
+        case .idle where updater.availableRelease == nil && updater.lastCheckMessage != nil:
+            return "checkmark.circle.fill"
+        default:
+            return "arrow.down.circle.fill"
+        }
+    }
+
+    private var statusColor: Color {
+        if case .failed = updater.activity { return .red }
+        if updater.activity == .idle, updater.availableRelease == nil, updater.lastCheckMessage != nil {
+            return .green
+        }
+        return .blue
+    }
+
+    @ViewBuilder
+    private var statusContent: some View {
+        switch updater.activity {
+        case .failed(let message):
+            Text(message)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        case .downloading:
+            VStack(alignment: .leading, spacing: 8) {
+                if let percentage = updater.progressPercentage {
+                    Text("\(percentage)%")
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                }
+                if let progress = updater.progressFraction {
+                    ProgressView(value: progress)
+                } else {
+                    ProgressView()
+                }
+            }
+        case .checking, .verifying, .preparing, .installing:
+            ProgressView()
+                .controlSize(.small)
+        case .idle:
+            if let release = updater.availableRelease {
+                Text("VoiceInk \(release.version) is available.")
+                    .foregroundStyle(.secondary)
+            } else {
+                Text(updater.lastCheckMessage ?? String(localized: "Check for Updates"))
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var actionButton: some View {
+        if case .failed = updater.activity {
+            Button("Retry") {
+                retryUpdateOperation()
+            }
+            .keyboardShortcut(.defaultAction)
+        } else if updater.isBusy {
+            EmptyView()
+        } else if let release = updater.availableRelease {
+            Button("Update to VoiceInk \(release.version)") {
+                updater.installAvailableUpdate()
+            }
+            .keyboardShortcut(.defaultAction)
+        } else {
+            Button("Check for Updates") {
+                Task { _ = await updater.checkForUpdates() }
+            }
+            .keyboardShortcut(.defaultAction)
+        }
+    }
+
+    private func retryUpdateOperation() {
+        if updater.availableRelease != nil {
+            updater.installAvailableUpdate()
+        } else {
+            Task { _ = await updater.checkForUpdates() }
+        }
     }
 }

@@ -9,6 +9,7 @@ enum AppWindowLayout {
 
 enum AppWindowID {
     static let main = "main"
+    static let softwareUpdate = "software-update"
 }
 
 enum WindowDiagnostics {
