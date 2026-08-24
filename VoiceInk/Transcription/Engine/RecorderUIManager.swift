@@ -269,6 +269,9 @@ class RecorderUIManager: ObservableObject, RecorderPanelPresenting {
 
     func presentRecordingPermissionGuidance(modeId: UUID? = nil) async {
         guard let engine else { return }
+        guard OnboardingRuntimeGate.allowsRecordingRuntime(
+            hasCompletedOnboarding: UserDefaults.standard.bool(forKey: "hasCompletedOnboardingV2")
+        ) else { return }
 
         engine.prepareRecordingPermissionRecovery(modeId: modeId)
         isRecorderPanelVisible = true

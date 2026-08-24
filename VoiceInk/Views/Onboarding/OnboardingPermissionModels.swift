@@ -98,6 +98,15 @@ enum OnboardingStage: String, CaseIterable {
     }
 }
 
+/// Recording controls are intentionally unavailable until the dedicated
+/// onboarding permission flow has finished. This prevents the global shortcut
+/// recovery UI from competing with an in-progress macOS permission prompt.
+enum OnboardingRuntimeGate {
+    static func allowsRecordingRuntime(hasCompletedOnboarding: Bool) -> Bool {
+        hasCompletedOnboarding
+    }
+}
+
 enum OnboardingPermissionKind: String, CaseIterable, Identifiable {
     case microphone
     case accessibility

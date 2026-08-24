@@ -301,6 +301,13 @@ class RecordingShortcutManager: ObservableObject {
     private func refreshShortcutMonitoring() -> Bool {
         removeActiveShortcutMonitoring()
 
+        guard OnboardingRuntimeGate.allowsRecordingRuntime(
+            hasCompletedOnboarding: UserDefaults.standard.bool(forKey: "hasCompletedOnboardingV2")
+        ) else {
+            accessibilityAuthorizationMonitor.stop()
+            return false
+        }
+
         guard AXIsProcessTrusted() else {
             accessibilityAuthorizationMonitor.start()
             let shortcuts = configuredShortcutsForAccessibilityFallback()
@@ -559,6 +566,10 @@ class RecordingShortcutManager: ObservableObject {
     }
 
     func refreshAfterLaunchReset() {
+        refreshShortcutMonitoring()
+    }
+
+    func refreshForOnboardingStateChange() {
         refreshShortcutMonitoring()
     }
 
