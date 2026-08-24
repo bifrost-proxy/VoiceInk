@@ -619,9 +619,11 @@ struct VoiceInkTests {
         let now = Date(timeIntervalSince1970: 1_800_000_000)
         let oldDate = now.addingTimeInterval(-(OrphanAudioCleanupPolicy.minimumFileAge + 60))
         for url in [referenced, oldDuplicate, oldUnique] {
-            try FileManager.default.setAttributes([.modificationDate: oldDate], atPath: url.path)
+            try FileManager.default.setAttributes(
+                [.modificationDate: oldDate], ofItemAtPath: url.path)
         }
-        try FileManager.default.setAttributes([.modificationDate: now], atPath: recentDuplicate.path)
+        try FileManager.default.setAttributes(
+            [.modificationDate: now], ofItemAtPath: recentDuplicate.path)
 
         let container = try ModelContainer(
             for: Schema([Transcription.self, SessionMetric.self]),
