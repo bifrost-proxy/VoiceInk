@@ -610,7 +610,7 @@ struct VoiceInkTests {
     }
 
     @MainActor
-    @Test func localAudioDeduplicationDeletesOnlyOldUnreferencedExactCopies() throws {
+    @Test func localAudioDeduplicationDeletesOnlyUnreferencedStableExactCopies() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("VoiceInkLocalAudioDedup-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -619,22 +619,13 @@ struct VoiceInkTests {
         let duplicateData = Data(repeating: 0x2a, count: 4_096)
         let uniqueData = Data(repeating: 0x7b, count: 2_048)
         let referenced = root.appendingPathComponent("referenced.wav")
-        let oldDuplicate = root.appendingPathComponent("old-duplicate.wav")
-        let oldUnique = root.appendingPathComponent("old-unique.wav")
+        let duplicate = root.appendingPathComponent("duplicate.wav")
+        let unique = root.appendingPathComponent("unique.wav")
         let recentDuplicate = root.appendingPathComponent("recent-duplicate.wav")
         try duplicateData.write(to: referenced)
-        try duplicateData.write(to: oldDuplicate)
-        try uniqueData.write(to: oldUnique)
+        try duplicateData.write(to: duplicate)
+        try uniqueData.write(to: unique)
         try duplicateData.write(to: recentDuplicate)
-
-        let now = Date(timeIntervalSince1970: 1_800_000_000)
-        let oldDate = now.addingTimeInterval(-(OrphanAudioCleanupPolicy.minimumFileAge + 60))
-        for url in [referenced, oldDuplicate, oldUnique] {
-            try FileManager.default.setAttributes(
-                [.modificationDate: oldDate], ofItemAtPath: url.path)
-        }
-        try FileManager.default.setAttributes(
-            [.modificationDate: now], ofItemAtPath: recentDuplicate.path)
 
         let container = try ModelContainer(
             for: Schema([Transcription.self, SessionMetric.self]),
@@ -647,18 +638,17 @@ struct VoiceInkTests {
 
         let result = try LocalAudioDeduplicationService.removeSafeDuplicateOrphans(
             modelContainer: container,
-            recordingsDirectory: root,
-            now: now
+            recordingsDirectory: root
         )
 
         #expect(result == LocalAudioDeduplicationResult(
-            deletedFileCount: 1,
-            reclaimedByteCount: Int64(duplicateData.count)
+            deletedFileCount: 2,
+            reclaimedByteCount: Int64(duplicateData.count * 2)
         ))
         #expect(FileManager.default.fileExists(atPath: referenced.path))
-        #expect(!FileManager.default.fileExists(atPath: oldDuplicate.path))
-        #expect(FileManager.default.fileExists(atPath: oldUnique.path))
-        #expect(FileManager.default.fileExists(atPath: recentDuplicate.path))
+        #expect(!FileManager.default.fileExists(atPath: duplicate.path))
+        #expect(FileManager.default.fileExists(atPath: unique.path))
+        #expect(!FileManager.default.fileExists(atPath: recentDuplicate.path))
     }
 
     @Test func historyStorageCapacityUsesDefaultAndClampsSupportedRange() throws {
