@@ -21,16 +21,46 @@ final class LocalAudioDeduplicationService {
         category: "LocalAudioDeduplicationService"
     )
     private let completionKey = "HasCompletedLocalAudioDeduplicationV2"
+    private let postUsageSyncCompletionKey = "HasCompletedLocalAudioDeduplicationV3PostUsageSync"
     private var isRunning = false
+    private var pendingPostUsageSyncContainer: ModelContainer?
 
     private init() {}
 
     @discardableResult
     func runIfNeeded(modelContainer: ModelContainer) -> Task<Void, Never>? {
         guard !UserDefaults.standard.bool(forKey: completionKey), !isRunning else { return nil }
+        return startRepair(
+            modelContainer: modelContainer,
+            completionKey: completionKey,
+            phase: "startup"
+        )
+    }
+
+    /// Usage sync can add a record that makes an older local file recognizable
+    /// as a duplicate only after the startup repair has already taken its
+    /// reference snapshot. Run one final pass after the first successful sync.
+    @discardableResult
+    func runAfterUsageSyncIfNeeded(modelContainer: ModelContainer) -> Task<Void, Never>? {
+        guard !UserDefaults.standard.bool(forKey: postUsageSyncCompletionKey) else { return nil }
+        guard !isRunning else {
+            pendingPostUsageSyncContainer = modelContainer
+            return nil
+        }
+        return startRepair(
+            modelContainer: modelContainer,
+            completionKey: postUsageSyncCompletionKey,
+            phase: "post-usage-sync"
+        )
+    }
+
+    private func startRepair(
+        modelContainer: ModelContainer,
+        completionKey: String,
+        phase: String
+    ) -> Task<Void, Never> {
         isRunning = true
 
-        let completionKey = completionKey
         let logger = logger
         let recordingsDirectory = Self.defaultRecordingsDirectory
         return Task.detached(priority: .utility) {
@@ -41,14 +71,21 @@ final class LocalAudioDeduplicationService {
                 )
                 UserDefaults.standard.set(true, forKey: completionKey)
                 logger.notice(
-                    "Completed local audio deduplication files=\(result.deletedFileCount, privacy: .public) bytes=\(result.reclaimedByteCount, privacy: .public)"
+                    "Completed local audio deduplication phase=\(phase, privacy: .public) files=\(result.deletedFileCount, privacy: .public) bytes=\(result.reclaimedByteCount, privacy: .public)"
                 )
             } catch {
-                logger.error("Local audio deduplication failed: \(error.localizedDescription, privacy: .public)")
+                logger.error(
+                    "Local audio deduplication failed phase=\(phase, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                )
             }
 
             await MainActor.run {
-                LocalAudioDeduplicationService.shared.isRunning = false
+                let service = LocalAudioDeduplicationService.shared
+                service.isRunning = false
+                if let pendingContainer = service.pendingPostUsageSyncContainer {
+                    service.pendingPostUsageSyncContainer = nil
+                    service.runAfterUsageSyncIfNeeded(modelContainer: pendingContainer)
+                }
             }
         }
     }
