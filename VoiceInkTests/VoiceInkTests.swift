@@ -651,6 +651,40 @@ struct VoiceInkTests {
         #expect(!FileManager.default.fileExists(atPath: recentDuplicate.path))
     }
 
+    @MainActor
+    @Test func localAudioDeduplicationUsesLiveMainContextReferenceSnapshot() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("VoiceInkLocalAudioDedupLiveContext-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let audioData = Data(repeating: 0x5c, count: 4_096)
+        let referenced = root.appendingPathComponent("referenced.wav")
+        let duplicate = root.appendingPathComponent("duplicate.wav")
+        try audioData.write(to: referenced)
+        try audioData.write(to: duplicate)
+
+        let container = try ModelContainer(
+            for: Schema([Transcription.self, SessionMetric.self]),
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        container.mainContext.insert(Transcription(
+            text: "live", duration: 1, audioFileURL: referenced.absoluteString
+        ))
+
+        let result = try LocalAudioDeduplicationService.removeSafeDuplicateOrphans(
+            modelContainer: container,
+            recordingsDirectory: root
+        )
+
+        #expect(result == LocalAudioDeduplicationResult(
+            deletedFileCount: 1,
+            reclaimedByteCount: Int64(audioData.count)
+        ))
+        #expect(FileManager.default.fileExists(atPath: referenced.path))
+        #expect(!FileManager.default.fileExists(atPath: duplicate.path))
+    }
+
     @Test func historyStorageCapacityUsesDefaultAndClampsSupportedRange() throws {
         let suiteName = "VoiceInkTests.HistoryStorageCapacity.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suiteName))
