@@ -266,6 +266,7 @@ final class CloudUsageDataSyncService: ObservableObject {
         scheduledRecordIDs.removeAll()
 
         guard enabled else {
+            cloudAudioRecordIDs.removeAll()
             state = .disabled
             return
         }
@@ -295,18 +296,32 @@ final class CloudUsageDataSyncService: ObservableObject {
     }
 
     func hasCloudAudio(for transcriptionID: UUID) -> Bool {
-        cloudAudioRecordIDs.contains(transcriptionID)
+        defaults.bool(forKey: CloudSyncSettingsKeys.usageDataSyncEnabled)
+            && defaults.bool(forKey: CloudSyncSettingsKeys.usageAudioSyncEnabled)
+            && cloudAudioRecordIDs.contains(transcriptionID)
     }
 
     /// Downloads and verifies one source-audio blob in direct response to a user action.
     /// Metadata reconciliation never calls this method.
     func materializeAudioOnDemand(for transcriptionID: UUID) async throws -> URL {
-        guard defaults.bool(forKey: CloudSyncSettingsKeys.usageAudioSyncEnabled) else {
+        guard defaults.bool(forKey: CloudSyncSettingsKeys.usageDataSyncEnabled),
+            defaults.bool(forKey: CloudSyncSettingsKeys.usageAudioSyncEnabled)
+        else {
             throw CocoaError(.userCancelled)
         }
         let executionCoordinator = self.executionCoordinator
         for attempt in 0..<120 {
+            guard defaults.bool(forKey: CloudSyncSettingsKeys.usageDataSyncEnabled),
+                defaults.bool(forKey: CloudSyncSettingsKeys.usageAudioSyncEnabled)
+            else {
+                throw CocoaError(.userCancelled)
+            }
             let result = try await executionCoordinator.run { [self] in
+                guard defaults.bool(forKey: CloudSyncSettingsKeys.usageDataSyncEnabled),
+                    defaults.bool(forKey: CloudSyncSettingsKeys.usageAudioSyncEnabled)
+                else {
+                    throw CocoaError(.userCancelled)
+                }
                 guard let descriptor = try audioDescriptor(for: transcriptionID) else {
                     throw CocoaError(.fileNoSuchFile)
                 }
@@ -616,6 +631,7 @@ final class CloudUsageDataSyncService: ObservableObject {
         repairLocalStore: Bool
     ) throws -> SyncOutcome {
         dispatchPrecondition(condition: .notOnQueue(.main))
+        syncCore.prepareDeviceIdentity()
         let modelContext = ModelContext(modelContainer)
         if enqueueAll {
             let allIDs = Set(try modelContext.fetch(FetchDescriptor<Transcription>()).map(\.id))
@@ -1342,15 +1358,27 @@ final class CloudUsageDataSyncService: ObservableObject {
             )
             .appendingPathComponent("\(audio.sha256).\(audio.fileExtension)")
         let candidates = [blob, legacyBlob].compactMap { $0 }
-        guard let source = candidates.first(where: { fileManager.fileExists(atPath: $0.path) }) else {
+        let existingCandidates = candidates.filter { fileManager.fileExists(atPath: $0.path) }
+        guard !existingCandidates.isEmpty else {
             for candidate in candidates {
                 try? fileManager.startDownloadingUbiquitousItem(at: candidate)
             }
             return .pending
         }
-        guard try requireCurrentUbiquitousItem(at: source) else { return .pending }
-        guard try verifyAudioFile(source, descriptor: audio) else {
-            throw CocoaError(.fileReadCorruptFile)
+        var source: URL?
+        var foundCorruptCandidate = false
+        for candidate in existingCandidates {
+            guard try requireCurrentUbiquitousItem(at: candidate) else { continue }
+            guard try verifyAudioFile(candidate, descriptor: audio) else {
+                foundCorruptCandidate = true
+                continue
+            }
+            source = candidate
+            break
+        }
+        guard let source else {
+            if foundCorruptCandidate { throw CocoaError(.fileReadCorruptFile) }
+            return .pending
         }
         let directory = localRecordingsDirectoryOverride ?? Self.localRecordingsDirectory
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)

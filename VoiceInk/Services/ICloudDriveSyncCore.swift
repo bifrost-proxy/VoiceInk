@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import IOKit
 
 enum VoiceInkSyncDomain: String, Codable, CaseIterable, Sendable {
     case configuration
@@ -257,13 +258,15 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
     private static let metadataPrefix = "VoiceInkSyncV3."
     private static let deviceIDKey = metadataPrefix + "deviceID"
     private static let deviceNameKey = metadataPrefix + "deviceName"
+    private static let deviceFingerprintKey = metadataPrefix + "deviceFingerprint"
+    private static let identityCollisionCheckKey = metadataPrefix + "identityCollisionCheckVersion"
     private static let sequenceKey = metadataPrefix + "sequence"
     private static let frontierKey = metadataPrefix + "frontier"
 
     private let defaults: UserDefaults
     private let fileManager: FileManager
     private let iCloudDriveRootOverride: URL?
-    let deviceID: String
+    private(set) var deviceID: String
     let deviceName: String
     private(set) var frontierWriteCountForTesting = 0
     private(set) var registerCheckpointWriteCountForTesting = 0
@@ -289,17 +292,12 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
         let existingDeviceID = defaults.string(forKey: Self.deviceIDKey).flatMap { value in
             UUID(uuidString: value).map { _ in value }
         }
-        let persistedDeviceName = defaults.string(forKey: Self.deviceNameKey)
-        let copiedIdentity = persistedDeviceName.map { $0 != currentDeviceName } ?? false
-        let cloudIdentityCollision = existingDeviceID.map { deviceID in
-            persistedDeviceName == nil && Self.cloudLog(
-                fileManager: fileManager,
-                iCloudDriveRootURL: iCloudDriveRootURL,
-                containsDeviceID: deviceID,
-                authoredByNameDifferentFrom: currentDeviceName
-            )
-        } ?? false
-        if let existingDeviceID, !copiedIdentity, !cloudIdentityCollision {
+        let currentFingerprint = Self.currentDeviceFingerprint()
+        let copiedIdentity = existingDeviceID != nil
+            && defaults.string(forKey: Self.deviceFingerprintKey).flatMap { persisted in
+                currentFingerprint.map { persisted != $0 }
+            } == true
+        if let existingDeviceID, !copiedIdentity {
             self.deviceID = existingDeviceID
         } else {
             let created = UUID().uuidString
@@ -307,20 +305,49 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
             self.deviceID = created
         }
         defaults.set(currentDeviceName, forKey: Self.deviceNameKey)
+        if let currentFingerprint {
+            defaults.set(currentFingerprint, forKey: Self.deviceFingerprintKey)
+        }
         if iCloudDriveRootURL == nil {
             pruneOrphanedSyncCaches()
         }
     }
 
-    /// UserDefaults can be copied by Migration Assistant or a machine setup tool. A copied
-    /// sync identity makes two Macs share one operation directory, so each treats the other's
-    /// metadata events as local. The remembered device name handles future copies cheaply; the
-    /// bounded cloud scan repairs installations created before that marker existed.
-    private static func cloudLog(
+    /// Repairs identities copied before the local hardware fingerprint existed. This is called
+    /// on the serial utility queue before synchronization, never during app-launch construction.
+    func prepareDeviceIdentity() {
+        if let persisted = defaults.string(forKey: Self.deviceIDKey), persisted != deviceID {
+            deviceID = persisted
+        }
+        guard defaults.integer(forKey: Self.identityCollisionCheckKey) < 1 else { return }
+        defer { defaults.set(1, forKey: Self.identityCollisionCheckKey) }
+        guard Self.cloudLogHasConflictingAuthorNames(
+            fileManager: fileManager,
+            iCloudDriveRootURL: iCloudDriveRootOverride,
+            deviceID: deviceID
+        ) else { return }
+
+        let created = UUID().uuidString
+        defaults.set(created, forKey: Self.deviceIDKey)
+        deviceID = created
+        pruneOrphanedSyncCaches()
+    }
+
+    private static func currentDeviceFingerprint() -> String? {
+        let service = IOServiceGetMatchingService(
+            kIOMainPortDefault, IOServiceMatching("IOPlatformExpertDevice"))
+        guard service != IO_OBJECT_NULL else { return nil }
+        defer { IOObjectRelease(service) }
+        guard let value = IORegistryEntryCreateCFProperty(
+            service, "IOPlatformUUID" as CFString, kCFAllocatorDefault, 0
+        )?.takeRetainedValue() as? String else { return nil }
+        return VoiceInkSyncEnvelope.sha256(Data(value.utf8))
+    }
+
+    private static func cloudLogHasConflictingAuthorNames(
         fileManager: FileManager,
         iCloudDriveRootURL: URL?,
-        containsDeviceID deviceID: String,
-        authoredByNameDifferentFrom deviceName: String
+        deviceID: String
     ) -> Bool {
         let cloudRoot = iCloudDriveRootURL ?? fileManager.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Mobile Documents/com~apple~CloudDocs", isDirectory: true)
@@ -333,20 +360,25 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
         ) else { return false }
 
         var inspectedFileCount = 0
+        var authorNames = Set<String>()
         for domain in domains {
             let deviceRoot = domain.appendingPathComponent(deviceID, isDirectory: true)
             guard let enumerator = fileManager.enumerator(
                 at: deviceRoot,
                 includingPropertiesForKeys: [
-                    .isRegularFileKey, .isUbiquitousItemKey, .ubiquitousItemDownloadingStatusKey,
+                    .isRegularFileKey, .fileSizeKey, .isUbiquitousItemKey,
+                    .ubiquitousItemDownloadingStatusKey,
                 ],
                 options: [.skipsHiddenFiles]
             ) else { continue }
             for case let url as URL in enumerator where url.pathExtension == "syncop" {
                 let values = try? url.resourceValues(forKeys: [
-                    .isRegularFileKey, .isUbiquitousItemKey, .ubiquitousItemDownloadingStatusKey,
+                    .isRegularFileKey, .fileSizeKey, .isUbiquitousItemKey,
+                    .ubiquitousItemDownloadingStatusKey,
                 ])
-                guard values?.isRegularFile == true else { continue }
+                guard values?.isRegularFile == true, (values?.fileSize ?? .max) <= 256 * 1_024 else {
+                    continue
+                }
                 if values?.isUbiquitousItem == true,
                     values?.ubiquitousItemDownloadingStatus != .current
                 {
@@ -359,10 +391,12 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
                         VoiceInkSyncEnvelope.self, from: data),
                     envelope.isValid,
                     envelope.authorDeviceID == deviceID,
-                    envelope.authorDeviceName != nil,
-                    envelope.authorDeviceName != deviceName
+                    let authorName = envelope.authorDeviceName?
+                        .trimmingCharacters(in: .whitespacesAndNewlines),
+                    !authorName.isEmpty
                 {
-                    return true
+                    authorNames.insert(authorName)
+                    if authorNames.count > 1 { return true }
                 }
                 if inspectedFileCount >= 512 { return false }
             }

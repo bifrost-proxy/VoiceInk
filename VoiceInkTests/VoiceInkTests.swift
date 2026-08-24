@@ -308,11 +308,39 @@ struct VoiceInkTests {
         _ = try source.append(VoiceInkSyncMutationBatch(mutations: [
             VoiceInkSyncMutation(key: "preference/test", value: Data("value".utf8))
         ]), domain: .configuration)
-        defaults.removeObject(forKey: "VoiceInkSyncV3.deviceName")
 
         let copiedInstallation = ICloudDriveSyncCore(
             defaults: defaults, iCloudDriveRootURL: root, deviceName: "Mac B")
-        #expect(copiedInstallation.deviceID != sourceID)
+        #expect(copiedInstallation.deviceID == sourceID)
+        _ = try copiedInstallation.append(VoiceInkSyncMutationBatch(mutations: [
+            VoiceInkSyncMutation(key: "preference/other", value: Data("other".utf8))
+        ]), domain: .configuration)
+
+        let repairedInstallation = ICloudDriveSyncCore(
+            defaults: defaults, iCloudDriveRootURL: root, deviceName: "Mac B")
+        repairedInstallation.prepareDeviceIdentity()
+        #expect(repairedInstallation.deviceID != sourceID)
+    }
+
+    @Test func renamedMacKeepsItsSyncIdentity() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("VoiceInkRenamedIdentity-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let suite = "VoiceInkTests.RenamedIdentity.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let original = ICloudDriveSyncCore(
+            defaults: defaults, iCloudDriveRootURL: root, deviceName: "Old Mac Name")
+        let originalID = original.deviceID
+        _ = try original.append(VoiceInkSyncMutationBatch(mutations: [
+            VoiceInkSyncMutation(key: "preference/test", value: Data("value".utf8))
+        ]), domain: .configuration)
+
+        let renamed = ICloudDriveSyncCore(
+            defaults: defaults, iCloudDriveRootURL: root, deviceName: "New Mac Name")
+        renamed.prepareDeviceIdentity()
+        #expect(renamed.deviceID == originalID)
     }
 
     @Test func readingManyRemoteOperationsUpdatesTheFrontierOnce() throws {
@@ -1474,6 +1502,10 @@ struct VoiceInkTests {
         #expect(service.state == .synced)
         #expect(service.lastRemoteDeviceName == "Audio Source Mac")
         service.setEnabled(false)
+        #expect(!service.hasCloudAudio(for: imported.id))
+        await #expect(throws: CocoaError.self) {
+            _ = try await service.materializeAudioOnDemand(for: imported.id)
+        }
     }
 
     @MainActor
