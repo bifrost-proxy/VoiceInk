@@ -275,7 +275,14 @@ class VoiceInkEngine: NSObject, ObservableObject {
             activeRecordingStartID = nil
             recordingState = .transcribing
             await recorder.stopRecording()
-            if recorder.lastCaptureIntegritySnapshot.hasCaptureLoss {
+            let captureIntegritySnapshot = recorder.lastCaptureIntegritySnapshot
+
+            guard captureIntegritySnapshot.hasAudioForTranscription else {
+                await discardRecordingWithoutAudio()
+                return
+            }
+
+            if captureIntegritySnapshot.hasCaptureLoss {
                 NotificationManager.shared.showNotification(
                     title: String(localized: "Some audio frames were dropped; this transcription may be incomplete"),
                     type: .warning,
@@ -1343,6 +1350,39 @@ class VoiceInkEngine: NSObject, ObservableObject {
 
     private func finishRecorderSession() async {
         enhancementService?.clearCapturedContexts()
+    }
+
+    private func discardRecordingWithoutAudio() async {
+        logger.warning("Recording stopped without any converted audio frames; skipping transcription")
+        cancelCurrentSession()
+
+        if let recordedFile, FileManager.default.fileExists(atPath: recordedFile.path) {
+            do {
+                try FileManager.default.removeItem(at: recordedFile)
+            } catch {
+                logger.error(
+                    "Failed to remove empty recording file=\(recordedFile.lastPathComponent, privacy: .public) error=\(error, privacy: .public)"
+                )
+            }
+        }
+
+        recordedFile = nil
+        partialTranscript = ""
+        shouldCancelRecording = false
+        activePipelineUseCase = .newSession
+        activePipelineInputTarget = nil
+        clearActiveRecordingContext()
+        recordingState = .idle
+
+        await cleanupResources()
+        await finishRecorderSession()
+        await recorderUIManager?.dismissRecorderPanel()
+
+        NotificationManager.shared.showNotification(
+            title: String(localized: "No audio was received. Check your microphone and try again."),
+            type: .error,
+            duration: 5.0
+        )
     }
 
     func cleanupResources() async {
