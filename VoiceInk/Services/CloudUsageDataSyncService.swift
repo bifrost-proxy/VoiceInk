@@ -1163,7 +1163,7 @@ final class CloudUsageDataSyncService: ObservableObject {
     private nonisolated func migrateLegacyUsageIfNeeded() throws -> Bool {
         // Older builds queued legacy audio for eager background downloads. Source audio is now
         // resolved from its legacy or v3 blob only when the user asks to use that recording.
-        defaults.removeObject(forKey: metadataPrefix + "legacyPendingAudioDescriptors")
+        defaults.removeObject(forKey: Self.metadataPrefix + "legacyPendingAudioDescriptors")
         guard !defaults.bool(forKey: Self.legacyMigrationCompletedKey) else {
             return false
         }
