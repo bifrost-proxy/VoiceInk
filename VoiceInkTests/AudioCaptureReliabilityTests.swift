@@ -65,4 +65,22 @@ struct AudioCaptureReliabilityTests {
         #expect(performance.captureOutputFrames == 16_000)
         #expect(performance.captureInputSampleRate == 48_000)
     }
+
+    @Test func transcriptionRequiresAtLeastOneConvertedAudioFrame() {
+        #expect(!AudioCaptureIntegritySnapshot.empty.hasAudioForTranscription)
+        #expect(
+            !AudioCaptureIntegritySnapshot(
+                inputFrames: 1,
+                outputFrames: 0,
+                inputSampleRate: 48_000
+            ).hasAudioForTranscription
+        )
+        #expect(
+            AudioCaptureIntegritySnapshot(
+                inputFrames: 3,
+                outputFrames: 1,
+                inputSampleRate: 48_000
+            ).hasAudioForTranscription
+        )
+    }
 }

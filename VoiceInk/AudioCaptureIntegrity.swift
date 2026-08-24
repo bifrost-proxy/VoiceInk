@@ -19,4 +19,11 @@ struct AudioCaptureIntegritySnapshot: Equatable, Sendable {
     var hasCaptureLoss: Bool {
         droppedBuffers > 0 || droppedFrames > 0
     }
+
+    /// The post-recording pipeline only has audio to submit after CoreAudio
+    /// produced at least one converted output frame. Input-only snapshots can
+    /// occur when capture stops before the resampler emits a usable frame.
+    var hasAudioForTranscription: Bool {
+        outputFrames > 0
+    }
 }

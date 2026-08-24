@@ -10905,6 +10905,22 @@
         }
       }
     },
+    "No audio was received. Check your microphone and try again." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Es wurde kein Audio empfangen. Prüfe dein Mikrofon und versuche es erneut."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未收到任何音频。请检查麦克风后重试。"
+          }
+        }
+      }
+    },
     "No audio files found older than %lld days." : {
       "localizations" : {
         "de" : {
