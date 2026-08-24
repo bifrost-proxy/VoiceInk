@@ -10,7 +10,8 @@ struct LocalAudioDeduplicationResult: Equatable, Sendable {
 
 /// One-time repair for files orphaned by older usage-sync versions. It only
 /// removes an unreferenced recording when an identical, currently referenced
-/// recording remains on disk. Unique orphaned audio is deliberately preserved.
+/// recording remains on disk and the orphan did not change while it was being
+/// verified. Unique orphaned audio is deliberately preserved.
 @MainActor
 final class LocalAudioDeduplicationService {
     static let shared = LocalAudioDeduplicationService()
@@ -55,8 +56,7 @@ final class LocalAudioDeduplicationService {
     nonisolated static func removeSafeDuplicateOrphans(
         modelContainer: ModelContainer,
         recordingsDirectory: URL,
-        fileManager: FileManager = .default,
-        now: Date = Date()
+        fileManager: FileManager = .default
     ) throws -> LocalAudioDeduplicationResult {
         guard fileManager.fileExists(atPath: recordingsDirectory.path) else {
             return LocalAudioDeduplicationResult(deletedFileCount: 0, reclaimedByteCount: 0)
@@ -106,11 +106,6 @@ final class LocalAudioDeduplicationService {
         }
         let orphanCandidates = audioFiles.filter {
             !referencedPaths.contains($0.url.standardizedFileURL.path)
-                && OrphanAudioCleanupPolicy.shouldDelete(
-                    fileURL: $0.url,
-                    contentModificationDate: $0.modificationDate,
-                    now: now
-                )
         }
         let candidateSizes: Set<Int64> = Set(orphanCandidates.map { $0.byteCount })
 
@@ -123,7 +118,12 @@ final class LocalAudioDeduplicationService {
         var reclaimedByteCount: Int64 = 0
         for file in orphanCandidates {
             guard let hashes = referencedHashesBySize[file.byteCount],
-                hashes.contains(try sha256(of: file.url))
+                hashes.contains(try sha256(of: file.url)),
+                let currentValues = try? file.url.resourceValues(forKeys: propertyKeys),
+                currentValues.isRegularFile == true,
+                currentValues.isSymbolicLink != true,
+                currentValues.fileSize.map(Int64.init) == file.byteCount,
+                currentValues.contentModificationDate == file.modificationDate
             else { continue }
 
             try fileManager.removeItem(at: file.url)
