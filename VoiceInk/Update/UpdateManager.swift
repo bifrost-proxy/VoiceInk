@@ -31,6 +31,12 @@ enum UpdateCheckOutcome: Equatable {
     case failed(String)
 }
 
+enum UpdateMenuAction: Equatable {
+    case check
+    case showProgress
+    case install(version: String)
+}
+
 @MainActor
 final class UpdateManager: ObservableObject {
     static let shared = UpdateManager()
@@ -60,6 +66,14 @@ final class UpdateManager: ObservableObject {
         progressFraction.map { Int(($0 * 100).rounded()) }
     }
 
+    var menuAction: UpdateMenuAction {
+        Self.menuAction(activity: activity, availableRelease: availableRelease)
+    }
+
+    var showsMenuBarUpdateBadge: Bool {
+        availableRelease != nil
+    }
+
     var statusText: String {
         switch activity {
         case .idle:
@@ -80,6 +94,19 @@ final class UpdateManager: ObservableObject {
     }
 
     private init() {}
+
+    nonisolated static func menuAction(
+        activity: UpdateActivity,
+        availableRelease: VoiceInkRelease?
+    ) -> UpdateMenuAction {
+        if activity.isBusy {
+            return .showProgress
+        }
+        if let availableRelease {
+            return .install(version: availableRelease.version)
+        }
+        return .check
+    }
 
     func start() {
         guard !hasStarted else { return }

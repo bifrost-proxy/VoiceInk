@@ -104,6 +104,42 @@ struct UpdaterTests {
         #expect(!UpdateActivity.idle.isBusy)
     }
 
+    @Test func automaticUpdateChecksDefaultOnWithoutOverridingAnExplicitChoice() {
+        let suiteName = "UpdaterTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        AppDefaults.registerDefaults(in: defaults)
+        #expect(defaults.bool(forKey: UpdateManager.automaticallyChecksKey))
+
+        defaults.set(false, forKey: UpdateManager.automaticallyChecksKey)
+        AppDefaults.registerDefaults(in: defaults)
+        #expect(!defaults.bool(forKey: UpdateManager.automaticallyChecksKey))
+    }
+
+    @Test func menuActionReflectsCheckingAvailableAndInstallingStates() {
+        let release = VoiceInkRelease(
+            version: "2.3.0",
+            archiveURL: URL(string: "https://github.com/bifrost-proxy/VoiceInk/releases/download/v2.3.0/VoiceInk-arm64.zip")!,
+            checksumURL: URL(string: "https://github.com/bifrost-proxy/VoiceInk/releases/download/v2.3.0/SHA256SUMS")!
+        )
+
+        #expect(UpdateManager.menuAction(activity: .idle, availableRelease: nil) == .check)
+        #expect(UpdateManager.menuAction(activity: .checking, availableRelease: nil) == .showProgress)
+        #expect(
+            UpdateManager.menuAction(activity: .idle, availableRelease: release)
+                == .install(version: "2.3.0")
+        )
+        #expect(
+            UpdateManager.menuAction(activity: .downloading(progress: 0.5), availableRelease: release)
+                == .showProgress
+        )
+        #expect(
+            UpdateManager.menuAction(activity: .failed("Network unavailable"), availableRelease: release)
+                == .install(version: "2.3.0")
+        )
+    }
+
     @Test(arguments: ReleaseArchitecture.allCases)
     func installationHelperRequiresExactlyTheSelectedArchitecture(
         architecture: ReleaseArchitecture
