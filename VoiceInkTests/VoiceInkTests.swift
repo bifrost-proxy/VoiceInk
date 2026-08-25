@@ -46,6 +46,27 @@ private final class DownloadRequestRecordingFileManager: FileManager, @unchecked
     var downloadRequests: [URL] { lock.withLock { recordedURLs } }
 }
 
+private final class PendingICloudOperationProbe: @unchecked Sendable {
+    private let pendingPaths: Set<String>
+
+    init(pendingURLs: [URL]) {
+        pendingPaths = Set(pendingURLs.map { $0.standardizedFileURL.path })
+    }
+
+    func resourceState(
+        for url: URL,
+        keys: Set<URLResourceKey>
+    ) throws -> ICloudDriveSyncCore.OperationResourceState {
+        let values = try url.resourceValues(forKeys: keys)
+        let isPending = pendingPaths.contains(url.standardizedFileURL.path)
+        return ICloudDriveSyncCore.OperationResourceState(
+            isRegularFile: values.isRegularFile == true,
+            isUbiquitousItem: isPending || values.isUbiquitousItem == true,
+            downloadingStatus: isPending ? .notDownloaded : values.ubiquitousItemDownloadingStatus
+        )
+    }
+}
+
 struct VoiceInkTests {
     @Test func whisperPCMReaderConvertsSamplesWithoutPerSampleDataAllocations() throws {
         let url = FileManager.default.temporaryDirectory
@@ -446,6 +467,58 @@ struct VoiceInkTests {
         #expect(local.registerCheckpointWriteCountForTesting == 2)
     }
 
+    @Test func incrementalRegisterRequestsEveryPendingFileAndCheckpointsReadyOperations() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("VoiceInkPendingOperations-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let localSuite = "VoiceInkTests.PendingOperations.Local.\(UUID().uuidString)"
+        let remoteSuite = "VoiceInkTests.PendingOperations.Remote.\(UUID().uuidString)"
+        let localDefaults = try #require(UserDefaults(suiteName: localSuite))
+        let remoteDefaults = try #require(UserDefaults(suiteName: remoteSuite))
+        defer {
+            localDefaults.removePersistentDomain(forName: localSuite)
+            remoteDefaults.removePersistentDomain(forName: remoteSuite)
+        }
+
+        let remote = ICloudDriveSyncCore(defaults: remoteDefaults, iCloudDriveRootURL: root)
+        let envelopes = try (0..<3).map { index in
+            try remote.append(VoiceInkSyncMutationBatch(mutations: [
+                VoiceInkSyncMutation(
+                    key: "preference/value-\(index)", value: Data("\(index)".utf8))
+            ]), domain: .configuration)
+        }
+        let operationURLs = try envelopes.map { try #require(remote.operationURL(for: $0)) }
+        let pendingURLs = Array(operationURLs.prefix(2))
+        let probe = PendingICloudOperationProbe(pendingURLs: pendingURLs)
+        let fileManager = DownloadRequestRecordingFileManager()
+        let local = ICloudDriveSyncCore(
+            defaults: localDefaults,
+            fileManager: fileManager,
+            iCloudDriveRootURL: root,
+            resourceStateProvider: probe.resourceState
+        )
+
+        #expect(throws: CocoaError.self) {
+            _ = try local.readIncrementally(in: .configuration, fullScan: true)
+        }
+
+        #expect(Set(fileManager.downloadRequests) == Set(pendingURLs.map(\.standardizedFileURL)))
+        #expect(local.decodedOperationCountForTesting == 1)
+        #expect(local.registerCheckpointWriteCountForTesting == 1)
+
+        // A later retry resumes from the persisted ready-file checkpoint and only decodes the
+        // two payloads that were pending during the first pass.
+        let recovered = ICloudDriveSyncCore(
+            defaults: localDefaults,
+            iCloudDriveRootURL: root
+        )
+        let result = try recovered.readIncrementally(in: .configuration, fullScan: true)
+        #expect(result.register.selectedValues().count == 3)
+        #expect(result.affectedKeys == ["preference/value-0", "preference/value-1"])
+        #expect(recovered.decodedOperationCountForTesting == 2)
+        #expect(result.register.selectedValues()["preference/value-2"] == Data("2".utf8))
+    }
+
     @Test func syncEnvelopeCarriesDeviceNameAndDecodesLegacyOperations() throws {
         let deviceID = UUID().uuidString
         let batch = VoiceInkSyncMutationBatch(mutations: [
@@ -560,6 +633,14 @@ struct VoiceInkTests {
         #expect(ICloudSyncRetryPolicy.baseDelay(afterFailureCount: 4) == 60)
         #expect(ICloudSyncRetryPolicy.baseDelay(afterFailureCount: 5) == 300)
         #expect(ICloudSyncRetryPolicy.baseDelay(afterFailureCount: 100) == 300)
+        #expect(ICloudSyncRetryPolicy.basePendingDownloadDelay(afterFailureCount: 1) == 1)
+        #expect(ICloudSyncRetryPolicy.basePendingDownloadDelay(afterFailureCount: 2) == 2)
+        #expect(ICloudSyncRetryPolicy.basePendingDownloadDelay(afterFailureCount: 3) == 5)
+        #expect(ICloudSyncRetryPolicy.basePendingDownloadDelay(afterFailureCount: 4) == 10)
+        #expect(ICloudSyncRetryPolicy.basePendingDownloadDelay(afterFailureCount: 5) == 30)
+        #expect(ICloudSyncRetryPolicy.basePendingDownloadDelay(afterFailureCount: 100) == 30)
+        #expect(ICloudSyncRetryPolicy.isPendingICloudDownload(CocoaError(.fileReadNoSuchFile)))
+        #expect(!ICloudSyncRetryPolicy.isPendingICloudDownload(CocoaError(.fileReadCorruptFile)))
     }
 
     @Test func audioDescriptorRejectsUnsafeCloudPaths() {
@@ -1143,6 +1224,47 @@ struct VoiceInkTests {
         ).standardizedFileURL
         #expect(!fileManager.downloadRequests.isEmpty)
         #expect(fileManager.downloadRequests.allSatisfy { $0 == expectedUsageDirectory })
+    }
+
+    @MainActor
+    @Test func cloudConfigurationSyncRequestsConfigurationAndDictionaryDirectories() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "VoiceInkConfigurationDownloadRequest-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let suite = "VoiceInkTests.ConfigurationDownloadRequest.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(true, forKey: CloudSyncSettingsKeys.configurationSyncEnabled)
+
+        let fileManager = DownloadRequestRecordingFileManager()
+        let schema = Schema([VocabularyWord.self, WordReplacement.self])
+        let container = try ModelContainer(
+            for: schema,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        let service = CloudConfigurationSyncService(
+            defaults: defaults,
+            fileManager: fileManager,
+            iCloudDriveRootURL: root,
+            preferencesDomainName: suite
+        )
+
+        service.start(modelContext: container.mainContext) {}
+        try await waitForConfigurationSync(service)
+        service.setEnabled(false)
+
+        let operationsRoot = root.appendingPathComponent(
+            "VoiceInk/Sync/v3/Operations", isDirectory: true)
+        let expectedDirectories = Set([
+            operationsRoot.appendingPathComponent("configuration", isDirectory: true)
+                .standardizedFileURL,
+            operationsRoot.appendingPathComponent("dictionary", isDirectory: true)
+                .standardizedFileURL,
+        ])
+        #expect(Set(fileManager.downloadRequests) == expectedDirectories)
     }
 
     @MainActor

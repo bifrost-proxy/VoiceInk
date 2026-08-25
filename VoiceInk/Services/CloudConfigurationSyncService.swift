@@ -437,10 +437,21 @@ final class CloudConfigurationSyncService: ObservableObject {
             } catch {
                 if generation == self.syncGeneration, self.isEnabled {
                     self.consecutiveFailureCount += 1
-                    self.state = .failed(error.localizedDescription)
-                    self.logger.error("Sync failed: \(error.localizedDescription, privacy: .public)")
+                    let isPendingDownload = ICloudSyncRetryPolicy.isPendingICloudDownload(error)
+                    if isPendingDownload {
+                        self.state = .waitingForICloud
+                        self.logger.notice(
+                            "Configuration sync waiting for iCloud: \(error.localizedDescription, privacy: .public)")
+                    } else {
+                        self.state = .failed(error.localizedDescription)
+                        self.logger.error("Sync failed: \(error.localizedDescription, privacy: .public)")
+                    }
                     self.scheduleRetry(
-                        after: ICloudSyncRetryPolicy.delay(afterFailureCount: self.consecutiveFailureCount),
+                        after: isPendingDownload
+                            ? ICloudSyncRetryPolicy.pendingDownloadDelay(
+                                afterFailureCount: self.consecutiveFailureCount)
+                            : ICloudSyncRetryPolicy.delay(
+                                afterFailureCount: self.consecutiveFailureCount),
                         applyDictionary: applyDictionary,
                         recordLocalChanges: recordLocalChanges
                     )
@@ -505,6 +516,8 @@ final class CloudConfigurationSyncService: ObservableObject {
             )
         }
         guard syncCore.rootURL != nil else { throw CocoaError(.fileNoSuchFile) }
+        syncCore.requestDownload(in: .configuration)
+        if applyDictionary { syncCore.requestDownload(in: .dictionary) }
         syncCore.prepareDeviceIdentity()
 
         try migrateLegacyConfigurationIfNeeded()

@@ -494,7 +494,8 @@ final class CloudUsageDataSyncService: ObservableObject {
                     self.defaults.bool(forKey: CloudSyncSettingsKeys.usageDataSyncEnabled)
                 {
                     self.consecutiveFailureCount += 1
-                    if Self.isPendingICloudDownload(error) {
+                    let isPendingDownload = ICloudSyncRetryPolicy.isPendingICloudDownload(error)
+                    if isPendingDownload {
                         self.state = .waitingForICloud
                         self.logger.notice(
                             "Usage sync waiting for iCloud: \(error.localizedDescription, privacy: .public)")
@@ -503,7 +504,11 @@ final class CloudUsageDataSyncService: ObservableObject {
                         self.logger.error("Usage sync failed: \(error.localizedDescription, privacy: .public)")
                     }
                     self.scheduleRetry(
-                        after: ICloudSyncRetryPolicy.delay(afterFailureCount: self.consecutiveFailureCount)
+                        after: isPendingDownload
+                            ? ICloudSyncRetryPolicy.pendingDownloadDelay(
+                                afterFailureCount: self.consecutiveFailureCount)
+                            : ICloudSyncRetryPolicy.delay(
+                                afterFailureCount: self.consecutiveFailureCount)
                     )
                 }
             }
@@ -1805,12 +1810,6 @@ final class CloudUsageDataSyncService: ObservableObject {
                 operationURLs: operationURLs
             )
         }
-    }
-
-    private nonisolated static func isPendingICloudDownload(_ error: Error) -> Bool {
-        let error = error as NSError
-        return error.domain == NSCocoaErrorDomain
-            && (error.code == NSFileNoSuchFileError || error.code == NSFileReadNoSuchFileError)
     }
 
     private var shouldSkipAutomaticSyncInTests: Bool {

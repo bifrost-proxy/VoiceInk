@@ -32,6 +32,7 @@ final class ICloudSyncExecutionCoordinator: @unchecked Sendable {
 
 enum ICloudSyncRetryPolicy {
     private static let delays: [TimeInterval] = [5, 15, 30, 60, 300]
+    private static let pendingDownloadDelays: [TimeInterval] = [1, 2, 5, 10, 30]
 
     static func baseDelay(afterFailureCount failureCount: Int) -> TimeInterval {
         delays[min(max(failureCount - 1, 0), delays.count - 1)]
@@ -39,5 +40,19 @@ enum ICloudSyncRetryPolicy {
 
     static func delay(afterFailureCount failureCount: Int) -> TimeInterval {
         baseDelay(afterFailureCount: failureCount) * Double.random(in: 0.85...1.15)
+    }
+
+    static func basePendingDownloadDelay(afterFailureCount failureCount: Int) -> TimeInterval {
+        pendingDownloadDelays[min(max(failureCount - 1, 0), pendingDownloadDelays.count - 1)]
+    }
+
+    static func pendingDownloadDelay(afterFailureCount failureCount: Int) -> TimeInterval {
+        basePendingDownloadDelay(afterFailureCount: failureCount) * Double.random(in: 0.85...1.15)
+    }
+
+    static func isPendingICloudDownload(_ error: Error) -> Bool {
+        let error = error as NSError
+        return error.domain == NSCocoaErrorDomain
+            && (error.code == NSFileNoSuchFileError || error.code == NSFileReadNoSuchFileError)
     }
 }
