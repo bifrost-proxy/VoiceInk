@@ -403,10 +403,11 @@ struct ScopedVocabularyTests {
 
         lookup.cancel()
         pending.cancel()
+        let didCompleteCancelledRequest = lookup.complete(cancelledRequestID)
 
         #expect(!lookup.isResolving)
         #expect(!lookup.isCurrent(cancelledRequestID))
-        #expect(!lookup.complete(cancelledRequestID))
+        #expect(!didCompleteCancelledRequest)
         #expect(pending.input == nil)
     }
 
@@ -417,10 +418,12 @@ struct ScopedVocabularyTests {
         let staleRequestID = lookup.requestID
         lookup.retry()
         let currentRequestID = lookup.requestID
+        let didCompleteStaleRequest = lookup.complete(staleRequestID)
 
-        #expect(!lookup.complete(staleRequestID))
+        #expect(!didCompleteStaleRequest)
         #expect(lookup.isResolving)
-        #expect(lookup.complete(currentRequestID))
+        let didCompleteCurrentRequest = lookup.complete(currentRequestID)
+        #expect(didCompleteCurrentRequest)
         #expect(!lookup.isResolving)
     }
 
