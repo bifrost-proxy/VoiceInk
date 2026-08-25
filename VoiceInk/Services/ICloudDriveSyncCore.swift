@@ -1163,22 +1163,16 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
             return
         }
 
+        if iCloudDriveRootOverride != nil {
+            try writeImmutableOperation(data, envelope: envelope, to: destination)
+            return
+        }
+
         var coordinationError: NSError?
         var writeError: Error?
         NSFileCoordinator().coordinate(writingItemAt: destination, options: [], error: &coordinationError) { url in
-            let stagingURL = url.deletingLastPathComponent()
-                .appendingPathComponent(".\(envelope.operationID.uuidString).incoming")
-            defer { try? self.fileManager.removeItem(at: stagingURL) }
             do {
-                try? self.fileManager.removeItem(at: stagingURL)
-                try data.write(to: stagingURL, options: .atomic)
-                do {
-                    try self.fileManager.moveItem(at: stagingURL, to: url)
-                } catch {
-                    guard self.fileManager.fileExists(atPath: url.path),
-                        try Data(contentsOf: url) == data
-                    else { throw error }
-                }
+                try self.writeImmutableOperation(data, envelope: envelope, to: url)
             } catch {
                 writeError = error
             }
@@ -1187,7 +1181,29 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
         if let writeError { throw writeError }
     }
 
+    private func writeImmutableOperation(
+        _ data: Data,
+        envelope: VoiceInkSyncEnvelope,
+        to url: URL
+    ) throws {
+        let stagingURL = url.deletingLastPathComponent()
+            .appendingPathComponent(".\(envelope.operationID.uuidString).incoming")
+        defer { try? self.fileManager.removeItem(at: stagingURL) }
+        try? self.fileManager.removeItem(at: stagingURL)
+        try data.write(to: stagingURL, options: .atomic)
+        do {
+            try self.fileManager.moveItem(at: stagingURL, to: url)
+        } catch {
+            guard self.fileManager.fileExists(atPath: url.path),
+                try Data(contentsOf: url) == data
+            else { throw error }
+        }
+    }
+
     private func coordinatedRead(from url: URL) throws -> Data {
+        if iCloudDriveRootOverride != nil {
+            return try Data(contentsOf: url)
+        }
         var coordinationError: NSError?
         var result: Result<Data, Error>?
         NSFileCoordinator().coordinate(readingItemAt: url, options: [], error: &coordinationError) { coordinatedURL in
