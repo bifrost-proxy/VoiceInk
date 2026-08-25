@@ -45,12 +45,16 @@ class TranscriptionAutoCleanupService {
             object: nil
         )
 
-        if UserDefaults.standard.bool(forKey: CleanupSettingsKeys.isTranscriptionCleanupEnabled) {
-            Task { [weak self] in
-                guard let self = self, let modelContext = self.modelContext else { return }
+        Task { [weak self] in
+            guard let self = self, let modelContext = self.modelContext else { return }
+            if UserDefaults.standard.bool(forKey: CleanupSettingsKeys.isTranscriptionCleanupEnabled) {
                 await self.sweepOldTranscriptions(modelContext: modelContext)
-                await self.cleanupOrphanAudioFiles(modelContext: modelContext)
             }
+            // Orphan audio is independent from transcript retention. The age
+            // grace period protects recordings that have not received their
+            // SwiftData row yet, while stale unreferenced files must not evade
+            // the rolling audio storage limit forever.
+            await self.cleanupOrphanAudioFiles(modelContext: modelContext)
         }
     }
 
@@ -157,11 +161,10 @@ class TranscriptionAutoCleanupService {
     }
 
     /// Deletes audio files in Recordings directory that have no corresponding Transcription record
-    private func cleanupOrphanAudioFiles(modelContext: ModelContext) async {
-        guard UserDefaults.standard.bool(forKey: CleanupSettingsKeys.isTranscriptionCleanupEnabled) else {
-            return
-        }
-
+    func cleanupOrphanAudioFiles(
+        modelContext: ModelContext,
+        recordingsDirectoryURL: URL? = nil
+    ) async {
         let modelContainer = await MainActor.run { modelContext.container }
 
         do {
@@ -179,9 +182,10 @@ class TranscriptionAutoCleanupService {
                     return url.lastPathComponent
                 })
 
-            guard FileManager.default.fileExists(atPath: recordingsDirectory.path) else { return }
+            let targetDirectory = recordingsDirectoryURL ?? recordingsDirectory
+            guard FileManager.default.fileExists(atPath: targetDirectory.path) else { return }
             let filesInDirectory = try FileManager.default.contentsOfDirectory(
-                at: recordingsDirectory,
+                at: targetDirectory,
                 includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey]
             )
 

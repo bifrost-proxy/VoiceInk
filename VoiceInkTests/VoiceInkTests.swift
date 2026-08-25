@@ -652,6 +652,44 @@ struct VoiceInkTests {
     }
 
     @MainActor
+    @Test func staleOrphanAudioCleanupPreservesRecordsWithoutTranscriptAutoDeletion() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("VoiceInkStaleOrphanCleanup-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let referenced = root.appendingPathComponent("referenced.wav")
+        let staleOrphan = root.appendingPathComponent("stale-orphan.wav")
+        let recentOrphan = root.appendingPathComponent("recent-orphan.wav")
+        try Data(repeating: 0x31, count: 1_024).write(to: referenced)
+        try Data(repeating: 0x32, count: 1_024).write(to: staleOrphan)
+        try Data(repeating: 0x33, count: 1_024).write(to: recentOrphan)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date().addingTimeInterval(-OrphanAudioCleanupPolicy.minimumFileAge - 60)],
+            ofItemAtPath: staleOrphan.path
+        )
+
+        let container = try ModelContainer(
+            for: Schema([Transcription.self, SessionMetric.self]),
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        container.mainContext.insert(Transcription(
+            text: "keep forever", duration: 1, audioFileURL: referenced.absoluteString
+        ))
+        try container.mainContext.save()
+
+        await TranscriptionAutoCleanupService.shared.cleanupOrphanAudioFiles(
+            modelContext: container.mainContext,
+            recordingsDirectoryURL: root
+        )
+
+        #expect(FileManager.default.fileExists(atPath: referenced.path))
+        #expect(!FileManager.default.fileExists(atPath: staleOrphan.path))
+        #expect(FileManager.default.fileExists(atPath: recentOrphan.path))
+        #expect(try container.mainContext.fetchCount(FetchDescriptor<Transcription>()) == 1)
+    }
+
+    @MainActor
     @Test func localAudioDeduplicationUsesLiveMainContextReferenceSnapshot() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("VoiceInkLocalAudioDedupLiveContext-\(UUID().uuidString)", isDirectory: true)
