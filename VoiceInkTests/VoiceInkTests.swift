@@ -1636,6 +1636,154 @@ struct VoiceInkTests {
     }
 
     @MainActor
+    @Test func usageRetryPreservesQueuedLocalStoreRepair() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "VoiceInkUsageRepairRetry-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let suite = "VoiceInkTests.UsageRepairRetry.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(true, forKey: CloudSyncSettingsKeys.usageDataSyncEnabled)
+        let previousRepair = Date()
+        defaults.set(previousRepair, forKey: "CloudUsageDataSyncV3.lastFullMaterializationAt")
+
+        let fileManager = DownloadRequestRecordingFileManager(acceptsMissingPaths: true)
+        let container = try ModelContainer(
+            for: Schema([Transcription.self, SessionMetric.self]),
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        let service = CloudUsageDataSyncService(
+            defaults: defaults,
+            fileManager: fileManager,
+            iCloudDriveRootURL: root
+        )
+
+        service.start(modelContext: container.mainContext)
+        let waitingTimeout = Date().addingTimeInterval(5)
+        while service.state != .waitingForICloud && Date() < waitingTimeout {
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        #expect(service.state == .waitingForICloud)
+
+        service.syncNow(fullScan: true, repairLocalStore: true)
+        let usageOperations = root.appendingPathComponent(
+            "VoiceInk/Sync/v3/Operations/usage", isDirectory: true)
+        try FileManager.default.createDirectory(at: usageOperations, withIntermediateDirectories: true)
+
+        try await waitForUsageSync(service)
+        service.setEnabled(false)
+        let completedRepair = try #require(
+            defaults.object(forKey: "CloudUsageDataSyncV3.lastFullMaterializationAt") as? Date)
+        #expect(completedRepair > previousRepair)
+    }
+
+    @MainActor
+    @Test func audioDownloadWaitsForPendingUsageOperationDirectory() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "VoiceInkAudioDirectoryRetry-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let sourceSuite = "VoiceInkTests.AudioDirectoryRetry.Source.\(UUID().uuidString)"
+        let receivingSuite = "VoiceInkTests.AudioDirectoryRetry.Receiving.\(UUID().uuidString)"
+        let sourceDefaults = try #require(UserDefaults(suiteName: sourceSuite))
+        let receivingDefaults = try #require(UserDefaults(suiteName: receivingSuite))
+        defer {
+            sourceDefaults.removePersistentDomain(forName: sourceSuite)
+            receivingDefaults.removePersistentDomain(forName: receivingSuite)
+        }
+
+        let recordID = UUID()
+        let audioData = Data(repeating: 0x6b, count: 4_096)
+        let digest = VoiceInkSyncEnvelope.sha256(audioData)
+        let descriptor = CloudUsageDataSyncService.AudioDescriptor(
+            sha256: digest,
+            byteCount: Int64(audioData.count),
+            fileExtension: "wav"
+        )
+        let transcription = CloudUsageDataSyncService.TranscriptionPayload(
+            id: recordID,
+            text: "audio directory retry",
+            enhancedText: nil,
+            timestamp: Date(timeIntervalSince1970: 1_700_000_000),
+            duration: 2,
+            transcriptionModelName: "test-model",
+            aiEnhancementModelName: nil,
+            promptName: nil,
+            transcriptionDuration: 1,
+            enhancementDuration: nil,
+            modeName: "Dictation",
+            modeEmoji: nil,
+            vocabularyBundleIdentifier: nil,
+            vocabularyDomain: nil,
+            transcriptionStatus: "completed",
+            performanceData: nil
+        )
+        let sourceCore = ICloudDriveSyncCore(
+            defaults: sourceDefaults,
+            iCloudDriveRootURL: root,
+            deviceName: "Audio Source Mac"
+        )
+        _ = try sourceCore.append(VoiceInkSyncMutationBatch(mutations: [
+            VoiceInkSyncMutation(
+                key: "transcription/\(recordID.uuidString)",
+                value: try PropertyListEncoder().encode(
+                    CloudUsageDataSyncService.TranscriptionValue(
+                        transcription: transcription,
+                        audio: descriptor
+                    )
+                )
+            )
+        ]), domain: .usage)
+
+        let blob = root
+            .appendingPathComponent(
+                "VoiceInk/Sync/v3/Blobs/Audio/\(digest.prefix(2))", isDirectory: true)
+            .appendingPathComponent("\(digest).wav")
+        try FileManager.default.createDirectory(
+            at: blob.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try audioData.write(to: blob)
+
+        receivingDefaults.set(true, forKey: CloudSyncSettingsKeys.usageDataSyncEnabled)
+        receivingDefaults.set(true, forKey: CloudSyncSettingsKeys.usageAudioSyncEnabled)
+        let container = try ModelContainer(
+            for: Schema([Transcription.self, SessionMetric.self]),
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        let fileManager = DownloadRequestRecordingFileManager(acceptsMissingPaths: true)
+        let recordings = root.appendingPathComponent("LocalRecordings", isDirectory: true)
+        let service = CloudUsageDataSyncService(
+            defaults: receivingDefaults,
+            fileManager: fileManager,
+            iCloudDriveRootURL: root,
+            deviceName: "Receiving Mac",
+            localRecordingsDirectoryURL: recordings
+        )
+        service.start(modelContext: container.mainContext)
+        try await waitForUsageSync(service)
+        #expect(service.hasCloudAudio(for: recordID))
+
+        let usageOperations = root.appendingPathComponent(
+            "VoiceInk/Sync/v3/Operations/usage", isDirectory: true)
+        let stagedOperations = root.appendingPathComponent("PendingUsageOperations", isDirectory: true)
+        try FileManager.default.moveItem(at: usageOperations, to: stagedOperations)
+        let download = Task { @MainActor in
+            try await service.materializeAudioOnDemand(for: recordID)
+        }
+        try await Task.sleep(for: .milliseconds(100))
+        try FileManager.default.moveItem(at: stagedOperations, to: usageOperations)
+
+        let materialized = try await download.value
+        service.setEnabled(false)
+        #expect(try Data(contentsOf: materialized) == audioData)
+        #expect(fileManager.downloadRequests.contains(usageOperations.standardizedFileURL))
+    }
+
+    @MainActor
     @Test func cloudUsageBulkSyncImportsHistoryWithoutReexportingAtSteadyState() async throws {
         let temporaryRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent("VoiceInkSteadyUsageSyncTests-\(UUID().uuidString)", isDirectory: true)

@@ -361,16 +361,36 @@ final class CloudUsageDataSyncService: ObservableObject {
             else {
                 throw CocoaError(.userCancelled)
             }
-            let result = try await executionCoordinator.run { [self] in
-                guard defaults.bool(forKey: CloudSyncSettingsKeys.usageDataSyncEnabled),
-                    defaults.bool(forKey: CloudSyncSettingsKeys.usageAudioSyncEnabled)
-                else {
-                    throw CocoaError(.userCancelled)
+            let descriptor: AudioDescriptor?
+            do {
+                descriptor = try await executionCoordinator.run { [self] in
+                    guard defaults.bool(forKey: CloudSyncSettingsKeys.usageDataSyncEnabled),
+                        defaults.bool(forKey: CloudSyncSettingsKeys.usageAudioSyncEnabled)
+                    else {
+                        throw CocoaError(.userCancelled)
+                    }
+                    return try audioDescriptor(for: transcriptionID)
                 }
-                guard let descriptor = try audioDescriptor(for: transcriptionID) else {
-                    throw CocoaError(.fileNoSuchFile)
+            } catch {
+                guard ICloudSyncRetryPolicy.isPendingICloudDownload(error) else { throw error }
+                guard attempt < 119 else { break }
+                try await Task.sleep(for: .milliseconds(500))
+                continue
+            }
+            guard let descriptor else { throw CocoaError(.fileNoSuchFile) }
+            let result: AudioMaterialization
+            do {
+                result = try await executionCoordinator.run { [self] in
+                    guard defaults.bool(forKey: CloudSyncSettingsKeys.usageDataSyncEnabled),
+                        defaults.bool(forKey: CloudSyncSettingsKeys.usageAudioSyncEnabled)
+                    else {
+                        throw CocoaError(.userCancelled)
+                    }
+                    return try materializeAudio(descriptor, transcriptionID: transcriptionID)
                 }
-                return try materializeAudio(descriptor, transcriptionID: transcriptionID)
+            } catch {
+                guard ICloudSyncRetryPolicy.isPendingICloudDownload(error) else { throw error }
+                result = .pending
             }
             if case .available(let url) = result { return url }
             guard attempt < 119 else { break }
@@ -403,13 +423,25 @@ final class CloudUsageDataSyncService: ObservableObject {
             return
         }
         guard !AudioDeviceManager.shared.isRecordingActive else {
-            scheduleRetry(after: 5)
+            scheduleRetry(
+                after: 5,
+                fullScan: fullScan,
+                operationURLs: operationURLs,
+                forcedRecordIDs: forcedRecordIDs,
+                repairLocalStore: repairLocalStore
+            )
             return
         }
         guard let modelContainer, syncCore.rootURL != nil else {
             state = .waitingForICloud
             consecutiveFailureCount += 1
-            scheduleRetry(after: ICloudSyncRetryPolicy.delay(afterFailureCount: consecutiveFailureCount))
+            scheduleRetry(
+                after: ICloudSyncRetryPolicy.delay(afterFailureCount: consecutiveFailureCount),
+                fullScan: fullScan,
+                operationURLs: operationURLs,
+                forcedRecordIDs: forcedRecordIDs,
+                repairLocalStore: repairLocalStore
+            )
             return
         }
         state = .syncing
@@ -508,7 +540,11 @@ final class CloudUsageDataSyncService: ObservableObject {
                             ? ICloudSyncRetryPolicy.pendingDownloadDelay(
                                 afterFailureCount: self.consecutiveFailureCount)
                             : ICloudSyncRetryPolicy.delay(
-                                afterFailureCount: self.consecutiveFailureCount)
+                                afterFailureCount: self.consecutiveFailureCount),
+                        fullScan: fullScan,
+                        operationURLs: operationURLs,
+                        forcedRecordIDs: forcedRecordIDs,
+                        repairLocalStore: repairLocalStore
                     )
                 }
             }
@@ -681,7 +717,13 @@ final class CloudUsageDataSyncService: ObservableObject {
         }
     }
 
-    private func scheduleRetry(after delay: TimeInterval) {
+    private func scheduleRetry(
+        after delay: TimeInterval,
+        fullScan: Bool = true,
+        operationURLs: Set<URL> = [],
+        forcedRecordIDs: Set<UUID> = [],
+        repairLocalStore: Bool = false
+    ) {
         guard retryTask == nil,
             defaults.bool(forKey: CloudSyncSettingsKeys.usageDataSyncEnabled)
         else { return }
@@ -689,7 +731,21 @@ final class CloudUsageDataSyncService: ObservableObject {
             try? await Task.sleep(for: .seconds(delay))
             guard let self, !Task.isCancelled else { return }
             self.retryTask = nil
-            self.syncNow(fullScan: true, repairLocalStore: false)
+            let queuedFullScan = self.requestedFullScanWhileRunning
+            let queuedRepair = self.requestedRepairWhileRunning
+            let queuedOperationURLs = self.requestedOperationURLsWhileRunning
+            let queuedRecordIDs = self.requestedRecordIDsWhileRunning
+            self.syncRequestedWhileRunning = false
+            self.requestedFullScanWhileRunning = false
+            self.requestedRepairWhileRunning = false
+            self.requestedOperationURLsWhileRunning.removeAll()
+            self.requestedRecordIDsWhileRunning.removeAll()
+            self.syncNow(
+                fullScan: fullScan || queuedFullScan,
+                operationURLs: operationURLs.union(queuedOperationURLs),
+                forcedRecordIDs: forcedRecordIDs.union(queuedRecordIDs),
+                repairLocalStore: repairLocalStore || queuedRepair
+            )
         }
     }
 
