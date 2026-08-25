@@ -678,12 +678,15 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
         fullScan: Bool
     ) throws -> IncrementalReadResult {
         var checkpoint = loadRegisterCheckpoint(for: domain)
-        let mustScanAll = fullScan || checkpoint == nil
+        let mustScanAll = fullScan || checkpoint == nil || checkpoint?.requiresFullScan == true
         if checkpoint == nil {
             checkpoint = RegisterCheckpoint(domain: domain)
         }
         guard var checkpoint else {
             throw CocoaError(.fileReadUnknown)
+        }
+        if mustScanAll {
+            checkpoint.requiresFullScan = true
         }
 
         let scan: OperationURLScan
@@ -723,6 +726,9 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
         // tombstone operations, never by removing immutable operation files.
 
         checkpoint.pendingAffectedKeys.formUnion(affectedKeys)
+        if mustScanAll, scan.deferredError == nil, !scan.hasPendingDownload {
+            checkpoint.requiresFullScan = false
+        }
         if checkpoint != loadRegisterCheckpoint(for: domain) {
             saveRegisterCheckpoint(checkpoint, for: domain)
         }
@@ -783,6 +789,9 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
         var operationFiles: [String: OperationFileStamp]
         var register: VoiceInkSyncRegisterState
         var pendingAffectedKeys: Set<String>
+        /// Optional so schema-2 checkpoints written before this flag decode as a completed scan.
+        /// New checkpoints remain incomplete until one authoritative directory scan succeeds.
+        var requiresFullScan: Bool?
 
         init(domain: VoiceInkSyncDomain) {
             schemaVersion = Self.currentSchemaVersion
@@ -790,6 +799,7 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
             operationFiles = [:]
             register = VoiceInkSyncRegisterState()
             pendingAffectedKeys = []
+            requiresFullScan = true
         }
 
     }

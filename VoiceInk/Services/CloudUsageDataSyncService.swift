@@ -541,7 +541,9 @@ final class CloudUsageDataSyncService: ObservableObject {
                                 afterFailureCount: self.consecutiveFailureCount)
                             : ICloudSyncRetryPolicy.delay(
                                 afterFailureCount: self.consecutiveFailureCount),
-                        fullScan: fullScan,
+                        // A failed metadata hint can disappear permanently. Retry from the
+                        // authoritative directory while still carrying every queued intent.
+                        fullScan: true,
                         operationURLs: operationURLs,
                         forcedRecordIDs: forcedRecordIDs,
                         repairLocalStore: repairLocalStore
