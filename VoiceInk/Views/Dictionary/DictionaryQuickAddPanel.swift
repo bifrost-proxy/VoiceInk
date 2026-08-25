@@ -163,6 +163,8 @@ struct DictionaryQuickAddView: View {
     @State private var errorMessage: String?
     @State private var selectedVocabularyScope: VocabularyScopeSelection?
     @State private var capturedDomain: String?
+    @State private var websiteLookupFailure: BrowserURLFailureGuidance?
+    @State private var isResolvingWebsite = false
     @FocusState private var focusedField: Field?
 
     enum Field: Hashable { case word, original, replacement }
@@ -201,12 +203,7 @@ struct DictionaryQuickAddView: View {
             DispatchQueue.main.async { focusedField = .word }
         }
         .task {
-            guard let bundleIdentifier = initialUsageContext.bundleIdentifier,
-                let browser = BrowserType.allCases.first(where: { $0.bundleIdentifier.lowercased() == bundleIdentifier })
-            else { return }
-            if let url = try? await BrowserURLService.shared.getCurrentURL(from: browser) {
-                capturedDomain = VocabularyDomain.normalizedHost(from: url)
-            }
+            await captureCurrentWebsite()
         }
         .onChange(of: mode) { _, newMode in
             wordInput = ""
@@ -216,11 +213,13 @@ struct DictionaryQuickAddView: View {
             DispatchQueue.main.async {
                 focusedField = newMode == .vocabulary ? .word : .original
             }
-            onResize(newMode.panelHeight)
+            resizeForCurrentState(mode: newMode)
         }
-        .onChange(of: errorMessage) { _, newError in
-            let height = mode.panelHeight + (newError != nil ? 24 : 0)
-            onResize(height)
+        .onChange(of: errorMessage) { _, _ in
+            resizeForCurrentState()
+        }
+        .onChange(of: websiteLookupFailure) { _, _ in
+            resizeForCurrentState()
         }
     }
 
@@ -307,6 +306,34 @@ struct DictionaryQuickAddView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .menuStyle(.borderlessButton)
+                if isResolvingWebsite {
+                    ProgressView()
+                        .controlSize(.small)
+                        .accessibilityLabel("Detecting current website")
+                }
+            }
+
+            if let websiteLookupFailure {
+                HStack(alignment: .firstTextBaseline, spacing: 7) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(AppTheme.Status.warning)
+                    Text(websiteLookupFailure.message)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    if websiteLookupFailure.shouldOfferAutomationSettings {
+                        Button("Settings") {
+                            NSWorkspace.shared.open(BrowserURLFailureGuidance.automationSettingsURL)
+                        }
+                        .buttonStyle(.link)
+                    }
+                    Button("Retry") {
+                        Task { await captureCurrentWebsite() }
+                    }
+                    .buttonStyle(.link)
+                }
+                .accessibilityElement(children: .combine)
             }
         }
         .padding(.horizontal, 16)
@@ -395,6 +422,35 @@ struct DictionaryQuickAddView: View {
             return
         }
         onDismiss()
+    }
+
+    private func captureCurrentWebsite() async {
+        guard let bundleIdentifier = initialUsageContext.bundleIdentifier,
+            let browser = BrowserType.allCases.first(where: {
+                $0.bundleIdentifier.caseInsensitiveCompare(bundleIdentifier) == .orderedSame
+            })
+        else { return }
+
+        isResolvingWebsite = true
+        websiteLookupFailure = nil
+        defer { isResolvingWebsite = false }
+
+        do {
+            let url = try await BrowserURLService.shared.getCurrentURL(from: browser)
+            capturedDomain = VocabularyDomain.normalizedHost(from: url)
+        } catch is CancellationError {
+            return
+        } catch {
+            capturedDomain = nil
+            websiteLookupFailure = BrowserURLFailureGuidance.make(error: error, browser: browser)
+        }
+    }
+
+    private func resizeForCurrentState(mode selectedMode: Mode? = nil) {
+        let selectedMode = selectedMode ?? mode
+        let validationHeight: CGFloat = errorMessage == nil ? 0 : 24
+        let websiteFailureHeight: CGFloat = selectedMode == .vocabulary && websiteLookupFailure != nil ? 46 : 0
+        onResize(selectedMode.panelHeight + validationHeight + websiteFailureHeight)
     }
 
     private var currentApplicationScope: VocabularyScopeSelection? {

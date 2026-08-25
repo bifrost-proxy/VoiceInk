@@ -177,6 +177,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
     private var activePipelineUseCase: RecordingUseCase = .newSession
     private var activeRecordingContextStore: RecordingContextSnapshotStore?
     private var activeRecordingContextTasks: RecordingContextCaptureTasks?
+    private var activeRecordingContextModeID: UUID?
     private var activeRecordingVocabularyUsageContext: VocabularyUsageContext = .none
     private var activeRecordingModeTask: Task<VocabularyUsageContext, Never>?
     private var activeRecordingInputTarget: RecordingInputTarget?
@@ -293,6 +294,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
             if let resolvedUsageContext = await modeTask?.value {
                 activeRecordingVocabularyUsageContext = resolvedUsageContext
             }
+            refreshRecordingContextForResolvedMode(target: activePipelineInputTarget)
             activeRecordingModeTask = nil
             activeRecordingStartID = nil
 
@@ -479,10 +481,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
                             }
 
                             if modeApplication.waitsForBrowserURL {
-                                _ = self.startRecordingContextCapture(
-                                    modeId: ModeManager.shared.currentEffectiveConfiguration?.id,
-                                    target: lockedTarget
-                                )
+                                self.refreshRecordingContextForResolvedMode(target: lockedTarget)
                             }
 
                             if !canPrepareStreamingImmediately {
@@ -958,6 +957,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
         let mode = modeId.flatMap(ModeManager.shared.getConfiguration(with:))
             ?? ModeManager.shared.currentEffectiveConfiguration
         guard let mode else { return false }
+        activeRecordingContextModeID = mode.id
         let configuration = ModeRuntimeResolver.transcriptionConfiguration(
             mode: mode,
             transcriptionModelManager: transcriptionModelManager
@@ -983,6 +983,15 @@ class VoiceInkEngine: NSObject, ObservableObject {
             mode: mode,
             providerConfiguration: providerConfiguration
         ).isEmpty
+    }
+
+    private func refreshRecordingContextForResolvedMode(target: RecordingContextTarget?) {
+        let resolvedModeID = ModeManager.shared.currentEffectiveConfiguration?.id
+        guard RecordingContextModeResolution.needsCaptureRefresh(
+            capturedModeID: activeRecordingContextModeID,
+            resolvedModeID: resolvedModeID
+        ) else { return }
+        _ = startRecordingContextCapture(modeId: resolvedModeID, target: target)
     }
 
     private func initialRecognitionContext() async -> RecognitionContextEnvelope? {
@@ -1058,6 +1067,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
         activeRecordingContextTasks?.cancelAll()
         activeRecordingContextTasks = nil
         activeRecordingContextStore = nil
+        activeRecordingContextModeID = nil
     }
 
     private func cancelActiveRecordingModeTask() {
@@ -1083,9 +1093,17 @@ class VoiceInkEngine: NSObject, ObservableObject {
             activePipelineInputTarget = nil
             return
         }
+        let contextAwareBaseConfiguration: TranscriptionRuntimeConfiguration
+        if baseConfiguration.speechRecognitionContext != nil {
+            contextAwareBaseConfiguration = baseConfiguration
+        } else {
+            let recognitionContext = await initialRecognitionContext()
+            contextAwareBaseConfiguration = baseConfiguration.addingSpeechRecognitionContext(recognitionContext)
+        }
+
         let transcriptionConfiguration: TranscriptionRuntimeConfiguration
-        if baseConfiguration.vocabulary != nil {
-            transcriptionConfiguration = baseConfiguration
+        if contextAwareBaseConfiguration.vocabulary != nil {
+            transcriptionConfiguration = contextAwareBaseConfiguration
         } else {
             // Session setup can be overtaken by a very short recording. Resolve
             // the same recording-scoped snapshot here instead of falling back
@@ -1093,9 +1111,9 @@ class VoiceInkEngine: NSObject, ObservableObject {
             let vocabulary = TranscriptionVocabularyContext.resolve(
                 from: modelContext,
                 usageContext: activeRecordingVocabularyUsageContext,
-                model: baseConfiguration.model
+                model: contextAwareBaseConfiguration.model
             )
-            transcriptionConfiguration = baseConfiguration.addingVocabulary(vocabulary)
+            transcriptionConfiguration = contextAwareBaseConfiguration.addingVocabulary(vocabulary)
         }
 
         let session = currentSession

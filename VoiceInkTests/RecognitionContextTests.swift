@@ -48,6 +48,49 @@ struct RecognitionContextTests {
         ])
     }
 
+    @Test func contextCaptureRefreshesWhenBrowserResolutionChangesTheMode() {
+        let initialModeID = UUID()
+        let resolvedModeID = UUID()
+
+        #expect(
+            RecordingContextModeResolution.needsCaptureRefresh(
+                capturedModeID: initialModeID,
+                resolvedModeID: resolvedModeID
+            )
+        )
+        #expect(
+            !RecordingContextModeResolution.needsCaptureRefresh(
+                capturedModeID: resolvedModeID,
+                resolvedModeID: resolvedModeID
+            )
+        )
+        #expect(
+            RecordingContextModeResolution.needsCaptureRefresh(
+                capturedModeID: nil,
+                resolvedModeID: resolvedModeID
+            )
+        )
+    }
+
+    @Test func browserURLFailuresProvideRetryAndAutomationGuidance() {
+        let missingTab = BrowserURLFailureGuidance.make(
+            error: BrowserURLError.noActiveTab,
+            browser: .chrome
+        )
+        #expect(missingTab.message.contains("Google Chrome"))
+        #expect(missingTab.message.localizedCaseInsensitiveContains("try again"))
+        #expect(!missingTab.shouldOfferAutomationSettings)
+
+        let automationDenied = BrowserURLFailureGuidance.make(
+            error: BrowserURLError.executionFailed,
+            browser: .safari
+        )
+        #expect(automationDenied.message.contains("Safari"))
+        #expect(automationDenied.message.contains("Automation"))
+        #expect(automationDenied.shouldOfferAutomationSettings)
+        #expect(BrowserURLFailureGuidance.automationSettingsURL.absoluteString.contains("Privacy_Automation"))
+    }
+
     @Test func featureExtractionNormalizesDeduplicatesAndMergesSources() throws {
         let features = ContextFeatureExtractor.extract(from: [
             (.selectedText, "RecognitionContext context_data\nActive Window: Secret", 90),

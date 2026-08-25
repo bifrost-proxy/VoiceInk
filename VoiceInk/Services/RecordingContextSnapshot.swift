@@ -136,6 +136,12 @@ struct RecordingContextCapturePlan: Equatable, Sendable {
     }
 }
 
+enum RecordingContextModeResolution {
+    static func needsCaptureRefresh(capturedModeID: UUID?, resolvedModeID: UUID?) -> Bool {
+        capturedModeID != resolvedModeID
+    }
+}
+
 @MainActor
 final class RecordingContextSnapshotStore {
     private(set) var snapshot: RecordingContextSnapshot
