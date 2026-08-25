@@ -263,8 +263,8 @@ struct VoiceInkTests {
         let defaults = try #require(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
         // Use a small injected limit so the test exercises the same production
-        // splitting path without making the Rosetta test host process 8 MiB twice.
-        let payloadLimitBytes = 7 * 1_024
+        // splitting path without making the Rosetta test host process large payloads.
+        let payloadLimitBytes = 1_024
         let core = ICloudDriveSyncCore(
             defaults: defaults,
             iCloudDriveRootURL: root,
@@ -273,11 +273,11 @@ struct VoiceInkTests {
         let mutations = [
             VoiceInkSyncMutation(
                 key: "preference/first",
-                value: Data(repeating: 0x3c, count: 4 * 1_024)
+                value: Data(repeating: 0x3c, count: 512)
             ),
             VoiceInkSyncMutation(
                 key: "preference/second",
-                value: Data(repeating: 0x4d, count: 4 * 1_024)
+                value: Data(repeating: 0x4d, count: 512)
             ),
         ]
 
