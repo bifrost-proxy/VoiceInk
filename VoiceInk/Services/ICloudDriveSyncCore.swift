@@ -251,6 +251,25 @@ struct VoiceInkSyncRegisterState: Codable, Equatable, Sendable {
 /// Shared append-only transport for every VoiceInk iCloud Drive sync domain.
 /// iCloud Drive copies immutable operation files; domain reducers own merge semantics.
 final class ICloudDriveSyncCore: @unchecked Sendable {
+    struct OperationResourceState {
+        let isRegularFile: Bool?
+        let isDirectory: Bool?
+        let isUbiquitousItem: Bool
+        let downloadingStatus: URLUbiquitousItemDownloadingStatus?
+
+        init(
+            isRegularFile: Bool?,
+            isDirectory: Bool? = nil,
+            isUbiquitousItem: Bool,
+            downloadingStatus: URLUbiquitousItemDownloadingStatus?
+        ) {
+            self.isRegularFile = isRegularFile
+            self.isDirectory = isDirectory
+            self.isUbiquitousItem = isUbiquitousItem
+            self.downloadingStatus = downloadingStatus
+        }
+    }
+
     private enum IdentityCollisionScanResult {
         case collision
         case clear
@@ -273,6 +292,9 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
     private let fileManager: FileManager
     private let iCloudDriveRootOverride: URL?
     private let payloadLimitBytes: Int
+    private let resourceStateProvider: (URL, Set<URLResourceKey>) throws -> OperationResourceState
+    private let downloadRequestLock = NSLock()
+    private var requestedDomainDownloads: Set<VoiceInkSyncDomain> = []
     private(set) var deviceID: String
     let deviceName: String
     private(set) var frontierWriteCountForTesting = 0
@@ -285,13 +307,23 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
         fileManager: FileManager = .default,
         iCloudDriveRootURL: URL? = nil,
         deviceName: String? = nil,
-        payloadLimitBytes: Int = ICloudDriveSyncCore.maximumPayloadBytes
+        payloadLimitBytes: Int = ICloudDriveSyncCore.maximumPayloadBytes,
+        resourceStateProvider: @escaping (URL, Set<URLResourceKey>) throws -> OperationResourceState = {
+            let values = try $0.resourceValues(forKeys: $1)
+            return OperationResourceState(
+                isRegularFile: values.isRegularFile,
+                isDirectory: values.isDirectory,
+                isUbiquitousItem: values.isUbiquitousItem == true,
+                downloadingStatus: values.ubiquitousItemDownloadingStatus
+            )
+        }
     ) {
         precondition(payloadLimitBytes > 0)
         self.defaults = defaults
         self.fileManager = fileManager
         self.iCloudDriveRootOverride = iCloudDriveRootURL
         self.payloadLimitBytes = payloadLimitBytes
+        self.resourceStateProvider = resourceStateProvider
         let normalizedName = deviceName?.trimmingCharacters(in: .whitespacesAndNewlines)
         let resolvedName = normalizedName?.isEmpty == false
             ? normalizedName!
@@ -444,7 +476,87 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
     /// per-file checks and retry policy remain the authoritative readiness signal.
     func requestDownload(in domain: VoiceInkSyncDomain) {
         guard let domainURL = operationsURL(for: domain) else { return }
-        try? fileManager.startDownloadingUbiquitousItem(at: domainURL)
+        _ = downloadRequestLock.withLock { requestedDomainDownloads.insert(domain) }
+        do {
+            try fileManager.startDownloadingUbiquitousItem(at: domainURL)
+            if iCloudDriveRootOverride != nil,
+                fileManager.isMember(of: FileManager.self),
+                !fileManager.fileExists(atPath: domainURL.path)
+            {
+                // Foundation accepts this call for an absent ordinary local path. Only the base
+                // FileManager plus an injected root has that test-fixture meaning. An accepted
+                // production File Provider request remains pending because it can represent a
+                // remote item whose placeholder has not appeared locally yet.
+                _ = downloadRequestLock.withLock { requestedDomainDownloads.remove(domain) }
+            }
+        } catch {
+            let requestError = error as NSError
+            let missingInjectedPlainDirectory = iCloudDriveRootOverride != nil
+                && fileManager.isMember(of: FileManager.self)
+                && !fileManager.fileExists(atPath: domainURL.path)
+            let itemWasNotFound = requestError.domain == NSCocoaErrorDomain
+                && (requestError.code == NSFileNoSuchFileError
+                    || requestError.code == NSFileReadNoSuchFileError)
+            if missingInjectedPlainDirectory
+                || (itemWasNotFound && confirmedMissingDirectory(at: domainURL))
+            {
+                // A current, enumerable ancestor makes the missing path authoritative: this is a
+                // first-time domain and append may create it. Explicitly injected ordinary roots
+                // are local fixtures whose absence always means empty, even when Base FileManager
+                // reports a permission error. Production roots still require both an actual
+                // not-found response and the authoritative ancestor proof.
+                _ = downloadRequestLock.withLock { requestedDomainDownloads.remove(domain) }
+                return
+            }
+            // A missing domain is not evidence that the remote log is empty. File Provider can
+            // reject this request while offline or before it has exposed the placeholder, so keep
+            // the readiness gate closed until a later scan observes an actual current directory.
+        }
+    }
+
+    /// Confirms absence only by walking an already-materialized directory hierarchy. A missing
+    /// child under a current, successfully enumerated ancestor is a new domain; an unavailable
+    /// ancestor is indistinguishable from an unexposed File Provider placeholder and must retry.
+    private func confirmedMissingDirectory(at targetURL: URL) -> Bool {
+        guard let cloudRoot = iCloudDriveRootURL?.standardizedFileURL else { return false }
+        let target = targetURL.standardizedFileURL
+        let rootPath = cloudRoot.path.hasSuffix("/") ? cloudRoot.path : cloudRoot.path + "/"
+        guard target.path.hasPrefix(rootPath) else { return false }
+        let relativeComponents = target.path.dropFirst(rootPath.count).split(separator: "/")
+        guard !relativeComponents.isEmpty else { return false }
+
+        let directoryKeys: Set<URLResourceKey> = [
+            .isDirectoryKey, .isUbiquitousItemKey, .ubiquitousItemDownloadingStatusKey,
+        ]
+        var parent = cloudRoot
+        for component in relativeComponents {
+            guard fileManager.fileExists(atPath: parent.path) else { return false }
+            let state: OperationResourceState
+            do {
+                state = try resourceStateProvider(parent, directoryKeys)
+            } catch {
+                return false
+            }
+            guard state.isDirectory == true,
+                !state.isUbiquitousItem || state.downloadingStatus == .current
+            else { return false }
+
+            let children: [URL]
+            do {
+                children = try fileManager.contentsOfDirectory(
+                    at: parent,
+                    includingPropertiesForKeys: Array(directoryKeys),
+                    options: []
+                )
+            } catch {
+                return false
+            }
+            guard let child = children.first(where: { $0.lastPathComponent == component }) else {
+                return true
+            }
+            parent = child
+        }
+        return false
     }
 
     func append(_ batch: VoiceInkSyncMutationBatch, domain: VoiceInkSyncDomain) throws -> VoiceInkSyncEnvelope {
@@ -575,28 +687,13 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
         mergeIntoLocalFrontier: Bool = true
     ) throws -> [VoiceInkSyncEnvelope] {
         guard let domainURL = operationsURL(for: domain) else { return [] }
-        guard fileManager.fileExists(atPath: domainURL.path) else { return [] }
-
-        let keys: [URLResourceKey] = [.isRegularFileKey, .isUbiquitousItemKey, .ubiquitousItemDownloadingStatusKey]
-        guard let enumerator = fileManager.enumerator(
-            at: domainURL,
-            includingPropertiesForKeys: keys,
-            options: [.skipsHiddenFiles]
-        ) else { return [] }
+        let scan = try operationURLs(in: domain)
 
         var envelopes: [VoiceInkSyncEnvelope] = []
         var envelopesByOperationID: [UUID: VoiceInkSyncEnvelope] = [:]
         var cached = loadIndex(for: domain)
         var refreshed: [String: CachedEnvelope] = [:]
-        var hasPendingDownload = false
-        for case let url as URL in enumerator where url.pathExtension == "syncop" {
-            let values = try? url.resourceValues(forKeys: Set(keys))
-            guard values?.isRegularFile == true else { continue }
-            if values?.isUbiquitousItem == true, values?.ubiquitousItemDownloadingStatus != .current {
-                try? fileManager.startDownloadingUbiquitousItem(at: url)
-                hasPendingDownload = true
-                continue
-            }
+        for url in scan.availableURLs {
             let attributes = try? fileManager.attributesOfItem(atPath: url.path)
             let byteCount = (attributes?[.size] as? NSNumber)?.int64Value ?? -1
             let modifiedAt = (attributes?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? -1
@@ -626,7 +723,8 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
             envelopesByOperationID[envelope.operationID] = envelope
             envelopes.append(envelope)
         }
-        if hasPendingDownload { throw CocoaError(.fileReadNoSuchFile) }
+        if let deferredError = scan.deferredError { throw deferredError }
+        if scan.hasPendingDownload { throw CocoaError(.fileReadNoSuchFile) }
         saveIndex(refreshed, for: domain)
         envelopes.sort { lhs, rhs in
             if lhs.authorDeviceID != rhs.authorDeviceID { return lhs.authorDeviceID < rhs.authorDeviceID }
@@ -655,26 +753,37 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
         fullScan: Bool
     ) throws -> IncrementalReadResult {
         var checkpoint = loadRegisterCheckpoint(for: domain)
-        let mustScanAll = fullScan || checkpoint == nil
+        let mustScanAll = fullScan || checkpoint == nil || checkpoint?.requiresFullScan == true
         if checkpoint == nil {
             checkpoint = RegisterCheckpoint(domain: domain)
         }
         guard var checkpoint else {
             throw CocoaError(.fileReadUnknown)
         }
-
-        let candidateURLs: [URL]
         if mustScanAll {
-            candidateURLs = try operationURLs(in: domain)
-        } else {
-            candidateURLs = hintedOperationURLs.filter {
-                operationLocation(for: $0)?.domain == domain
-            }.sorted { $0.path < $1.path }
+            checkpoint.requiresFullScan = true
         }
 
-        var affectedKeys = Set<String>()
+        let scan: OperationURLScan
+        if mustScanAll {
+            scan = try operationURLs(in: domain)
+        } else if let directoryScan = try pendingOperationDirectoryScan(in: domain) {
+            scan = directoryScan
+        } else {
+            scan = scanOperationURLs(
+                hintedOperationURLs.filter {
+                    operationLocation(for: $0)?.domain == domain
+                }
+            )
+        }
+
+        // A previous pass may have reduced readable operations before discovering iCloud
+        // placeholders. Keep those keys pending until a complete pass can hand the register to
+        // the domain service; otherwise checkpointing the operations would suppress the keys on
+        // retry and delay local materialization until a later full repair.
+        var affectedKeys = checkpoint.pendingAffectedKeys
         var newEnvelopes: [VoiceInkSyncEnvelope] = []
-        for url in candidateURLs {
+        for url in scan.availableURLs {
             let relativePath = try relativeOperationPath(for: url, domain: domain)
             // Operation paths are immutable and include their UUID. Once reduced into the
             // checkpoint, a File Provider metadata refresh must not make us reopen the payload.
@@ -691,16 +800,34 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
         // temporarily omits an item from a directory enumeration; deletions are represented by
         // tombstone operations, never by removing immutable operation files.
 
-        if !newEnvelopes.isEmpty || loadRegisterCheckpoint(for: domain) == nil {
+        checkpoint.pendingAffectedKeys.formUnion(affectedKeys)
+        if mustScanAll, scan.deferredError == nil, !scan.hasPendingDownload {
+            checkpoint.requiresFullScan = false
+        }
+        if checkpoint != loadRegisterCheckpoint(for: domain) {
             saveRegisterCheckpoint(checkpoint, for: domain)
         }
         mergeIntoFrontier(newEnvelopes)
+        if let deferredError = scan.deferredError { throw deferredError }
+        if scan.hasPendingDownload { throw CocoaError(.fileReadNoSuchFile) }
         return IncrementalReadResult(
             register: checkpoint.register,
             affectedKeys: affectedKeys,
             newEnvelopes: newEnvelopes,
             performedFullScan: mustScanAll
         )
+    }
+
+    /// Removes keys from the durable handoff only after the domain service has committed its
+    /// materialized state. A downstream export or database failure can then retry the same keys
+    /// without reopening immutable operation payloads.
+    func acknowledgeAffectedKeys(_ keys: Set<String>, in domain: VoiceInkSyncDomain) {
+        guard !keys.isEmpty, var checkpoint = loadRegisterCheckpoint(for: domain) else { return }
+        let previousKeys = checkpoint.pendingAffectedKeys
+        checkpoint.pendingAffectedKeys.subtract(keys)
+        if checkpoint.pendingAffectedKeys != previousKeys {
+            saveRegisterCheckpoint(checkpoint, for: domain)
+        }
     }
 
     /// Commits the already-reduced register after locally appended immutable operations.
@@ -730,26 +857,41 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
     }
 
     private struct RegisterCheckpoint: Codable, Equatable {
-        static let currentSchemaVersion = 1
+        static let currentSchemaVersion = 2
 
         let schemaVersion: Int
         let domain: VoiceInkSyncDomain
         var operationFiles: [String: OperationFileStamp]
         var register: VoiceInkSyncRegisterState
+        var pendingAffectedKeys: Set<String>
+        /// Optional so schema-2 checkpoints written before this flag decode as a completed scan.
+        /// New checkpoints remain incomplete until one authoritative directory scan succeeds.
+        var requiresFullScan: Bool?
 
         init(domain: VoiceInkSyncDomain) {
             schemaVersion = Self.currentSchemaVersion
             self.domain = domain
             operationFiles = [:]
             register = VoiceInkSyncRegisterState()
+            pendingAffectedKeys = []
+            requiresFullScan = true
         }
 
     }
 
-    private func operationURLs(in domain: VoiceInkSyncDomain) throws -> [URL] {
-        guard let domainURL = operationsURL(for: domain),
-            fileManager.fileExists(atPath: domainURL.path)
-        else { return [] }
+    private struct OperationURLScan {
+        var availableURLs: [URL] = []
+        var hasPendingDownload = false
+        var deferredError: Error?
+    }
+
+    private func operationURLs(in domain: VoiceInkSyncDomain) throws -> OperationURLScan {
+        guard let domainURL = operationsURL(for: domain) else { return OperationURLScan() }
+        if let directoryScan = try pendingOperationDirectoryScan(in: domain) {
+            return directoryScan
+        }
+        guard fileManager.fileExists(atPath: domainURL.path) else { return OperationURLScan() }
+
         let keys: [URLResourceKey] = [
             .isRegularFileKey, .isUbiquitousItemKey, .ubiquitousItemDownloadingStatusKey,
         ]
@@ -757,20 +899,99 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
             at: domainURL,
             includingPropertiesForKeys: keys,
             options: [.skipsHiddenFiles]
-        ) else { return [] }
-        var urls: [URL] = []
+        ) else { throw CocoaError(.fileReadUnknown) }
+        var urls = Set<URL>()
         for case let url as URL in enumerator where url.pathExtension == "syncop" {
-            let values = try? url.resourceValues(forKeys: Set(keys))
-            guard values?.isRegularFile == true else { continue }
-            if values?.isUbiquitousItem == true,
-                values?.ubiquitousItemDownloadingStatus != .current
-            {
-                try? fileManager.startDownloadingUbiquitousItem(at: url)
-                throw CocoaError(.fileReadNoSuchFile)
-            }
-            urls.append(url)
+            urls.insert(url)
         }
-        return urls.sorted { $0.path < $1.path }
+        return scanOperationURLs(urls)
+    }
+
+    /// Returns a non-nil scan only while the domain directory itself is not ready. Both full
+    /// reconciliation and metadata-driven incremental reads must honor this gate; otherwise a
+    /// visible hint can conceal sibling operations whose directory descendants are still hidden.
+    private func pendingOperationDirectoryScan(
+        in domain: VoiceInkSyncDomain
+    ) throws -> OperationURLScan? {
+        guard let domainURL = operationsURL(for: domain) else { return nil }
+        guard fileManager.fileExists(atPath: domainURL.path) else {
+            return downloadRequestLock.withLock {
+                requestedDomainDownloads.contains(domain)
+                    ? OperationURLScan(hasPendingDownload: true)
+                    : nil
+            }
+        }
+        let directoryKeys: Set<URLResourceKey> = [
+            .isDirectoryKey, .isUbiquitousItemKey, .ubiquitousItemDownloadingStatusKey,
+        ]
+        let directoryState: OperationResourceState
+        do {
+            directoryState = try resourceStateProvider(domainURL, directoryKeys)
+        } catch let resourceError {
+            var scan = OperationURLScan()
+            requestMaterialization(at: domainURL, preserving: resourceError, scan: &scan)
+            return scan
+        }
+        guard directoryState.isDirectory != false else {
+            throw CocoaError(.fileReadInvalidFileName)
+        }
+        if directoryState.isDirectory == nil
+            || (directoryState.isUbiquitousItem && directoryState.downloadingStatus != .current)
+        {
+            var scan = OperationURLScan()
+            requestMaterialization(at: domainURL, scan: &scan)
+            return scan
+        }
+        _ = downloadRequestLock.withLock { requestedDomainDownloads.remove(domain) }
+        return nil
+    }
+
+    /// Requests every unavailable payload discovered in one pass. Throwing from the enumeration
+    /// after the first placeholder can otherwise serialize a large iCloud catch-up behind the
+    /// retry backoff and leave already-materialized operations unapplied.
+    private func scanOperationURLs(_ urls: some Sequence<URL>) -> OperationURLScan {
+        let keys: Set<URLResourceKey> = [
+            .isRegularFileKey, .isUbiquitousItemKey, .ubiquitousItemDownloadingStatusKey,
+        ]
+        var scan = OperationURLScan()
+        for url in urls.sorted(by: { $0.path < $1.path }) {
+            let state: OperationResourceState
+            do {
+                state = try resourceStateProvider(url, keys)
+            } catch let resourceError {
+                // File Provider metadata lookup can fail transiently while a hinted item is
+                // materializing. Only classify it as pending when File Provider accepts a
+                // download request; otherwise preserve the original error for the service UI.
+                requestMaterialization(at: url, preserving: resourceError, scan: &scan)
+                continue
+            }
+            if state.isRegularFile == false { continue }
+            if state.isRegularFile == nil {
+                requestMaterialization(at: url, scan: &scan)
+                continue
+            }
+            if state.isUbiquitousItem,
+                state.downloadingStatus != .current
+            {
+                requestMaterialization(at: url, scan: &scan)
+                continue
+            }
+            scan.availableURLs.append(url)
+        }
+        return scan
+    }
+
+    private func requestMaterialization(
+        at url: URL,
+        preserving resourceError: Error? = nil,
+        scan: inout OperationURLScan
+    ) {
+        do {
+            try fileManager.startDownloadingUbiquitousItem(at: url)
+            scan.hasPendingDownload = true
+        } catch {
+            if scan.deferredError == nil { scan.deferredError = resourceError ?? error }
+        }
     }
 
     private func relativeOperationPath(for url: URL, domain: VoiceInkSyncDomain) throws -> String {
@@ -1017,22 +1238,16 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
             return
         }
 
+        if iCloudDriveRootOverride != nil {
+            try writeImmutableOperation(data, envelope: envelope, to: destination)
+            return
+        }
+
         var coordinationError: NSError?
         var writeError: Error?
         NSFileCoordinator().coordinate(writingItemAt: destination, options: [], error: &coordinationError) { url in
-            let stagingURL = url.deletingLastPathComponent()
-                .appendingPathComponent(".\(envelope.operationID.uuidString).incoming")
-            defer { try? self.fileManager.removeItem(at: stagingURL) }
             do {
-                try? self.fileManager.removeItem(at: stagingURL)
-                try data.write(to: stagingURL, options: .atomic)
-                do {
-                    try self.fileManager.moveItem(at: stagingURL, to: url)
-                } catch {
-                    guard self.fileManager.fileExists(atPath: url.path),
-                        try Data(contentsOf: url) == data
-                    else { throw error }
-                }
+                try self.writeImmutableOperation(data, envelope: envelope, to: url)
             } catch {
                 writeError = error
             }
@@ -1041,7 +1256,29 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
         if let writeError { throw writeError }
     }
 
+    private func writeImmutableOperation(
+        _ data: Data,
+        envelope: VoiceInkSyncEnvelope,
+        to url: URL
+    ) throws {
+        let stagingURL = url.deletingLastPathComponent()
+            .appendingPathComponent(".\(envelope.operationID.uuidString).incoming")
+        defer { try? self.fileManager.removeItem(at: stagingURL) }
+        try? self.fileManager.removeItem(at: stagingURL)
+        try data.write(to: stagingURL, options: .atomic)
+        do {
+            try self.fileManager.moveItem(at: stagingURL, to: url)
+        } catch {
+            guard self.fileManager.fileExists(atPath: url.path),
+                try Data(contentsOf: url) == data
+            else { throw error }
+        }
+    }
+
     private func coordinatedRead(from url: URL) throws -> Data {
+        if iCloudDriveRootOverride != nil {
+            return try Data(contentsOf: url)
+        }
         var coordinationError: NSError?
         var result: Result<Data, Error>?
         NSFileCoordinator().coordinate(readingItemAt: url, options: [], error: &coordinationError) { coordinatedURL in

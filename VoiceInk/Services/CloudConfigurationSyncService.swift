@@ -437,10 +437,21 @@ final class CloudConfigurationSyncService: ObservableObject {
             } catch {
                 if generation == self.syncGeneration, self.isEnabled {
                     self.consecutiveFailureCount += 1
-                    self.state = .failed(error.localizedDescription)
-                    self.logger.error("Sync failed: \(error.localizedDescription, privacy: .public)")
+                    let isPendingDownload = ICloudSyncRetryPolicy.isPendingICloudDownload(error)
+                    if isPendingDownload {
+                        self.state = .waitingForICloud
+                        self.logger.notice(
+                            "Configuration sync waiting for iCloud: \(error.localizedDescription, privacy: .public)")
+                    } else {
+                        self.state = .failed(error.localizedDescription)
+                        self.logger.error("Sync failed: \(error.localizedDescription, privacy: .public)")
+                    }
                     self.scheduleRetry(
-                        after: ICloudSyncRetryPolicy.delay(afterFailureCount: self.consecutiveFailureCount),
+                        after: isPendingDownload
+                            ? ICloudSyncRetryPolicy.pendingDownloadDelay(
+                                afterFailureCount: self.consecutiveFailureCount)
+                            : ICloudSyncRetryPolicy.delay(
+                                afterFailureCount: self.consecutiveFailureCount),
                         applyDictionary: applyDictionary,
                         recordLocalChanges: recordLocalChanges
                     )
@@ -481,10 +492,19 @@ final class CloudConfigurationSyncService: ObservableObject {
             try? await Task.sleep(for: .seconds(delay))
             guard let self, !Task.isCancelled else { return }
             self.retryTask = nil
+            let queuedApplyDictionary = self.pendingApplyDictionary
+            let queuedRecordLocalChanges = self.pendingRecordLocalChanges
+            let queuedOperationURLs = self.pendingOperationURLs
+            self.syncRequestedWhileRunning = false
+            self.pendingApplyDictionary = false
+            self.pendingRecordLocalChanges = false
+            self.pendingFullScan = false
+            self.pendingOperationURLs.removeAll()
             self.requestSync(
-                applyDictionary: self.modelContainer != nil || applyDictionary,
-                recordLocalChanges: recordLocalChanges,
-                fullScan: true
+                applyDictionary: applyDictionary || queuedApplyDictionary,
+                recordLocalChanges: recordLocalChanges || queuedRecordLocalChanges,
+                fullScan: true,
+                operationURLs: queuedOperationURLs
             )
         }
     }
@@ -505,6 +525,8 @@ final class CloudConfigurationSyncService: ObservableObject {
             )
         }
         guard syncCore.rootURL != nil else { throw CocoaError(.fileNoSuchFile) }
+        syncCore.requestDownload(in: .configuration)
+        if applyDictionary { syncCore.requestDownload(in: .dictionary) }
         syncCore.prepareDeviceIdentity()
 
         try migrateLegacyConfigurationIfNeeded()
@@ -571,8 +593,9 @@ final class CloudConfigurationSyncService: ObservableObject {
         didApplyRemote: Bool, latestRemoteEnvelope: VoiceInkSyncOperationMetadata?
     ) {
         let knownOperationIDs = Set(appliedConfigurationOperationIDs.values.flatMap { $0 })
-        let register = try loadRegister(
+        let loaded = try loadRegister(
             for: .configuration, fullScan: fullScan, operationURLs: operationURLs)
+        let register = loaded.register
         workerConfigurationConflictCount = register.conflictCount
         let materialized = register.selectedValues()
         let localBefore = makeLocalConfiguration()
@@ -582,6 +605,7 @@ final class CloudConfigurationSyncService: ObservableObject {
         lastKnownConfiguration = makeLocalConfiguration()
         appliedConfigurationOperationIDs = activeOperationIDs(in: register)
         hasConfigurationBaseline = true
+        syncCore.acknowledgeAffectedKeys(loaded.affectedKeys, in: .configuration)
         return (
             didApply && hasRemoteDifference,
             register.latestRemoteEnvelope(
@@ -596,8 +620,9 @@ final class CloudConfigurationSyncService: ObservableObject {
     ) throws -> (didApplyRemote: Bool, latestRemoteEnvelope: VoiceInkSyncOperationMetadata?) {
         guard let modelContext else { return (false, nil) }
         let knownOperationIDs = Set(appliedDictionaryOperationIDs.values.flatMap { $0 })
-        let register = try loadRegister(
+        let loaded = try loadRegister(
             for: .dictionary, fullScan: fullScan, operationURLs: operationURLs)
+        let register = loaded.register
         workerDictionaryConflictCount = register.conflictCount
         let materialized = register.selectedValues(addWins: true)
         let localBefore = makeLocalDictionary(modelContext: modelContext)
@@ -607,6 +632,7 @@ final class CloudConfigurationSyncService: ObservableObject {
         lastKnownDictionary = makeLocalDictionary(modelContext: modelContext)
         appliedDictionaryOperationIDs = activeOperationIDs(in: register)
         hasDictionaryBaseline = true
+        syncCore.acknowledgeAffectedKeys(loaded.affectedKeys, in: .dictionary)
         return (
             didApply && hasRemoteDifference,
             register.latestRemoteEnvelope(
@@ -661,12 +687,12 @@ final class CloudConfigurationSyncService: ObservableObject {
         for domain: VoiceInkSyncDomain,
         fullScan: Bool,
         operationURLs: Set<URL>
-    ) throws -> VoiceInkSyncRegisterState {
+    ) throws -> ICloudDriveSyncCore.IncrementalReadResult {
         try syncCore.readIncrementally(
             in: domain,
             hintedOperationURLs: operationURLs,
             fullScan: fullScan
-        ).register
+        )
     }
 
     private nonisolated func hasRemoteMaterializedDifference(
