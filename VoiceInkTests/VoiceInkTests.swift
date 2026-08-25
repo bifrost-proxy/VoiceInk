@@ -255,42 +255,42 @@ struct VoiceInkTests {
         #expect(!FileManager.default.fileExists(atPath: operations.path))
     }
 
-    @Test func syncCoreSplitsLargeMutationSetsIntoValidImmutableOperations() async throws {
+    @Test func syncCoreSplitsLargeMutationSetsIntoValidImmutableOperations() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("VoiceInkChunkedSync-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let suite = "VoiceInkTests.ChunkedSync.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
-        let core = ICloudDriveSyncCore(defaults: defaults, iCloudDriveRootURL: root)
+        // Use a small injected limit so the test exercises the same production
+        // splitting path without making the Rosetta test host process 8 MiB twice.
+        let payloadLimitBytes = 7 * 1_024
+        let core = ICloudDriveSyncCore(
+            defaults: defaults,
+            iCloudDriveRootURL: root,
+            payloadLimitBytes: payloadLimitBytes
+        )
         let mutations = [
             VoiceInkSyncMutation(
                 key: "preference/first",
-                value: Data(repeating: 0x3c, count: 4 * 1_024 * 1_024)
+                value: Data(repeating: 0x3c, count: 4 * 1_024)
             ),
             VoiceInkSyncMutation(
                 key: "preference/second",
-                value: Data(repeating: 0x4d, count: 4 * 1_024 * 1_024)
+                value: Data(repeating: 0x4d, count: 4 * 1_024)
             ),
         ]
 
-        // Property-list encoding and hashing of this deliberately large payload
-        // can monopolize the x86_64 test host under Rosetta long enough for the
-        // app-host watchdog to restart it. Keep the production API synchronous,
-        // but run this test's CPU-bound work away from the host executor.
-        let (written, retried, initialReadCount, retriedReadCount) = try await Task.detached {
-            let written = try core.appendChunked(mutations, domain: .configuration)
-            let initialReadCount = try core.readAll(in: .configuration).count
-            let retried = try core.appendChunked(mutations, domain: .configuration)
-            let retriedReadCount = try core.readAll(in: .configuration).count
-            return (written, retried, initialReadCount, retriedReadCount)
-        }.value
+        let written = try core.appendChunked(mutations, domain: .configuration)
+        let initialReadCount = try core.readAll(in: .configuration).count
+        let retried = try core.appendChunked(mutations, domain: .configuration)
+        let retriedReadCount = try core.readAll(in: .configuration).count
 
         #expect(written.count == 2)
         #expect(written.flatMap { $0.mutations } == mutations)
         #expect(initialReadCount == 2)
         for item in written {
-            #expect(item.envelope.payload.count <= ICloudDriveSyncCore.maximumPayloadBytes)
+            #expect(item.envelope.payload.count <= payloadLimitBytes)
         }
 
         #expect(retried.map(\.envelope.operationID) == written.map(\.envelope.operationID))

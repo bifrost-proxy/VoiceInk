@@ -272,6 +272,7 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
     private let defaults: UserDefaults
     private let fileManager: FileManager
     private let iCloudDriveRootOverride: URL?
+    private let payloadLimitBytes: Int
     private(set) var deviceID: String
     let deviceName: String
     private(set) var frontierWriteCountForTesting = 0
@@ -283,11 +284,14 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
         defaults: UserDefaults = .standard,
         fileManager: FileManager = .default,
         iCloudDriveRootURL: URL? = nil,
-        deviceName: String? = nil
+        deviceName: String? = nil,
+        payloadLimitBytes: Int = ICloudDriveSyncCore.maximumPayloadBytes
     ) {
+        precondition(payloadLimitBytes > 0)
         self.defaults = defaults
         self.fileManager = fileManager
         self.iCloudDriveRootOverride = iCloudDriveRootURL
+        self.payloadLimitBytes = payloadLimitBytes
         let normalizedName = deviceName?.trimmingCharacters(in: .whitespacesAndNewlines)
         let resolvedName = normalizedName?.isEmpty == false
             ? normalizedName!
@@ -445,7 +449,7 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
 
     func append(_ batch: VoiceInkSyncMutationBatch, domain: VoiceInkSyncDomain) throws -> VoiceInkSyncEnvelope {
         let payload = try PropertyListEncoder.voiceInkSync.encode(batch)
-        guard payload.count <= Self.maximumPayloadBytes else { throw POSIXError(.EFBIG) }
+        guard payload.count <= payloadLimitBytes else { throw POSIXError(.EFBIG) }
         let operationID = retryStableOperationID(domain: domain, payload: payload)
         if let existing = try existingEnvelope(
             operationID: operationID,
@@ -489,7 +493,7 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
 
         var start = mutations.startIndex
         while start < mutations.endIndex {
-            guard try encodedSize(mutations[start...start]) <= Self.maximumPayloadBytes else {
+            guard try encodedSize(mutations[start...start]) <= payloadLimitBytes else {
                 throw POSIXError(.EFBIG)
             }
 
@@ -500,7 +504,7 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
             var bestEnd = lowerBound
             while lowerBound <= upperBound {
                 let candidateEnd = lowerBound + (upperBound - lowerBound) / 2
-                let fits = try encodedSize(mutations[start..<candidateEnd]) <= Self.maximumPayloadBytes
+                let fits = try encodedSize(mutations[start..<candidateEnd]) <= payloadLimitBytes
                 if fits {
                     bestEnd = candidateEnd
                     lowerBound = candidateEnd + 1
