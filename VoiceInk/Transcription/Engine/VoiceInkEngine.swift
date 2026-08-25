@@ -178,6 +178,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
     private var activeRecordingContextStore: RecordingContextSnapshotStore?
     private var activeRecordingContextTasks: RecordingContextCaptureTasks?
     private var activeRecordingContextModeID: UUID?
+    private var activeRecordingContextTarget: RecordingContextTarget?
     private var activeRecordingVocabularyUsageContext: VocabularyUsageContext = .none
     private var activeRecordingModeTask: Task<VocabularyUsageContext, Never>?
     private var activeRecordingInputTarget: RecordingInputTarget?
@@ -294,7 +295,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
             if let resolvedUsageContext = await modeTask?.value {
                 activeRecordingVocabularyUsageContext = resolvedUsageContext
             }
-            refreshRecordingContextForResolvedMode(target: activePipelineInputTarget)
+            refreshRecordingContextForResolvedMode(target: activeRecordingContextTarget)
             activeRecordingModeTask = nil
             activeRecordingStartID = nil
 
@@ -953,6 +954,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
         target: RecordingContextTarget?
     ) -> Bool {
         clearActiveRecordingContext()
+        activeRecordingContextTarget = target
 
         let mode = modeId.flatMap(ModeManager.shared.getConfiguration(with:))
             ?? ModeManager.shared.currentEffectiveConfiguration
@@ -1068,6 +1070,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
         activeRecordingContextTasks = nil
         activeRecordingContextStore = nil
         activeRecordingContextModeID = nil
+        activeRecordingContextTarget = nil
     }
 
     private func cancelActiveRecordingModeTask() {
