@@ -132,7 +132,9 @@ final class HistoryStorageManager: ObservableObject {
                 ($0, Self.audioSize(for: $0, recordingsDirectory: recordingsDirectoryURL))
             }
             var remainingAudioCount = recordsWithAudio.count
-            var totalAudioBytes = recordsWithAudio.map(Self.audioSize).reduce(Int64(0), +)
+            var totalAudioBytes = recordsWithAudio.map {
+                Self.audioSize(for: $0, recordingsDirectory: recordingsDirectoryURL)
+            }.reduce(Int64(0), +)
             var result = HistoryStorageCleanupResult()
 
             // Keep the newest audio even when one recording alone exceeds the
