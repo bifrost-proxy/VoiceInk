@@ -395,6 +395,35 @@ struct ScopedVocabularyTests {
         #expect(pending.input == nil)
     }
 
+    @Test func quickAddCancellationInvalidatesLookupAndQueuedSubmission() {
+        var lookup = DictionaryQuickAddWebsiteLookupState(isResolving: true)
+        var pending = DictionaryQuickAddPendingSubmissionState()
+        let cancelledRequestID = lookup.requestID
+        pending.queue("VoiceInk")
+
+        lookup.cancel()
+        pending.cancel()
+
+        #expect(!lookup.isResolving)
+        #expect(!lookup.isCurrent(cancelledRequestID))
+        #expect(!lookup.complete(cancelledRequestID))
+        #expect(pending.input == nil)
+    }
+
+    @Test func quickAddAcceptsOnlyTheLatestWebsiteRetry() {
+        var lookup = DictionaryQuickAddWebsiteLookupState(isResolving: true)
+
+        lookup.retry()
+        let staleRequestID = lookup.requestID
+        lookup.retry()
+        let currentRequestID = lookup.requestID
+
+        #expect(!lookup.complete(staleRequestID))
+        #expect(lookup.isResolving)
+        #expect(lookup.complete(currentRequestID))
+        #expect(!lookup.isResolving)
+    }
+
     @Test func requestScopingPreservesResolvedVocabularyForStreamingFallback() {
         let context = TranscriptionRequestContext(
             language: "en",

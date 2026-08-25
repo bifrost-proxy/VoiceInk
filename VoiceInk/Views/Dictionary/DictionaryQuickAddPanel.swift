@@ -176,6 +176,35 @@ struct DictionaryQuickAddPendingSubmissionState: Equatable {
     }
 }
 
+struct DictionaryQuickAddWebsiteLookupState: Equatable {
+    private(set) var requestID = 0
+    private(set) var isResolving: Bool
+
+    init(isResolving: Bool) {
+        self.isResolving = isResolving
+    }
+
+    mutating func retry() {
+        requestID += 1
+        isResolving = true
+    }
+
+    func isCurrent(_ requestID: Int) -> Bool {
+        isResolving && self.requestID == requestID
+    }
+
+    mutating func complete(_ requestID: Int) -> Bool {
+        guard isCurrent(requestID) else { return false }
+        isResolving = false
+        return true
+    }
+
+    mutating func cancel() {
+        requestID += 1
+        isResolving = false
+    }
+}
+
 // MARK: - View
 
 struct DictionaryQuickAddView: View {
@@ -222,7 +251,7 @@ struct DictionaryQuickAddView: View {
     @State private var scopeState: DictionaryQuickAddScopeState
     @State private var pendingSubmission = DictionaryQuickAddPendingSubmissionState()
     @State private var websiteLookupFailure: BrowserURLFailureGuidance?
-    @State private var isResolvingWebsite = false
+    @State private var websiteLookupState: DictionaryQuickAddWebsiteLookupState
     @FocusState private var focusedField: Field?
 
     enum Field: Hashable { case word, original, replacement }
@@ -247,7 +276,9 @@ struct DictionaryQuickAddView: View {
                 $0.bundleIdentifier.caseInsensitiveCompare(bundleIdentifier) == .orderedSame
             }
         } ?? false
-        _isResolvingWebsite = State(initialValue: waitsForWebsite)
+        _websiteLookupState = State(
+            initialValue: DictionaryQuickAddWebsiteLookupState(isResolving: waitsForWebsite)
+        )
     }
 
     var body: some View {
@@ -279,8 +310,12 @@ struct DictionaryQuickAddView: View {
         .onAppear {
             DispatchQueue.main.async { focusedField = .word }
         }
-        .task {
-            await captureCurrentWebsite()
+        .task(id: websiteLookupState.requestID) {
+            await captureCurrentWebsite(requestID: websiteLookupState.requestID)
+        }
+        .onDisappear {
+            websiteLookupState.cancel()
+            pendingSubmission.cancel()
         }
         .onChange(of: mode) { _, newMode in
             wordInput = ""
@@ -385,7 +420,7 @@ struct DictionaryQuickAddView: View {
                 }
                 .menuStyle(.borderlessButton)
                 .accessibilityIdentifier("dictionary.quickAdd.scope")
-                if isResolvingWebsite {
+                if websiteLookupState.isResolving {
                     ProgressView()
                         .controlSize(.small)
                         .accessibilityLabel("Detecting current website")
@@ -408,9 +443,10 @@ struct DictionaryQuickAddView: View {
                         .buttonStyle(.link)
                     }
                     Button("Retry") {
-                        Task { await captureCurrentWebsite() }
+                        websiteLookupState.retry()
                     }
                     .buttonStyle(.link)
+                    .disabled(websiteLookupState.isResolving)
                 }
                 .accessibilityElement(children: .combine)
             }
@@ -481,7 +517,7 @@ struct DictionaryQuickAddView: View {
     private func submitVocabulary() {
         let input = wordInput.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !input.isEmpty else { return }
-        guard !isResolvingWebsite || scopeState.hasUserSelection else {
+        guard !websiteLookupState.isResolving || scopeState.hasUserSelection else {
             pendingSubmission.queue(input)
             return
         }
@@ -519,36 +555,37 @@ struct DictionaryQuickAddView: View {
     }
 
     private func submitPendingVocabularyIfPossible() {
-        let isReady = !isResolvingWebsite || scopeState.hasUserSelection
+        let isReady = !websiteLookupState.isResolving || scopeState.hasUserSelection
         guard let input = pendingSubmission.take(isReady: isReady) else { return }
         persistVocabulary(input)
     }
 
-    private func captureCurrentWebsite() async {
+    private func captureCurrentWebsite(requestID: Int) async {
         guard let bundleIdentifier = initialUsageContext.bundleIdentifier,
             let browser = BrowserType.allCases.first(where: {
                 $0.bundleIdentifier.caseInsensitiveCompare(bundleIdentifier) == .orderedSame
             })
         else { return }
 
-        isResolvingWebsite = true
+        guard websiteLookupState.isCurrent(requestID) else { return }
         websiteLookupFailure = nil
 
         do {
             let url = try await BrowserURLService.shared.getCurrentURL(from: browser)
+            guard !Task.isCancelled, websiteLookupState.isCurrent(requestID) else { return }
             let domain = VocabularyDomain.normalizedHost(from: url)
             scopeState.applyDetectedDomain(domain)
             let scopeKind = domain == nil ? "application" : "domain"
             Self.logger.notice("Quick add automatic scope resolved scope=\(scopeKind, privacy: .public)")
         } catch is CancellationError {
-            isResolvingWebsite = false
             return
         } catch {
+            guard !Task.isCancelled, websiteLookupState.isCurrent(requestID) else { return }
             scopeState.applyDetectedDomain(nil)
             Self.logger.notice("Quick add automatic scope fell back scope=application")
             websiteLookupFailure = BrowserURLFailureGuidance.make(error: error, browser: browser)
         }
-        isResolvingWebsite = false
+        guard websiteLookupState.complete(requestID) else { return }
         submitPendingVocabularyIfPossible()
     }
 
