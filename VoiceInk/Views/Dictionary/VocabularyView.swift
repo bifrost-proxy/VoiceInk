@@ -277,17 +277,21 @@ struct VocabularyView: View {
             let resolved = TranscriptionVocabularyContext.resolve(
                 from: modelContext,
                 usageContext: usageContext,
-                model: configuration.model
+                model: configuration.model,
+                isRealtimeEnabled: configuration.isRealtimeEnabled
             )
             HStack(spacing: 6) {
                 Image(systemName: resolved.omittedCount > 0 ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
                     .foregroundStyle(resolved.omittedCount > 0 ? AppTheme.Status.warning : AppTheme.Status.success)
-                if let maximumCount = resolved.maximumCount {
-                    Text("\(configuration.model.displayName): \(resolved.terms.count)/\(maximumCount) words used")
-                } else if TranscriptionVocabularyCapability.supportsVocabulary(for: configuration.model) {
-                    Text("\(configuration.model.displayName): \(resolved.terms.count) words used")
-                } else {
+                if !TranscriptionVocabularyCapability.supportsVocabulary(
+                    for: configuration.model,
+                    isRealtimeEnabled: configuration.isRealtimeEnabled
+                ) {
                     Text("\(configuration.model.displayName) does not accept vocabulary directly")
+                } else if let maximumCount = resolved.maximumCount {
+                    Text("\(configuration.model.displayName): \(resolved.terms.count)/\(maximumCount) words used")
+                } else {
+                    Text("\(configuration.model.displayName): \(resolved.terms.count) words used")
                 }
                 if resolved.omittedCount > 0 {
                     Text("· \(resolved.omittedCount) lower-priority words omitted")

@@ -178,6 +178,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
     private var activeRecordingContextStore: RecordingContextSnapshotStore?
     private var activeRecordingContextTasks: RecordingContextCaptureTasks?
     private var activeRecordingVocabularyUsageContext: VocabularyUsageContext = .none
+    private var activeRecordingModeTask: Task<VocabularyUsageContext, Never>?
     private var activeRecordingInputTarget: RecordingInputTarget?
     private var activePipelineInputTarget: RecordingInputTarget?
     private var pendingPermissionModeId: UUID?
@@ -269,19 +270,31 @@ class VoiceInkEngine: NSObject, ObservableObject {
 
         if recordingState == .recording {
             recordingDurationLimiter.cancel()
+            let modeTask = activeRecordingModeTask
             activePipelineUseCase = activeRecordingUseCase
             activeRecordingUseCase = .newSession
             activePipelineInputTarget = activeRecordingInputTarget
             activeRecordingInputTarget = nil
-            activeRecordingStartID = nil
             recordingState = .transcribing
             await recorder.stopRecording()
             let captureIntegritySnapshot = recorder.lastCaptureIntegritySnapshot
 
             guard captureIntegritySnapshot.hasAudioForTranscription else {
+                modeTask?.cancel()
+                activeRecordingModeTask = nil
+                activeRecordingStartID = nil
                 await discardRecordingWithoutAudio()
                 return
             }
+
+            // A short browser recording can stop while URL detection is still
+            // running. Finish that recording-scoped lookup before selecting the
+            // fallback file-transcription configuration.
+            if let resolvedUsageContext = await modeTask?.value {
+                activeRecordingVocabularyUsageContext = resolvedUsageContext
+            }
+            activeRecordingModeTask = nil
+            activeRecordingStartID = nil
 
             if captureIntegritySnapshot.hasCaptureLoss {
                 NotificationManager.shared.showNotification(
@@ -335,6 +348,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
             partialTranscript = ""
             activeRecordingUseCase = recordingUseCase
             clearActiveRecordingContext()
+            cancelActiveRecordingModeTask()
             activeRecordingVocabularyUsageContext = .none
             activeRecordingInputTarget = recordingUseCase.isAssistantFollowUp
                 ? nil
@@ -429,6 +443,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
                                 return self.activeRecordingStartID == startID && !self.shouldCancelRecording
                             }
                             activeModeTask = modeApplication.completion
+                            self.activeRecordingModeTask = modeApplication.completion
                             self.activeRecordingVocabularyUsageContext = modeApplication.initialUsageContext
                             let shouldPrepareRecognitionContext = self.startRecordingContextCapture(
                                 modeId: modeId,
@@ -454,6 +469,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
                             if let resolvedUsageContext = await activeModeTask?.value {
                                 self.activeRecordingVocabularyUsageContext = resolvedUsageContext
                             }
+                            self.activeRecordingModeTask = nil
 
                             guard self.recordingState == .recording,
                                 self.activeRecordingStartID == startID,
@@ -606,7 +622,8 @@ class VoiceInkEngine: NSObject, ObservableObject {
         let vocabulary = TranscriptionVocabularyContext.resolve(
             from: modelContext,
             usageContext: activeRecordingVocabularyUsageContext,
-            model: resolvedConfiguration.model
+            model: resolvedConfiguration.model,
+            isRealtimeEnabled: resolvedConfiguration.isRealtimeEnabled
         )
         let transcriptionConfiguration = resolvedConfiguration
             .addingSpeechRecognitionContext(recognitionContext)
@@ -1044,6 +1061,11 @@ class VoiceInkEngine: NSObject, ObservableObject {
         activeRecordingContextStore = nil
     }
 
+    private func cancelActiveRecordingModeTask() {
+        activeRecordingModeTask?.cancel()
+        activeRecordingModeTask = nil
+    }
+
     // MARK: - Pipeline Dispatch
 
     private func runPipeline(
@@ -1051,9 +1073,8 @@ class VoiceInkEngine: NSObject, ObservableObject {
         audioURL: URL,
         contextStore: RecordingContextSnapshotStore?
     ) async {
-        guard
-            let transcriptionConfiguration = currentSessionTranscriptionConfiguration
-                ?? ModeRuntimeResolver.transcriptionConfiguration(transcriptionModelManager: transcriptionModelManager)
+        guard let baseConfiguration = currentSessionTranscriptionConfiguration
+            ?? ModeRuntimeResolver.transcriptionConfiguration(transcriptionModelManager: transcriptionModelManager)
         else {
             transcription.text = String(localized: "Transcription Failed: No model selected")
             transcription.transcriptionStatus = TranscriptionStatus.failed.rawValue
@@ -1062,6 +1083,21 @@ class VoiceInkEngine: NSObject, ObservableObject {
             activePipelineUseCase = .newSession
             activePipelineInputTarget = nil
             return
+        }
+        let transcriptionConfiguration: TranscriptionRuntimeConfiguration
+        if baseConfiguration.vocabulary != nil {
+            transcriptionConfiguration = baseConfiguration
+        } else {
+            // Session setup can be overtaken by a very short recording. Resolve
+            // the same recording-scoped snapshot here instead of falling back
+            // to the legacy global-only request context.
+            let vocabulary = TranscriptionVocabularyContext.resolve(
+                from: modelContext,
+                usageContext: activeRecordingVocabularyUsageContext,
+                model: baseConfiguration.model,
+                isRealtimeEnabled: baseConfiguration.isRealtimeEnabled && currentSession != nil
+            )
+            transcriptionConfiguration = baseConfiguration.addingVocabulary(vocabulary)
         }
 
         let session = currentSession
@@ -1243,6 +1279,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
 
     func resetRecordingSession() async {
         cancelCurrentSession()
+        cancelActiveRecordingModeTask()
         activeRecordingStartID = nil
         activePipelineTranscriptionID = nil
         activePipelineTranscription = nil
@@ -1278,6 +1315,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
     }
 
     private func finishActiveRecorderCancellation() async {
+        cancelActiveRecordingModeTask()
         activeRecordingStartID = nil
         activeRecordingInputTarget = nil
         clearActiveRecordingContext()
@@ -1403,6 +1441,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
     func cleanupResources() async {
         logger.notice("cleanupResources: releasing model resources")
         recordingDurationLimiter.cancel()
+        cancelActiveRecordingModeTask()
         activeRecordingStartID = nil
         activeRecordingUseCase = .newSession
         activeRecordingInputTarget = nil

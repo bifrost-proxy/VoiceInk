@@ -47,7 +47,8 @@ struct ScopedVocabularyTests {
                 applicationName: "Browser",
                 domain: "https://docs.example.com/project"
             ),
-            model: restrictedModel
+            model: restrictedModel,
+            isRealtimeEnabled: true
         )
 
         #expect(resolved.terms.count == 50)
@@ -111,11 +112,76 @@ struct ScopedVocabularyTests {
                 applicationName: "Editor",
                 domain: nil
             ),
-            model: unsupportedModel
+            model: unsupportedModel,
+            isRealtimeEnabled: false
         )
         #expect(resolved.terms.isEmpty)
         #expect(resolved.applicableTerms == ["Local", "Global"])
         #expect(resolved.omittedCount == 2)
+    }
+
+    @Test func deepgramBatchDoesNotClaimToUseStreamingOnlyVocabulary() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        context.insert(VocabularyWord(word: "Global"))
+        context.insert(
+            ScopedVocabularyWord(
+                word: "Local",
+                scopeKind: .application,
+                scopeIdentifier: "com.example.editor"
+            )
+        )
+        try context.save()
+
+        let resolved = TranscriptionVocabularyContext.resolve(
+            from: context,
+            usageContext: VocabularyUsageContext(
+                bundleIdentifier: "com.example.editor",
+                applicationName: "Editor",
+                domain: nil
+            ),
+            model: restrictedModel,
+            isRealtimeEnabled: false
+        )
+
+        #expect(resolved.terms.isEmpty)
+        #expect(resolved.applicableTerms == ["Local", "Global"])
+        #expect(resolved.omittedCount == 2)
+        #expect(
+            !TranscriptionVocabularyCapability.supportsVocabulary(
+                for: restrictedModel,
+                isRealtimeEnabled: false
+            )
+        )
+    }
+
+    @Test func providersThatDiscardVocabularyAreReportedAsUnsupported() {
+        let providers: [ModelProvider] = [.groq, .mistral, .gemini, .xai]
+
+        for provider in providers {
+            let model = CloudModel(
+                name: "unsupported-test",
+                displayName: "Unsupported Test",
+                description: "",
+                provider: provider,
+                speed: 1,
+                accuracy: 1,
+                isMultilingual: true,
+                supportedLanguages: [:]
+            )
+            #expect(
+                !TranscriptionVocabularyCapability.supportsVocabulary(
+                    for: model,
+                    isRealtimeEnabled: true
+                )
+            )
+            #expect(
+                !TranscriptionVocabularyCapability.supportsVocabulary(
+                    for: model,
+                    isRealtimeEnabled: false
+                )
+            )
+        }
     }
 
     @Test func dictionaryAllowsSameTermAcrossScopesButRejectsSameScopeDuplicate() throws {

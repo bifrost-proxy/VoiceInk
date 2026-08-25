@@ -86,12 +86,19 @@ enum VocabularyDomain {
 }
 
 enum TranscriptionVocabularyCapability {
-    static func supportsVocabulary(for model: any TranscriptionModel) -> Bool {
+    static func supportsVocabulary(
+        for model: any TranscriptionModel,
+        isRealtimeEnabled: Bool
+    ) -> Bool {
         switch model.provider {
-        case .whisper, .fluidAudio, .sherpaOnnx, .qwenMlx, .nativeApple, .custom, .cartesia:
-            return false
-        default:
+        case .elevenLabs, .soniox, .speechmatics, .assemblyAI, .doubaoSpeech, .aliyunQwen:
             return true
+        case .deepgram:
+            // Deepgram only consumes the configured keywords on its streaming path.
+            return isRealtimeEnabled
+        case .whisper, .fluidAudio, .sherpaOnnx, .qwenMlx, .groq, .mistral, .gemini,
+            .xai, .nativeApple, .custom, .cartesia:
+            return false
         }
     }
 
@@ -135,12 +142,16 @@ enum TranscriptionVocabularyContext {
     static func resolve(
         from modelContext: ModelContext,
         usageContext: VocabularyUsageContext,
-        model: any TranscriptionModel
+        model: any TranscriptionModel,
+        isRealtimeEnabled: Bool
     ) -> ResolvedVocabulary {
         let candidates = applicableEntries(from: modelContext, usageContext: usageContext)
         let applicableTerms = candidates.map(\.term)
 
-        guard TranscriptionVocabularyCapability.supportsVocabulary(for: model) else {
+        guard TranscriptionVocabularyCapability.supportsVocabulary(
+            for: model,
+            isRealtimeEnabled: isRealtimeEnabled
+        ) else {
             return ResolvedVocabulary(
                 terms: [],
                 applicableTerms: applicableTerms,

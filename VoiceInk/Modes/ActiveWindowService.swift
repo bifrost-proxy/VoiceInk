@@ -28,6 +28,17 @@ class ActiveWindowService: ObservableObject {
         resolveVocabularyDomain: Bool = false,
         shouldApply: @escaping @MainActor () -> Bool = { true }
     ) -> ModeConfigurationApplication {
+        if let modeId,
+            let config = ModeManager.shared.getConfiguration(with: modeId)
+        {
+            guard shouldApply() else {
+                return immediateApplication(context: .none)
+            }
+            // Explicit mode selection must not depend on macOS being able to
+            // identify the frontmost application.
+            ModeManager.shared.setActiveConfiguration(config)
+        }
+
         let frontmostApp = target.flatMap { NSRunningApplication(processIdentifier: $0.processID) }
             ?? NSWorkspace.shared.frontmostApplication
         guard let frontmostApp,
@@ -47,11 +58,7 @@ class ActiveWindowService: ObservableObject {
         }
         currentApplication = frontmostApp
 
-        if let modeId,
-            let config = ModeManager.shared.getConfiguration(with: modeId)
-        {
-            ModeManager.shared.setActiveConfiguration(config)
-        } else {
+        if modeId == nil {
             let quickConfig =
                 ModeManager.shared.getConfigurationForApp(bundleIdentifier)
                 ?? ModeManager.shared.getDefaultConfiguration()
