@@ -160,7 +160,6 @@ final class HistoryStorageManager: ObservableObject {
                 let affectedRecords = recordsByAudioPath[path] ?? []
                 let audioURL = audioURLByPath[path] ?? URL(fileURLWithPath: path)
                 let removedAudioBytes = Self.fileSize(at: audioURL)
-                usageSync.prepareAudioReclamation(Set(affectedRecords.map(\.id)))
 
                 if FileManager.default.fileExists(atPath: audioURL.path) {
                     do {
@@ -174,6 +173,7 @@ final class HistoryStorageManager: ObservableObject {
                         continue
                     }
                 }
+                usageSync.prepareAudioReclamation(Set(affectedRecords.map(\.id)))
                 for record in affectedRecords {
                     record.audioFileURL = nil
                 }
