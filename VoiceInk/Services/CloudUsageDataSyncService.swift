@@ -361,23 +361,6 @@ final class CloudUsageDataSyncService: ObservableObject {
             else {
                 throw CocoaError(.userCancelled)
             }
-            let descriptor: AudioDescriptor?
-            do {
-                descriptor = try await executionCoordinator.run { [self] in
-                    guard defaults.bool(forKey: CloudSyncSettingsKeys.usageDataSyncEnabled),
-                        defaults.bool(forKey: CloudSyncSettingsKeys.usageAudioSyncEnabled)
-                    else {
-                        throw CocoaError(.userCancelled)
-                    }
-                    return try audioDescriptor(for: transcriptionID)
-                }
-            } catch {
-                guard ICloudSyncRetryPolicy.isPendingICloudDownload(error) else { throw error }
-                guard attempt < 119 else { break }
-                try await Task.sleep(for: .milliseconds(500))
-                continue
-            }
-            guard let descriptor else { throw CocoaError(.fileNoSuchFile) }
             let result: AudioMaterialization
             do {
                 result = try await executionCoordinator.run { [self] in
@@ -386,13 +369,25 @@ final class CloudUsageDataSyncService: ObservableObject {
                     else {
                         throw CocoaError(.userCancelled)
                     }
+                    guard let descriptor = try audioDescriptor(for: transcriptionID) else {
+                        return .missingDescriptor
+                    }
                     return try materializeAudio(descriptor, transcriptionID: transcriptionID)
                 }
             } catch {
                 guard ICloudSyncRetryPolicy.isPendingICloudDownload(error) else { throw error }
-                result = .pending
+                guard attempt < 119 else { break }
+                try await Task.sleep(for: .milliseconds(500))
+                continue
             }
-            if case .available(let url) = result { return url }
+            switch result {
+            case .available(let url):
+                return url
+            case .missingDescriptor:
+                throw CocoaError(.fileNoSuchFile)
+            case .pending:
+                break
+            }
             guard attempt < 119 else { break }
             try await Task.sleep(for: .milliseconds(500))
         }
@@ -1559,6 +1554,7 @@ final class CloudUsageDataSyncService: ObservableObject {
 
     private enum AudioMaterialization: Sendable {
         case available(URL)
+        case missingDescriptor
         case pending
     }
 

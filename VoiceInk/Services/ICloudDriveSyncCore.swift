@@ -476,11 +476,37 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
     /// per-file checks and retry policy remain the authoritative readiness signal.
     func requestDownload(in domain: VoiceInkSyncDomain) {
         guard let domainURL = operationsURL(for: domain) else { return }
+        _ = downloadRequestLock.withLock { requestedDomainDownloads.insert(domain) }
         do {
             try fileManager.startDownloadingUbiquitousItem(at: domainURL)
-            _ = downloadRequestLock.withLock { requestedDomainDownloads.insert(domain) }
+            if iCloudDriveRootOverride != nil,
+                fileManager.isMember(of: FileManager.self),
+                !fileManager.fileExists(atPath: domainURL.path)
+            {
+                // Foundation accepts this call for an absent ordinary local path. Only the base
+                // FileManager plus an injected root has that test-fixture meaning; File Provider
+                // doubles and the production iCloud root must retain their pending marker.
+                _ = downloadRequestLock.withLock { requestedDomainDownloads.remove(domain) }
+            }
         } catch {
-            _ = downloadRequestLock.withLock { requestedDomainDownloads.remove(domain) }
+            let requestError = error as NSError
+            let missingInjectedPlainDirectory = iCloudDriveRootOverride != nil
+                && fileManager.isMember(of: FileManager.self)
+                && !fileManager.fileExists(atPath: domainURL.path)
+            let missingInjectedProviderDouble = iCloudDriveRootOverride != nil
+                && requestError.domain == NSCocoaErrorDomain
+                && (requestError.code == NSFileNoSuchFileError
+                    || requestError.code == NSFileReadNoSuchFileError)
+            if missingInjectedPlainDirectory || missingInjectedProviderDouble
+            {
+                // An injected ordinary-directory root uses absence to model an empty domain.
+                // Production iCloud roots have no override and always remain pending here.
+                _ = downloadRequestLock.withLock { requestedDomainDownloads.remove(domain) }
+                return
+            }
+            // A missing domain is not evidence that the remote log is empty. File Provider can
+            // reject this request while offline or before it has exposed the placeholder, so keep
+            // the readiness gate closed until a later scan observes an actual current directory.
         }
     }
 

@@ -828,6 +828,33 @@ struct VoiceInkTests {
         #expect(fileManager.downloadRequests.count == 1)
     }
 
+    @Test func incrementalRegisterKeepsMissingDirectoryPendingWhenDownloadIsRejected() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "VoiceInkRejectedDirectoryDownload-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let suite = "VoiceInkTests.RejectedDirectoryDownload.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let local = ICloudDriveSyncCore(
+            defaults: defaults,
+            fileManager: RejectingDownloadFileManager(),
+            iCloudDriveRootURL: root
+        )
+
+        local.requestDownload(in: .dictionary)
+        var capturedError: Error?
+        do {
+            _ = try local.readIncrementally(in: .dictionary, fullScan: true)
+        } catch {
+            capturedError = error
+        }
+        let error = try #require(capturedError)
+        #expect(ICloudSyncRetryPolicy.isPendingICloudDownload(error))
+        #expect(local.registerCheckpointWriteCountForTesting == 1)
+    }
+
     @Test func incompleteFirstScanRemainsAuthoritativeAfterDirectoryMaterializes() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(
