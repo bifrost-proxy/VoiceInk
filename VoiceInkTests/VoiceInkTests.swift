@@ -1018,7 +1018,8 @@ struct VoiceInkTests {
 
         let result = await HistoryStorageManager.shared.enforceLimits(
             modelContext: context,
-            usageSync: usageSync
+            usageSync: usageSync,
+            recordingsDirectoryURL: audioRoot
         )
         let remaining = try context.fetch(
             FetchDescriptor<Transcription>(sortBy: [SortDescriptor(\Transcription.timestamp)])
