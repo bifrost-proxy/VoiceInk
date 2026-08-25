@@ -65,7 +65,7 @@ struct HistorySettingsPanel: View {
                 }
 
                 Section {
-                    Picker("Maximum Records", selection: $maximumHistoryRecordCount) {
+                    Picker("Maximum Saved Audio", selection: $maximumHistoryRecordCount) {
                         Text("Unlimited").tag(0)
                         Text("100").tag(100)
                         Text("500").tag(500)
@@ -93,7 +93,7 @@ struct HistorySettingsPanel: View {
                 } header: {
                     sectionHeader(
                         "Capacity Limits",
-                        tip: "VoiceInk checks at most once per hour. When either limit is exceeded, it deletes the oldest local history and audio first. The newest record is always retained. Storage defaults to 500 MB."
+                        tip: "VoiceInk checks at most once per hour. When either limit is exceeded, it reclaims the oldest audio on every synced device and in iCloud while retaining usage records and statistics. The newest audio is always retained. Storage defaults to 500 MB."
                     )
                 }
 

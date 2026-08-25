@@ -978,6 +978,28 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
         )
     }
 
+    /// A dependent destructive change must not race ahead of the immutable
+    /// operation that makes that change safe on every device. Test roots are
+    /// ordinary directories, so a successful local write is already durable.
+    func isOperationUploaded(_ metadata: VoiceInkSyncOperationMetadata, domain: VoiceInkSyncDomain) throws -> Bool {
+        guard iCloudDriveRootOverride == nil else { return true }
+        guard let url = operationURL(
+            operationID: metadata.operationID,
+            domain: domain,
+            authorDeviceID: metadata.authorDeviceID
+        ), fileManager.fileExists(atPath: url.path) else { return false }
+        let values = try url.resourceValues(forKeys: [
+            .isUbiquitousItemKey,
+            .ubiquitousItemIsUploadingKey,
+            .ubiquitousItemIsUploadedKey,
+            .ubiquitousItemUploadingErrorKey,
+        ])
+        if let error = values.ubiquitousItemUploadingError { throw error }
+        guard values.isUbiquitousItem == true else { return false }
+        return values.ubiquitousItemIsUploading != true
+            && values.ubiquitousItemIsUploaded == true
+    }
+
     private func write(_ envelope: VoiceInkSyncEnvelope) throws {
         guard let destination = operationURL(
             operationID: envelope.operationID,

@@ -461,7 +461,7 @@ struct SettingsView: View {
                 Text("iCloud")
             } footer: {
                 Text(
-                    "VoiceInk syncs configuration and dictionary entries as immutable files in iCloud Drive; concurrent device edits are preserved and reported above. Usage data sync is opt-in and includes transcription history and every persisted session metric. Source audio requires a separate opt-in and is verified by SHA-256. Explicit history deletion syncs to other devices, while automatic local cleanup never deletes their cloud archive. API keys, permissions, device selections, databases, and downloaded models always stay on this Mac."
+                    "VoiceInk syncs configuration and dictionary entries as immutable files in iCloud Drive; concurrent device edits are preserved and reported above. Usage data sync is opt-in and includes transcription history and every persisted session metric. Source audio requires a separate opt-in and is verified by SHA-256. Rolling cleanup retains usage records but permanently reclaims their audio on every synced device and in iCloud after the configured limit is exceeded. Explicit history deletion syncs to other devices. API keys, permissions, device selections, databases, and downloaded models always stay on this Mac."
                 )
             }
 

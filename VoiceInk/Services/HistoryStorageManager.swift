@@ -14,13 +14,14 @@ struct HistoryStorageSnapshot: Equatable, Sendable {
 }
 
 struct HistoryStorageCleanupResult: Equatable, Sendable {
-    var deletedRecordCount = 0
+    var reclaimedAudioCount = 0
     var deletedAudioBytes: Int64 = 0
 }
 
-/// Calculates history storage on demand and enforces local-only retention
-/// limits. Automatic limit cleanup intentionally does not create cloud
-/// tombstones; a small Mac must never delete another device's archive.
+/// Calculates history storage on demand and enforces rolling source-audio
+/// limits. Usage records and metrics are retained indefinitely; a reclaimed
+/// audio ID is synchronized so every device and iCloud converge on the same
+/// metadata-only record.
 @MainActor
 final class HistoryStorageManager: ObservableObject {
     static let shared = HistoryStorageManager()
@@ -102,7 +103,11 @@ final class HistoryStorageManager: ObservableObject {
     }
 
     @discardableResult
-    func enforceLimits(modelContext: ModelContext) async -> HistoryStorageCleanupResult {
+    func enforceLimits(
+        modelContext: ModelContext,
+        usageSync: CloudUsageDataSyncService = .shared,
+        recordingsDirectoryURL: URL? = nil
+    ) async -> HistoryStorageCleanupResult {
         guard !isEnforcingLimits else { return HistoryStorageCleanupResult() }
         isEnforcingLimits = true
         defer { isEnforcingLimits = false }
@@ -117,26 +122,46 @@ final class HistoryStorageManager: ObservableObject {
                 sortBy: [SortDescriptor(\Transcription.timestamp, order: .forward)]
             )
             let records = try modelContext.fetch(descriptor)
-            var candidates = records.dropLast().map { ($0, Self.managedSize(for: $0)) }
-            var remainingRecordCount = records.count
-            var totalManagedBytes = records.map(Self.managedSize).reduce(Int64(0), +)
+            var recordsByAudioPath = [String: [Transcription]]()
+            var audioURLByPath = [String: URL]()
+            for record in records {
+                guard let url = Self.audioURL(
+                    for: record, recordingsDirectory: recordingsDirectoryURL),
+                    FileManager.default.fileExists(atPath: url.path)
+                else { continue }
+                let path = url.standardizedFileURL.path
+                recordsByAudioPath[path, default: []].append(record)
+                audioURLByPath[path] = url
+            }
+            let audioPaths = recordsByAudioPath.keys.sorted { lhs, rhs in
+                let lhsTimestamp = recordsByAudioPath[lhs]?.map(\.timestamp).max() ?? .distantPast
+                let rhsTimestamp = recordsByAudioPath[rhs]?.map(\.timestamp).max() ?? .distantPast
+                if lhsTimestamp != rhsTimestamp { return lhsTimestamp < rhsTimestamp }
+                return lhs < rhs
+            }
+            var candidates = Array(audioPaths.dropLast())
+            var remainingAudioCount = audioPaths.count
+            var totalAudioBytes = audioPaths.reduce(Int64(0)) { total, path in
+                total + Self.fileSize(at: audioURLByPath[path] ?? URL(fileURLWithPath: path))
+            }
             var result = HistoryStorageCleanupResult()
-            var locallyRemovedRecordIDs = Set<UUID>()
 
-            // Keep the newest case even when one recording alone exceeds the
+            // Keep the newest audio even when one recording alone exceeds the
             // configured capacity. The UI reports the remaining overage.
             while !candidates.isEmpty,
                 Self.shouldDelete(
-                    recordCount: remainingRecordCount,
-                    managedBytes: totalManagedBytes,
-                    maximumRecordCount: maximumCount,
+                    audioCount: remainingAudioCount,
+                    audioBytes: totalAudioBytes,
+                    maximumAudioCount: maximumCount,
                     maximumBytes: maximumBytes
                 )
             {
-                let (oldest, oldestSize) = candidates.removeFirst()
-                let removedAudioBytes = Self.audioSize(for: oldest)
+                let path = candidates.removeFirst()
+                let affectedRecords = recordsByAudioPath[path] ?? []
+                let audioURL = audioURLByPath[path] ?? URL(fileURLWithPath: path)
+                let removedAudioBytes = Self.fileSize(at: audioURL)
 
-                if let audioURL = Self.audioURL(for: oldest), FileManager.default.fileExists(atPath: audioURL.path) {
+                if FileManager.default.fileExists(atPath: audioURL.path) {
                     do {
                         try FileManager.default.removeItem(at: audioURL)
                     } catch {
@@ -148,32 +173,21 @@ final class HistoryStorageManager: ObservableObject {
                         continue
                     }
                 }
-
-                let transcriptionID = oldest.id
-                let metricDescriptor = FetchDescriptor<SessionMetric>(
-                    predicate: #Predicate<SessionMetric> { metric in
-                        metric.transcriptionId == transcriptionID
-                    }
-                )
-                for metric in try modelContext.fetch(metricDescriptor) {
-                    modelContext.delete(metric)
+                usageSync.prepareAudioReclamation(Set(affectedRecords.map(\.id)))
+                for record in affectedRecords {
+                    record.audioFileURL = nil
                 }
-                modelContext.delete(oldest)
-                locallyRemovedRecordIDs.insert(transcriptionID)
-                remainingRecordCount -= 1
-                totalManagedBytes -= oldestSize
-                result.deletedRecordCount += 1
+                remainingAudioCount -= 1
+                totalAudioBytes -= removedAudioBytes
+                result.reclaimedAudioCount += 1
                 result.deletedAudioBytes += removedAudioBytes
             }
 
-            if result.deletedRecordCount > 0 {
+            if result.reclaimedAudioCount > 0 {
                 try modelContext.save()
-                CloudUsageDataSyncService.shared.recordsWereRemovedLocally(locallyRemovedRecordIDs)
-                DashboardStatsCache.shared.markStale()
                 NotificationCenter.default.post(name: .transcriptionDeleted, object: nil)
-                NotificationCenter.default.post(name: .sessionMetricsDidChange, object: nil)
                 logger.notice(
-                    "Applied history limits deletedRecords=\(result.deletedRecordCount, privacy: .public) deletedAudioBytes=\(result.deletedAudioBytes, privacy: .public)"
+                    "Applied history limits reclaimedAudio=\(result.reclaimedAudioCount, privacy: .public) deletedAudioBytes=\(result.deletedAudioBytes, privacy: .public)"
                 )
             }
 
@@ -187,13 +201,13 @@ final class HistoryStorageManager: ObservableObject {
     }
 
     nonisolated static func shouldDelete(
-        recordCount: Int,
-        managedBytes: Int64,
-        maximumRecordCount: Int,
+        audioCount: Int,
+        audioBytes: Int64,
+        maximumAudioCount: Int,
         maximumBytes: Int64
     ) -> Bool {
-        (maximumRecordCount > 0 && recordCount > maximumRecordCount)
-            || (maximumBytes > 0 && managedBytes > maximumBytes)
+        (maximumAudioCount > 0 && audioCount > maximumAudioCount)
+            || (maximumBytes > 0 && audioBytes > maximumBytes)
     }
 
     nonisolated static func isAutomaticCleanupDue(
@@ -311,11 +325,15 @@ final class HistoryStorageManager: ObservableObject {
         return Int64(textBytes + dataBytes + 512)
     }
 
-    private static func audioURL(for transcription: Transcription) -> URL? {
+    private static func audioURL(
+        for transcription: Transcription,
+        recordingsDirectory: URL? = nil
+    ) -> URL? {
         guard let value = transcription.audioFileURL else { return nil }
         let url = URL(string: value) ?? URL(fileURLWithPath: value)
-        let recordingsDirectory = appSupportDirectory.appendingPathComponent("Recordings", isDirectory: true)
-        return isManagedAudioURL(url, recordingsDirectory: recordingsDirectory) ? url : nil
+        let managedDirectory = recordingsDirectory
+            ?? appSupportDirectory.appendingPathComponent("Recordings", isDirectory: true)
+        return isManagedAudioURL(url, recordingsDirectory: managedDirectory) ? url : nil
     }
 
     nonisolated static func isManagedAudioURL(
@@ -328,8 +346,13 @@ final class HistoryStorageManager: ObservableObject {
         return filePath.hasPrefix(directoryPath + "/")
     }
 
-    private static func audioSize(for transcription: Transcription) -> Int64 {
-        guard let url = audioURL(for: transcription) else { return 0 }
+    private static func audioSize(
+        for transcription: Transcription,
+        recordingsDirectory: URL? = nil
+    ) -> Int64 {
+        guard let url = audioURL(
+            for: transcription, recordingsDirectory: recordingsDirectory)
+        else { return 0 }
         return fileSize(at: url)
     }
 
