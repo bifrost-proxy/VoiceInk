@@ -95,6 +95,25 @@ jobs:
             # Cross-architecture WMO builds can exhaust the hosted arm64 runner
             # when several package targets compile at once.
             xcodebuild_args+=(-jobs 1)
+
+            # NSFileCoordinator can stall this test after a long Rosetta app-host
+            # session. Keep the x86 coverage, but run it in a fresh process and
+            # exclude it from the subsequent full target run.
+            split_test="VoiceInkTests/VoiceInkTests/syncCoreSplitsLargeMutationSetsIntoValidImmutableOperations"
+            split_test_log="$RUNNER_TEMP/voiceink-x86-split-test.log"
+            xcodebuild test \
+              -project VoiceInk.xcodeproj \
+              -scheme VoiceInk \
+              -destination "platform=macOS,arch=$architecture" \
+              -only-testing:"$split_test" \
+              -parallel-testing-enabled NO \
+              -jobs 1 \
+              ARCHS="$architecture" \
+              ONLY_ACTIVE_ARCH=YES \
+              CODE_SIGNING_ALLOWED=NO \
+              ENABLE_TESTABILITY=YES | tee "$split_test_log"
+            grep -Eq 'Test run with 1 test.*passed' "$split_test_log"
+            xcodebuild_args+=(-skip-testing:"$split_test")
           fi
           xcodebuild "${xcodebuild_args[@]}" \
             ARCHS="$architecture" \

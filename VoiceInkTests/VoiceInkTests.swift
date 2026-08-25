@@ -255,8 +255,7 @@ struct VoiceInkTests {
         #expect(!FileManager.default.fileExists(atPath: operations.path))
     }
 
-    @Test(.timeLimit(.minutes(1)))
-    func syncCoreSplitsLargeMutationSetsIntoValidImmutableOperations() throws {
+    @Test func syncCoreSplitsLargeMutationSetsIntoValidImmutableOperations() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("VoiceInkChunkedSync-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
