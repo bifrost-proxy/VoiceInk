@@ -43,6 +43,8 @@ final class CloudUsageDataSyncService: ObservableObject {
         let enhancementDuration: TimeInterval?
         let modeName: String?
         let modeEmoji: String?
+        let vocabularyBundleIdentifier: String?
+        let vocabularyDomain: String?
         let transcriptionStatus: String?
         let performanceData: Data?
     }
@@ -1878,6 +1880,8 @@ final class CloudUsageDataSyncService: ObservableObject {
             aiEnhancementModelName: transcription.aiEnhancementModelName, promptName: transcription.promptName,
             transcriptionDuration: transcription.transcriptionDuration, enhancementDuration: transcription.enhancementDuration,
             modeName: transcription.modeName, modeEmoji: transcription.modeEmoji,
+            vocabularyBundleIdentifier: transcription.vocabularyBundleIdentifier,
+            vocabularyDomain: transcription.vocabularyDomain,
             transcriptionStatus: transcription.transcriptionStatus, performanceData: transcription.performanceData
         )
     }
@@ -1905,6 +1909,8 @@ final class CloudUsageDataSyncService: ObservableObject {
         transcription.enhancementDuration = payload.enhancementDuration
         transcription.modeName = payload.modeName
         transcription.modeEmoji = payload.modeEmoji
+        transcription.vocabularyBundleIdentifier = payload.vocabularyBundleIdentifier
+        transcription.vocabularyDomain = payload.vocabularyDomain
         transcription.transcriptionStatus = payload.transcriptionStatus
         transcription.performanceData = payload.performanceData
     }

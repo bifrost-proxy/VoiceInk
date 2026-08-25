@@ -25,6 +25,8 @@ final class Transcription {
     var enhancementDuration: TimeInterval?
     var aiRequestSystemMessage: String?
     var aiRequestUserMessage: String?
+    var vocabularyBundleIdentifier: String?
+    var vocabularyDomain: String?
     var performanceData: Data?
     var syncOriginDeviceID: String?
     var syncModifiedAt: Date?
@@ -47,6 +49,7 @@ final class Transcription {
         enhancementDuration: TimeInterval? = nil,
         aiRequestSystemMessage: String? = nil,
         aiRequestUserMessage: String? = nil,
+        vocabularyUsageContext: VocabularyUsageContext = .none,
         modeName: String? = nil,
         modeEmoji: String? = nil,
         transcriptionStatus: TranscriptionStatus = .pending
@@ -64,10 +67,20 @@ final class Transcription {
         self.enhancementDuration = enhancementDuration
         self.aiRequestSystemMessage = aiRequestSystemMessage
         self.aiRequestUserMessage = aiRequestUserMessage
+        self.vocabularyBundleIdentifier = vocabularyUsageContext.bundleIdentifier
+        self.vocabularyDomain = vocabularyUsageContext.domain
         self.modeName = modeName
         self.modeEmoji = modeEmoji
         self.transcriptionStatus = transcriptionStatus.rawValue
         self.syncModifiedAt = Date()
+    }
+
+    var vocabularyUsageContext: VocabularyUsageContext {
+        VocabularyUsageContext(
+            bundleIdentifier: vocabularyBundleIdentifier,
+            applicationName: nil,
+            domain: vocabularyDomain
+        )
     }
 
     func markAsCanceledTranscription(

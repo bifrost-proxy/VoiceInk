@@ -95,7 +95,8 @@ class AIEnhancementService: ObservableObject {
     func getSystemMessage(
         prompt: CustomPrompt,
         configuration: EnhancementRuntimeConfiguration,
-        contextSnapshot: RecordingContextSnapshot?
+        contextSnapshot: RecordingContextSnapshot?,
+        customVocabularyTerms: [String]? = nil
     ) async -> String {
         let useSelectedText = configuration.useSelectedTextContext
         let useClipboard = configuration.useClipboardContext
@@ -146,7 +147,8 @@ class AIEnhancementService: ObservableObject {
                 ""
             }
 
-        let customVocabulary = customVocabularyService.getCustomVocabulary(from: modelContext)
+        let customVocabulary = customVocabularyTerms.map { customVocabularyService.getCustomVocabulary(terms: $0) }
+            ?? customVocabularyService.getCustomVocabulary(from: modelContext)
 
         let customVocabularySection =
             if !customVocabulary.isEmpty {
@@ -250,7 +252,8 @@ class AIEnhancementService: ObservableObject {
     private func makeRequest(
         text: String,
         configuration: EnhancementRuntimeConfiguration,
-        contextSnapshot: RecordingContextSnapshot?
+        contextSnapshot: RecordingContextSnapshot?,
+        customVocabularyTerms: [String]?
     ) async throws -> String {
         guard isConfigured(for: configuration) else {
             throw EnhancementError.notConfigured
@@ -273,7 +276,8 @@ class AIEnhancementService: ObservableObject {
         let systemMessage = await getSystemMessage(
             prompt: prompt,
             configuration: configuration,
-            contextSnapshot: contextSnapshot
+            contextSnapshot: contextSnapshot,
+            customVocabularyTerms: customVocabularyTerms
         )
 
         await MainActor.run {
@@ -449,6 +453,7 @@ class AIEnhancementService: ObservableObject {
         text: String,
         configuration: EnhancementRuntimeConfiguration,
         contextSnapshot: RecordingContextSnapshot?,
+        customVocabularyTerms: [String]?,
         maxRetries: Int = 3,
         initialDelay: TimeInterval = 1.0
     ) async throws -> String {
@@ -460,7 +465,8 @@ class AIEnhancementService: ObservableObject {
                 return try await makeRequest(
                     text: text,
                     configuration: configuration,
-                    contextSnapshot: contextSnapshot
+                    contextSnapshot: contextSnapshot,
+                    customVocabularyTerms: customVocabularyTerms
                 )
             } catch let error as EnhancementError {
                 switch error {
@@ -523,7 +529,8 @@ class AIEnhancementService: ObservableObject {
     func enhance(
         _ text: String,
         configuration: EnhancementRuntimeConfiguration,
-        contextSnapshot: RecordingContextSnapshot? = nil
+        contextSnapshot: RecordingContextSnapshot? = nil,
+        customVocabularyTerms: [String]? = nil
     ) async throws -> (String, TimeInterval, String?) {
         let startTime = Date()
         let promptName = configuration.prompt?.title
@@ -532,7 +539,8 @@ class AIEnhancementService: ObservableObject {
             let result = try await makeRequestWithRetry(
                 text: text,
                 configuration: configuration,
-                contextSnapshot: contextSnapshot
+                contextSnapshot: contextSnapshot,
+                customVocabularyTerms: customVocabularyTerms
             )
             let endTime = Date()
             let duration = endTime.timeIntervalSince(startTime)

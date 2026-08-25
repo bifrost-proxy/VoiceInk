@@ -252,6 +252,38 @@ enum BackupImporter {
             print("No vocabulary words found in the imported file. Existing items remain unchanged.")
         }
 
+        if let scopedWords = backup.scopedVocabularyWords {
+            let existingScoped = try modelContext.fetch(FetchDescriptor<ScopedVocabularyWord>())
+            var existingKeys = Set(existingScoped.compactMap { item -> String? in
+                guard let kind = item.scopeKind,
+                    let identifier = DictionaryService.normalizedScopeIdentifier(item.scopeIdentifier, kind: kind)
+                else { return nil }
+                return "\(kind.rawValue)|\(identifier)|\(TranscriptionVocabularyContext.normalizedKey(item.word))"
+            })
+
+            for item in scopedWords {
+                let word = item.word.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !word.isEmpty,
+                    let identifier = DictionaryService.normalizedScopeIdentifier(
+                        item.scopeIdentifier,
+                        kind: item.scopeKind
+                    )
+                else { continue }
+                let key = "\(item.scopeKind.rawValue)|\(identifier)|\(TranscriptionVocabularyContext.normalizedKey(word))"
+                guard existingKeys.insert(key).inserted else { continue }
+                modelContext.insert(
+                    ScopedVocabularyWord(
+                        word: word,
+                        scopeKind: item.scopeKind,
+                        scopeIdentifier: identifier,
+                        scopeDisplayName: item.scopeDisplayName,
+                        dateAdded: item.dateAdded ?? Date()
+                    )
+                )
+                insertedWords += 1
+            }
+        }
+
         if let replacements = backup.wordReplacements {
             let descriptor = FetchDescriptor<WordReplacement>()
             let existingReplacements = try modelContext.fetch(descriptor)

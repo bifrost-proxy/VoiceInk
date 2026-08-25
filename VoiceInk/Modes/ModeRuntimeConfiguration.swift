@@ -6,19 +6,22 @@ struct TranscriptionRuntimeConfiguration {
     let language: String
     let isRealtimeEnabled: Bool
     let speechRecognitionContext: RecognitionContextEnvelope?
+    let vocabulary: ResolvedVocabulary?
 
     init(
         mode: ModeConfig,
         model: any TranscriptionModel,
         language: String,
         isRealtimeEnabled: Bool,
-        speechRecognitionContext: RecognitionContextEnvelope? = nil
+        speechRecognitionContext: RecognitionContextEnvelope? = nil,
+        vocabulary: ResolvedVocabulary? = nil
     ) {
         self.mode = mode
         self.model = model
         self.language = language
         self.isRealtimeEnabled = isRealtimeEnabled
         self.speechRecognitionContext = speechRecognitionContext
+        self.vocabulary = vocabulary
     }
 
     var metadata: (name: String?, emoji: String?) {
@@ -32,7 +35,8 @@ struct TranscriptionRuntimeConfiguration {
         TranscriptionRequestContext(
             language: language,
             prompt: model.provider == .whisper ? UserDefaults.standard.string(forKey: "TranscriptionPrompt") : nil,
-            speechRecognitionContext: speechRecognitionContext
+            speechRecognitionContext: speechRecognitionContext,
+            customVocabulary: vocabulary?.terms
         )
     }
 
@@ -42,7 +46,19 @@ struct TranscriptionRuntimeConfiguration {
             model: model,
             language: language,
             isRealtimeEnabled: isRealtimeEnabled,
-            speechRecognitionContext: context
+            speechRecognitionContext: context,
+            vocabulary: vocabulary
+        )
+    }
+
+    func addingVocabulary(_ vocabulary: ResolvedVocabulary) -> TranscriptionRuntimeConfiguration {
+        TranscriptionRuntimeConfiguration(
+            mode: mode,
+            model: model,
+            language: language,
+            isRealtimeEnabled: isRealtimeEnabled,
+            speechRecognitionContext: speechRecognitionContext,
+            vocabulary: vocabulary
         )
     }
 }

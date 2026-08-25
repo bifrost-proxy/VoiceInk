@@ -36,6 +36,7 @@ struct RecognitionContextTests {
         #expect(plan.sources == [.selectedText, .application])
         #expect(!plan.needsClipboard)
         #expect(!plan.needsScreenOCR)
+        #expect(!plan.needsWindowContext)
 
         var enhancementMode = mode
         enhancementMode.isAIEnhancementEnabled = true
@@ -46,6 +47,63 @@ struct RecognitionContextTests {
         #expect(enhancementPlan.sources == [
             .selectedText, .clipboard, .application, .windowTitle, .screenOCR,
         ])
+        #expect(enhancementPlan.needsWindowContext)
+    }
+
+    @Test func contextCaptureRefreshesWhenBrowserResolutionChangesTheMode() {
+        let initialModeID = UUID()
+        let resolvedModeID = UUID()
+
+        #expect(
+            RecordingContextModeResolution.needsCaptureRefresh(
+                capturedModeID: initialModeID,
+                resolvedModeID: resolvedModeID
+            )
+        )
+        #expect(
+            !RecordingContextModeResolution.needsCaptureRefresh(
+                capturedModeID: resolvedModeID,
+                resolvedModeID: resolvedModeID
+            )
+        )
+        #expect(
+            RecordingContextModeResolution.needsCaptureRefresh(
+                capturedModeID: nil,
+                resolvedModeID: resolvedModeID
+            )
+        )
+    }
+
+    @Test func browserURLFailuresProvideRetryAndAutomationGuidance() {
+        let missingTab = BrowserURLFailureGuidance.make(
+            error: BrowserURLError.noActiveTab,
+            browser: .chrome
+        )
+        #expect(missingTab.message.contains("Google Chrome"))
+        #expect(missingTab.message.localizedCaseInsensitiveContains("try again"))
+        #expect(!missingTab.shouldOfferAutomationSettings)
+
+        let automationDenied = BrowserURLFailureGuidance.make(
+            error: BrowserURLError.executionFailed,
+            browser: .safari
+        )
+        #expect(automationDenied.message.contains("Safari"))
+        #expect(automationDenied.message.contains("Automation"))
+        #expect(automationDenied.shouldOfferAutomationSettings)
+        #expect(BrowserURLFailureGuidance.automationSettingsURL.absoluteString.contains("Privacy_Automation"))
+
+        #expect(
+            BrowserURLLookupImpact(
+                affectsURLMode: true,
+                affectsWebsiteVocabulary: false
+            ).message?.contains("mode") == true
+        )
+        let combinedImpact = BrowserURLLookupImpact(
+            affectsURLMode: true,
+            affectsWebsiteVocabulary: true
+        ).message
+        #expect(combinedImpact?.contains("mode") == true)
+        #expect(combinedImpact?.contains("vocabulary") == true)
     }
 
     @Test func featureExtractionNormalizesDeduplicatesAndMergesSources() throws {

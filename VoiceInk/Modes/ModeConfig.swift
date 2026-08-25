@@ -434,11 +434,17 @@ class ModeManager: ObservableObject {
 
     func getConfigurationForApp(_ bundleId: String) -> ModeConfig? {
         for config in configurations.filter({ $0.isEnabled }) {
-            if config.allAppConfigs.contains(where: { $0.bundleIdentifier == bundleId }) {
+            if config.allAppConfigs.contains(where: {
+                Self.bundleIdentifiersMatch($0.bundleIdentifier, bundleId)
+            }) {
                 return config
             }
         }
         return nil
+    }
+
+    static func bundleIdentifiersMatch(_ lhs: String, _ rhs: String) -> Bool {
+        lhs.caseInsensitiveCompare(rhs) == .orderedSame
     }
 
     func getDefaultConfiguration() -> ModeConfig? {

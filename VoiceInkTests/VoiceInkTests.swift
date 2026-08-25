@@ -262,29 +262,39 @@ struct VoiceInkTests {
         let suite = "VoiceInkTests.ChunkedSync.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
-        let core = ICloudDriveSyncCore(defaults: defaults, iCloudDriveRootURL: root)
+        // Use a small injected limit so the test exercises the same production
+        // splitting path without making the Rosetta test host process 8 MiB twice.
+        let payloadLimitBytes = 7 * 1_024
+        let core = ICloudDriveSyncCore(
+            defaults: defaults,
+            iCloudDriveRootURL: root,
+            payloadLimitBytes: payloadLimitBytes
+        )
         let mutations = [
             VoiceInkSyncMutation(
                 key: "preference/first",
-                value: Data(repeating: 0x3c, count: 4 * 1_024 * 1_024)
+                value: Data(repeating: 0x3c, count: 4 * 1_024)
             ),
             VoiceInkSyncMutation(
                 key: "preference/second",
-                value: Data(repeating: 0x4d, count: 4 * 1_024 * 1_024)
+                value: Data(repeating: 0x4d, count: 4 * 1_024)
             ),
         ]
 
         let written = try core.appendChunked(mutations, domain: .configuration)
+        let initialReadCount = try core.readAll(in: .configuration).count
+        let retried = try core.appendChunked(mutations, domain: .configuration)
+        let retriedReadCount = try core.readAll(in: .configuration).count
+
         #expect(written.count == 2)
         #expect(written.flatMap { $0.mutations } == mutations)
-        #expect(try core.readAll(in: .configuration).count == 2)
+        #expect(initialReadCount == 2)
         for item in written {
-            #expect(item.envelope.payload.count <= ICloudDriveSyncCore.maximumPayloadBytes)
+            #expect(item.envelope.payload.count <= payloadLimitBytes)
         }
 
-        let retried = try core.appendChunked(mutations, domain: .configuration)
         #expect(retried.map(\.envelope.operationID) == written.map(\.envelope.operationID))
-        #expect(try core.readAll(in: .configuration).count == 2)
+        #expect(retriedReadCount == 2)
     }
 
     @Test func readingUnchangedOperationsDoesNotRewriteTheFrontier() throws {
@@ -951,6 +961,8 @@ struct VoiceInkTests {
             enhancementDuration: 0.5,
             modeName: "中文",
             modeEmoji: "📝",
+            vocabularyBundleIdentifier: "com.example.editor",
+            vocabularyDomain: "docs.example.com",
             transcriptionStatus: "completed",
             performanceData: performanceData
         )
@@ -975,6 +987,27 @@ struct VoiceInkTests {
 
         #expect(decoded == snapshot)
         #expect(decodedPerformance == performance)
+
+        var legacyVocabularyPropertyList = try #require(
+            PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
+        )
+        var legacyVocabularyTranscription = try #require(
+            legacyVocabularyPropertyList["transcription"] as? [String: Any]
+        )
+        legacyVocabularyTranscription.removeValue(forKey: "vocabularyBundleIdentifier")
+        legacyVocabularyTranscription.removeValue(forKey: "vocabularyDomain")
+        legacyVocabularyPropertyList["transcription"] = legacyVocabularyTranscription
+        let legacyVocabularyData = try PropertyListSerialization.data(
+            fromPropertyList: legacyVocabularyPropertyList,
+            format: .binary,
+            options: 0
+        )
+        let decodedLegacyVocabularySnapshot = try PropertyListDecoder().decode(
+            CloudUsageDataSyncService.Snapshot.self,
+            from: legacyVocabularyData
+        )
+        #expect(decodedLegacyVocabularySnapshot.transcription.vocabularyBundleIdentifier == nil)
+        #expect(decodedLegacyVocabularySnapshot.transcription.vocabularyDomain == nil)
 
         var snapshotWithRemovedEditTrackingFields = try #require(
             PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
@@ -1889,7 +1922,8 @@ struct VoiceInkTests {
             timestamp: Date(timeIntervalSince1970: 1_700_000_000), duration: 2,
             transcriptionModelName: "test-model", aiEnhancementModelName: nil, promptName: nil,
             transcriptionDuration: 1, enhancementDuration: nil, modeName: "Dictation",
-            modeEmoji: nil, transcriptionStatus: "completed", performanceData: nil)
+            modeEmoji: nil, vocabularyBundleIdentifier: nil, vocabularyDomain: nil,
+            transcriptionStatus: "completed", performanceData: nil)
         let metric = CloudUsageDataSyncService.MetricPayload(
             id: metricID, transcriptionId: recordID, timestamp: Date(timeIntervalSince1970: 1_700_000_001),
             source: "recorder", wordCount: 4, audioDuration: 2,
@@ -1989,7 +2023,8 @@ struct VoiceInkTests {
             timestamp: Date(timeIntervalSince1970: 1_700_000_000), duration: 3,
             transcriptionModelName: "legacy-model", aiEnhancementModelName: nil, promptName: nil,
             transcriptionDuration: 1.5, enhancementDuration: nil, modeName: "Dictation",
-            modeEmoji: nil, transcriptionStatus: "completed", performanceData: nil)
+            modeEmoji: nil, vocabularyBundleIdentifier: nil, vocabularyDomain: nil,
+            transcriptionStatus: "completed", performanceData: nil)
         let metric = CloudUsageDataSyncService.MetricPayload(
             id: metricID, transcriptionId: recordID, timestamp: Date(timeIntervalSince1970: 1_700_000_001),
             source: "recorder", wordCount: 2, audioDuration: 3, transcriptionModelName: "legacy-model",
@@ -2063,6 +2098,7 @@ struct VoiceInkTests {
                 timestamp: timestamp, duration: 1, transcriptionModelName: "legacy-model",
                 aiEnhancementModelName: nil, promptName: nil, transcriptionDuration: 0.5,
                 enhancementDuration: nil, modeName: "Dictation", modeEmoji: nil,
+                vocabularyBundleIdentifier: nil, vocabularyDomain: nil,
                 transcriptionStatus: "completed", performanceData: nil)
             let metric = CloudUsageDataSyncService.MetricPayload(
                 id: metricID, transcriptionId: recordID, timestamp: timestamp, source: "recorder",
