@@ -139,7 +139,7 @@ struct DictionaryQuickAddScopeState: Equatable {
             )
         }
         domainScope = usageContext.domain.flatMap {
-            VocabularyScopeSelection(kind: .domain, identifier: $0, displayName: $0)
+            VocabularyScopeSelection(kind: .domain, identifier: $0)
         }
         selectedScope = domainScope ?? applicationScope
     }
@@ -151,7 +151,7 @@ struct DictionaryQuickAddScopeState: Equatable {
 
     mutating func applyDetectedDomain(_ value: String?) {
         domainScope = value.flatMap {
-            VocabularyScopeSelection(kind: .domain, identifier: $0, displayName: $0)
+            VocabularyScopeSelection(kind: .domain, identifier: $0)
         }
         guard !hasUserSelection else { return }
         selectedScope = domainScope ?? applicationScope
