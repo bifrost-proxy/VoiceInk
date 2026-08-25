@@ -690,7 +690,11 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
             )
         }
 
-        var affectedKeys = Set<String>()
+        // A previous pass may have reduced readable operations before discovering iCloud
+        // placeholders. Keep those keys pending until a complete pass can hand the register to
+        // the domain service; otherwise checkpointing the operations would suppress the keys on
+        // retry and delay local materialization until a later full repair.
+        var affectedKeys = checkpoint.pendingAffectedKeys
         var newEnvelopes: [VoiceInkSyncEnvelope] = []
         for url in scan.availableURLs {
             let relativePath = try relativeOperationPath(for: url, domain: domain)
@@ -709,7 +713,12 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
         // temporarily omits an item from a directory enumeration; deletions are represented by
         // tombstone operations, never by removing immutable operation files.
 
-        if !newEnvelopes.isEmpty || loadRegisterCheckpoint(for: domain) == nil {
+        if scan.hasPendingDownload {
+            checkpoint.pendingAffectedKeys.formUnion(affectedKeys)
+        } else {
+            checkpoint.pendingAffectedKeys.removeAll()
+        }
+        if checkpoint != loadRegisterCheckpoint(for: domain) {
             saveRegisterCheckpoint(checkpoint, for: domain)
         }
         mergeIntoFrontier(newEnvelopes)
@@ -749,18 +758,20 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
     }
 
     private struct RegisterCheckpoint: Codable, Equatable {
-        static let currentSchemaVersion = 1
+        static let currentSchemaVersion = 2
 
         let schemaVersion: Int
         let domain: VoiceInkSyncDomain
         var operationFiles: [String: OperationFileStamp]
         var register: VoiceInkSyncRegisterState
+        var pendingAffectedKeys: Set<String>
 
         init(domain: VoiceInkSyncDomain) {
             schemaVersion = Self.currentSchemaVersion
             self.domain = domain
             operationFiles = [:]
             register = VoiceInkSyncRegisterState()
+            pendingAffectedKeys = []
         }
 
     }
@@ -798,10 +809,20 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
         ]
         var scan = OperationURLScan()
         for url in urls.sorted(by: { $0.path < $1.path }) {
-            let state = try? resourceStateProvider(url, keys)
-            guard state?.isRegularFile == true else { continue }
-            if state?.isUbiquitousItem == true,
-                state?.downloadingStatus != .current
+            let state: OperationResourceState
+            do {
+                state = try resourceStateProvider(url, keys)
+            } catch {
+                // File Provider metadata lookup can fail transiently while a hinted item is
+                // materializing. Request it and keep the pass pending instead of reporting a
+                // successful sync that silently omits the operation until a later reconciliation.
+                try? fileManager.startDownloadingUbiquitousItem(at: url)
+                scan.hasPendingDownload = true
+                continue
+            }
+            guard state.isRegularFile else { continue }
+            if state.isUbiquitousItem,
+                state.downloadingStatus != .current
             {
                 try? fileManager.startDownloadingUbiquitousItem(at: url)
                 scan.hasPendingDownload = true

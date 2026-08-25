@@ -67,6 +67,29 @@ private final class PendingICloudOperationProbe: @unchecked Sendable {
     }
 }
 
+private final class FailingICloudOperationProbe: @unchecked Sendable {
+    private let failingPath: String
+
+    init(failingURL: URL) {
+        failingPath = failingURL.standardizedFileURL.path
+    }
+
+    func resourceState(
+        for url: URL,
+        keys: Set<URLResourceKey>
+    ) throws -> ICloudDriveSyncCore.OperationResourceState {
+        if url.standardizedFileURL.path == failingPath {
+            throw CocoaError(.fileReadUnknown)
+        }
+        let values = try url.resourceValues(forKeys: keys)
+        return ICloudDriveSyncCore.OperationResourceState(
+            isRegularFile: values.isRegularFile == true,
+            isUbiquitousItem: values.isUbiquitousItem == true,
+            downloadingStatus: values.ubiquitousItemDownloadingStatus
+        )
+    }
+}
+
 struct VoiceInkTests {
     @Test func whisperPCMReaderConvertsSamplesWithoutPerSampleDataAllocations() throws {
         let url = FileManager.default.temporaryDirectory
@@ -514,9 +537,52 @@ struct VoiceInkTests {
         )
         let result = try recovered.readIncrementally(in: .configuration, fullScan: true)
         #expect(result.register.selectedValues().count == 3)
-        #expect(result.affectedKeys == ["preference/value-0", "preference/value-1"])
+        #expect(result.affectedKeys == [
+            "preference/value-0", "preference/value-1", "preference/value-2",
+        ])
         #expect(recovered.decodedOperationCountForTesting == 2)
         #expect(result.register.selectedValues()["preference/value-2"] == Data("2".utf8))
+    }
+
+    @Test func incrementalRegisterRetriesHintWhenResourceLookupFails() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("VoiceInkResourceLookupFailure-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let localSuite = "VoiceInkTests.ResourceLookupFailure.Local.\(UUID().uuidString)"
+        let remoteSuite = "VoiceInkTests.ResourceLookupFailure.Remote.\(UUID().uuidString)"
+        let localDefaults = try #require(UserDefaults(suiteName: localSuite))
+        let remoteDefaults = try #require(UserDefaults(suiteName: remoteSuite))
+        defer {
+            localDefaults.removePersistentDomain(forName: localSuite)
+            remoteDefaults.removePersistentDomain(forName: remoteSuite)
+        }
+
+        let remote = ICloudDriveSyncCore(defaults: remoteDefaults, iCloudDriveRootURL: root)
+        let local = ICloudDriveSyncCore(defaults: localDefaults, iCloudDriveRootURL: root)
+        _ = try local.readIncrementally(in: .usage, fullScan: true)
+
+        let envelope = try remote.append(VoiceInkSyncMutationBatch(mutations: [
+            VoiceInkSyncMutation(key: "history/remote", value: Data("value".utf8))
+        ]), domain: .usage)
+        let operationURL = try #require(remote.operationURL(for: envelope))
+        let probe = FailingICloudOperationProbe(failingURL: operationURL)
+        let fileManager = DownloadRequestRecordingFileManager()
+        let retryingLocal = ICloudDriveSyncCore(
+            defaults: localDefaults,
+            fileManager: fileManager,
+            iCloudDriveRootURL: root,
+            resourceStateProvider: probe.resourceState
+        )
+
+        #expect(throws: CocoaError.self) {
+            _ = try retryingLocal.readIncrementally(
+                in: .usage,
+                hintedOperationURLs: [operationURL],
+                fullScan: false
+            )
+        }
+        #expect(fileManager.downloadRequests == [operationURL.standardizedFileURL])
+        #expect(retryingLocal.decodedOperationCountForTesting == 0)
     }
 
     @Test func syncEnvelopeCarriesDeviceNameAndDecodesLegacyOperations() throws {
