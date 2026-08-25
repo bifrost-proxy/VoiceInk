@@ -713,15 +713,12 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
         // temporarily omits an item from a directory enumeration; deletions are represented by
         // tombstone operations, never by removing immutable operation files.
 
-        if scan.hasPendingDownload {
-            checkpoint.pendingAffectedKeys.formUnion(affectedKeys)
-        } else {
-            checkpoint.pendingAffectedKeys.removeAll()
-        }
+        checkpoint.pendingAffectedKeys.formUnion(affectedKeys)
         if checkpoint != loadRegisterCheckpoint(for: domain) {
             saveRegisterCheckpoint(checkpoint, for: domain)
         }
         mergeIntoFrontier(newEnvelopes)
+        if let deferredError = scan.deferredError { throw deferredError }
         if scan.hasPendingDownload { throw CocoaError(.fileReadNoSuchFile) }
         return IncrementalReadResult(
             register: checkpoint.register,
@@ -729,6 +726,18 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
             newEnvelopes: newEnvelopes,
             performedFullScan: mustScanAll
         )
+    }
+
+    /// Removes keys from the durable handoff only after the domain service has committed its
+    /// materialized state. A downstream export or database failure can then retry the same keys
+    /// without reopening immutable operation payloads.
+    func acknowledgeAffectedKeys(_ keys: Set<String>, in domain: VoiceInkSyncDomain) {
+        guard !keys.isEmpty, var checkpoint = loadRegisterCheckpoint(for: domain) else { return }
+        let previousKeys = checkpoint.pendingAffectedKeys
+        checkpoint.pendingAffectedKeys.subtract(keys)
+        if checkpoint.pendingAffectedKeys != previousKeys {
+            saveRegisterCheckpoint(checkpoint, for: domain)
+        }
     }
 
     /// Commits the already-reduced register after locally appended immutable operations.
@@ -779,6 +788,7 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
     private struct OperationURLScan {
         var availableURLs: [URL] = []
         var hasPendingDownload = false
+        var deferredError: Error?
     }
 
     private func operationURLs(in domain: VoiceInkSyncDomain) throws -> OperationURLScan {
@@ -812,20 +822,28 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
             let state: OperationResourceState
             do {
                 state = try resourceStateProvider(url, keys)
-            } catch {
+            } catch let resourceError {
                 // File Provider metadata lookup can fail transiently while a hinted item is
-                // materializing. Request it and keep the pass pending instead of reporting a
-                // successful sync that silently omits the operation until a later reconciliation.
-                try? fileManager.startDownloadingUbiquitousItem(at: url)
-                scan.hasPendingDownload = true
+                // materializing. Only classify it as pending when File Provider accepts a
+                // download request; otherwise preserve the original error for the service UI.
+                do {
+                    try fileManager.startDownloadingUbiquitousItem(at: url)
+                    scan.hasPendingDownload = true
+                } catch {
+                    if scan.deferredError == nil { scan.deferredError = resourceError }
+                }
                 continue
             }
             guard state.isRegularFile else { continue }
             if state.isUbiquitousItem,
                 state.downloadingStatus != .current
             {
-                try? fileManager.startDownloadingUbiquitousItem(at: url)
-                scan.hasPendingDownload = true
+                do {
+                    try fileManager.startDownloadingUbiquitousItem(at: url)
+                    scan.hasPendingDownload = true
+                } catch {
+                    if scan.deferredError == nil { scan.deferredError = error }
+                }
                 continue
             }
             scan.availableURLs.append(url)

@@ -584,8 +584,9 @@ final class CloudConfigurationSyncService: ObservableObject {
         didApplyRemote: Bool, latestRemoteEnvelope: VoiceInkSyncOperationMetadata?
     ) {
         let knownOperationIDs = Set(appliedConfigurationOperationIDs.values.flatMap { $0 })
-        let register = try loadRegister(
+        let loaded = try loadRegister(
             for: .configuration, fullScan: fullScan, operationURLs: operationURLs)
+        let register = loaded.register
         workerConfigurationConflictCount = register.conflictCount
         let materialized = register.selectedValues()
         let localBefore = makeLocalConfiguration()
@@ -595,6 +596,7 @@ final class CloudConfigurationSyncService: ObservableObject {
         lastKnownConfiguration = makeLocalConfiguration()
         appliedConfigurationOperationIDs = activeOperationIDs(in: register)
         hasConfigurationBaseline = true
+        syncCore.acknowledgeAffectedKeys(loaded.affectedKeys, in: .configuration)
         return (
             didApply && hasRemoteDifference,
             register.latestRemoteEnvelope(
@@ -609,8 +611,9 @@ final class CloudConfigurationSyncService: ObservableObject {
     ) throws -> (didApplyRemote: Bool, latestRemoteEnvelope: VoiceInkSyncOperationMetadata?) {
         guard let modelContext else { return (false, nil) }
         let knownOperationIDs = Set(appliedDictionaryOperationIDs.values.flatMap { $0 })
-        let register = try loadRegister(
+        let loaded = try loadRegister(
             for: .dictionary, fullScan: fullScan, operationURLs: operationURLs)
+        let register = loaded.register
         workerDictionaryConflictCount = register.conflictCount
         let materialized = register.selectedValues(addWins: true)
         let localBefore = makeLocalDictionary(modelContext: modelContext)
@@ -620,6 +623,7 @@ final class CloudConfigurationSyncService: ObservableObject {
         lastKnownDictionary = makeLocalDictionary(modelContext: modelContext)
         appliedDictionaryOperationIDs = activeOperationIDs(in: register)
         hasDictionaryBaseline = true
+        syncCore.acknowledgeAffectedKeys(loaded.affectedKeys, in: .dictionary)
         return (
             didApply && hasRemoteDifference,
             register.latestRemoteEnvelope(
@@ -674,12 +678,12 @@ final class CloudConfigurationSyncService: ObservableObject {
         for domain: VoiceInkSyncDomain,
         fullScan: Bool,
         operationURLs: Set<URL>
-    ) throws -> VoiceInkSyncRegisterState {
+    ) throws -> ICloudDriveSyncCore.IncrementalReadResult {
         try syncCore.readIncrementally(
             in: domain,
             hintedOperationURLs: operationURLs,
             fullScan: fullScan
-        ).register
+        )
     }
 
     private nonisolated func hasRemoteMaterializedDifference(

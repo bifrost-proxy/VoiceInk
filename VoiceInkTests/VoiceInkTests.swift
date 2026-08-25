@@ -46,6 +46,12 @@ private final class DownloadRequestRecordingFileManager: FileManager, @unchecked
     var downloadRequests: [URL] { lock.withLock { recordedURLs } }
 }
 
+private final class RejectingDownloadFileManager: FileManager, @unchecked Sendable {
+    override func startDownloadingUbiquitousItem(at url: URL) throws {
+        throw CocoaError(.fileReadNoPermission)
+    }
+}
+
 private final class PendingICloudOperationProbe: @unchecked Sendable {
     private let pendingPaths: Set<String>
 
@@ -460,11 +466,12 @@ struct VoiceInkTests {
         #expect(first.affectedKeys == ["preference/first"])
         #expect(local.decodedOperationCountForTesting == 1)
         #expect(local.registerCheckpointWriteCountForTesting == 1)
+        local.acknowledgeAffectedKeys(first.affectedKeys, in: .configuration)
 
         let second = try local.readIncrementally(in: .configuration, fullScan: true)
         #expect(second.affectedKeys.isEmpty)
         #expect(local.decodedOperationCountForTesting == 1)
-        #expect(local.registerCheckpointWriteCountForTesting == 1)
+        #expect(local.registerCheckpointWriteCountForTesting == 2)
 
         let appended = try remote.append(VoiceInkSyncMutationBatch(mutations: [
             VoiceInkSyncMutation(key: "preference/second", value: Data("two".utf8))
@@ -478,7 +485,8 @@ struct VoiceInkTests {
         #expect(third.affectedKeys == ["preference/second"])
         #expect(third.register.selectedValues().count == 2)
         #expect(local.decodedOperationCountForTesting == 2)
-        #expect(local.registerCheckpointWriteCountForTesting == 2)
+        #expect(local.registerCheckpointWriteCountForTesting == 3)
+        local.acknowledgeAffectedKeys(third.affectedKeys, in: .configuration)
 
         // File Provider enumeration can temporarily omit an already-consumed immutable item.
         // The materialized checkpoint must remain usable instead of entering a retry loop.
@@ -487,7 +495,7 @@ struct VoiceInkTests {
         #expect(fourth.affectedKeys.isEmpty)
         #expect(fourth.register.selectedValues().count == 2)
         #expect(local.decodedOperationCountForTesting == 2)
-        #expect(local.registerCheckpointWriteCountForTesting == 2)
+        #expect(local.registerCheckpointWriteCountForTesting == 4)
     }
 
     @Test func incrementalRegisterRequestsEveryPendingFileAndCheckpointsReadyOperations() throws {
@@ -542,6 +550,17 @@ struct VoiceInkTests {
         ])
         #expect(recovered.decodedOperationCountForTesting == 2)
         #expect(result.register.selectedValues()["preference/value-2"] == Data("2".utf8))
+
+        // Until the domain service commits and acknowledges the handoff, another retry receives
+        // the same affected keys without reopening any immutable operation payload.
+        let beforeAcknowledgement = try recovered.readIncrementally(
+            in: .configuration, fullScan: true)
+        #expect(beforeAcknowledgement.affectedKeys == result.affectedKeys)
+        #expect(recovered.decodedOperationCountForTesting == 2)
+        recovered.acknowledgeAffectedKeys(result.affectedKeys, in: .configuration)
+        let afterAcknowledgement = try recovered.readIncrementally(
+            in: .configuration, fullScan: true)
+        #expect(afterAcknowledgement.affectedKeys.isEmpty)
     }
 
     @Test func incrementalRegisterRetriesHintWhenResourceLookupFails() throws {
@@ -583,6 +602,43 @@ struct VoiceInkTests {
         }
         #expect(fileManager.downloadRequests == [operationURL.standardizedFileURL])
         #expect(retryingLocal.decodedOperationCountForTesting == 0)
+    }
+
+    @Test func incrementalRegisterPropagatesLookupFailureWhenDownloadIsRejected() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("VoiceInkRejectedDownload-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let localSuite = "VoiceInkTests.RejectedDownload.Local.\(UUID().uuidString)"
+        let remoteSuite = "VoiceInkTests.RejectedDownload.Remote.\(UUID().uuidString)"
+        let localDefaults = try #require(UserDefaults(suiteName: localSuite))
+        let remoteDefaults = try #require(UserDefaults(suiteName: remoteSuite))
+        defer {
+            localDefaults.removePersistentDomain(forName: localSuite)
+            remoteDefaults.removePersistentDomain(forName: remoteSuite)
+        }
+
+        let remote = ICloudDriveSyncCore(defaults: remoteDefaults, iCloudDriveRootURL: root)
+        let envelope = try remote.append(VoiceInkSyncMutationBatch(mutations: [
+            VoiceInkSyncMutation(key: "history/remote", value: Data("value".utf8))
+        ]), domain: .usage)
+        let operationURL = try #require(remote.operationURL(for: envelope))
+        let probe = FailingICloudOperationProbe(failingURL: operationURL)
+        let local = ICloudDriveSyncCore(
+            defaults: localDefaults,
+            fileManager: RejectingDownloadFileManager(),
+            iCloudDriveRootURL: root,
+            resourceStateProvider: probe.resourceState
+        )
+
+        var capturedError: Error?
+        do {
+            _ = try local.readIncrementally(in: .usage, fullScan: true)
+        } catch {
+            capturedError = error
+        }
+        let cocoaError = try #require(capturedError as? CocoaError)
+        #expect(cocoaError.code == .fileReadUnknown)
+        #expect(!ICloudSyncRetryPolicy.isPendingICloudDownload(cocoaError))
     }
 
     @Test func syncEnvelopeCarriesDeviceNameAndDecodesLegacyOperations() throws {

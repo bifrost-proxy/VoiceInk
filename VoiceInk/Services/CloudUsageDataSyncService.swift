@@ -785,6 +785,7 @@ final class CloudUsageDataSyncService: ObservableObject {
         }
         persistAudioVerificationCacheIfNeeded()
         let referencedAudioPaths = try Self.referencedAudioPaths(in: modelContext)
+        syncCore.acknowledgeAffectedKeys(loaded.affectedKeys, in: .usage)
         return SyncOutcome(
             processedRecordIDs: pendingRecords,
             processedDeletionIDs: pendingDeletions,
