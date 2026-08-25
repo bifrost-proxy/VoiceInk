@@ -47,8 +47,7 @@ struct ScopedVocabularyTests {
                 applicationName: "Browser",
                 domain: "https://docs.example.com/project"
             ),
-            model: restrictedModel,
-            isRealtimeEnabled: true
+            model: restrictedModel
         )
 
         #expect(resolved.terms.count == 50)
@@ -112,15 +111,14 @@ struct ScopedVocabularyTests {
                 applicationName: "Editor",
                 domain: nil
             ),
-            model: unsupportedModel,
-            isRealtimeEnabled: false
+            model: unsupportedModel
         )
         #expect(resolved.terms.isEmpty)
         #expect(resolved.applicableTerms == ["Local", "Global"])
         #expect(resolved.omittedCount == 2)
     }
 
-    @Test func deepgramBatchDoesNotClaimToUseStreamingOnlyVocabulary() throws {
+    @Test func deepgramBatchUsesTheSameResolvedVocabularyAsStreaming() throws {
         let container = try makeContainer()
         let context = container.mainContext
         context.insert(VocabularyWord(word: "Global"))
@@ -140,18 +138,14 @@ struct ScopedVocabularyTests {
                 applicationName: "Editor",
                 domain: nil
             ),
-            model: restrictedModel,
-            isRealtimeEnabled: false
+            model: restrictedModel
         )
 
-        #expect(resolved.terms.isEmpty)
+        #expect(resolved.terms == ["Local", "Global"])
         #expect(resolved.applicableTerms == ["Local", "Global"])
-        #expect(resolved.omittedCount == 2)
+        #expect(resolved.omittedCount == 0)
         #expect(
-            !TranscriptionVocabularyCapability.supportsVocabulary(
-                for: restrictedModel,
-                isRealtimeEnabled: false
-            )
+            TranscriptionVocabularyCapability.supportsVocabulary(for: restrictedModel)
         )
     }
 
@@ -169,18 +163,7 @@ struct ScopedVocabularyTests {
                 isMultilingual: true,
                 supportedLanguages: [:]
             )
-            #expect(
-                !TranscriptionVocabularyCapability.supportsVocabulary(
-                    for: model,
-                    isRealtimeEnabled: true
-                )
-            )
-            #expect(
-                !TranscriptionVocabularyCapability.supportsVocabulary(
-                    for: model,
-                    isRealtimeEnabled: false
-                )
-            )
+            #expect(!TranscriptionVocabularyCapability.supportsVocabulary(for: model))
         }
     }
 

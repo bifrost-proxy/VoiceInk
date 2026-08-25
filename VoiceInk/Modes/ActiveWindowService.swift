@@ -103,6 +103,10 @@ class ActiveWindowService: ObservableObject {
             } catch {
                 self.logger.error(
                     "❌ Failed to get URL from \(browserType.displayName, privacy: .public): \(error, privacy: .public)")
+                await MainActor.run {
+                    guard shouldApply() else { return }
+                    self.showBrowserURLFailure(error, browser: browserType)
+                }
                 return usageContext
             }
         }
@@ -125,6 +129,55 @@ class ActiveWindowService: ObservableObject {
             initialUsageContext: context,
             completion: Task { context },
             waitsForBrowserURL: false
+        )
+    }
+
+    @MainActor
+    private func showBrowserURLFailure(_ error: Error, browser: BrowserType) {
+        let message: String
+        let shouldOfferSettings: Bool
+
+        switch error as? BrowserURLError {
+        case .some(.noActiveTab), .some(.noActiveWindow):
+            message = String(
+                localized: "Open a tab in \(browser.displayName) and try again. Website vocabulary was not applied."
+            )
+            shouldOfferSettings = false
+        case .some(.browserNotRunning):
+            message = String(
+                localized: "Keep \(browser.displayName) open and try again. Website vocabulary was not applied."
+            )
+            shouldOfferSettings = false
+        case .some(.scriptNotFound):
+            message = String(
+                localized: "Website detection is unavailable. Restart VoiceInk and try again."
+            )
+            shouldOfferSettings = false
+        case .some(.executionFailed), .some(.executionTimedOut), .none:
+            message = String(
+                localized:
+                    "Could not read the current website from \(browser.displayName). Allow VoiceInk in System Settings > Privacy & Security > Automation, then try again."
+            )
+            shouldOfferSettings = true
+        }
+
+        let actionButton: (label: String, action: () -> Void)? = if shouldOfferSettings,
+            let settingsURL = URL(
+                string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation"
+            )
+        {
+            (
+                String(localized: "Open System Settings"),
+                { NSWorkspace.shared.open(settingsURL) }
+            )
+        } else {
+            nil
+        }
+        NotificationManager.shared.showNotification(
+            title: message,
+            type: .warning,
+            duration: 8,
+            actionButton: actionButton
         )
     }
 }

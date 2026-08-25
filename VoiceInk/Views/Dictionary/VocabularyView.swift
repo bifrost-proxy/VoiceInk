@@ -267,6 +267,7 @@ struct VocabularyView: View {
     @ViewBuilder
     private func vocabularyPreview(for scope: VocabularyScopeSelection) -> some View {
         if let configuration = ModeRuntimeResolver.transcriptionConfiguration(
+            mode: previewMode(for: scope),
             transcriptionModelManager: transcriptionModelManager
         ) {
             let usageContext = VocabularyUsageContext(
@@ -277,16 +278,12 @@ struct VocabularyView: View {
             let resolved = TranscriptionVocabularyContext.resolve(
                 from: modelContext,
                 usageContext: usageContext,
-                model: configuration.model,
-                isRealtimeEnabled: configuration.isRealtimeEnabled
+                model: configuration.model
             )
             HStack(spacing: 6) {
                 Image(systemName: resolved.omittedCount > 0 ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
                     .foregroundStyle(resolved.omittedCount > 0 ? AppTheme.Status.warning : AppTheme.Status.success)
-                if !TranscriptionVocabularyCapability.supportsVocabulary(
-                    for: configuration.model,
-                    isRealtimeEnabled: configuration.isRealtimeEnabled
-                ) {
+                if !TranscriptionVocabularyCapability.supportsVocabulary(for: configuration.model) {
                     Text("\(configuration.model.displayName) does not accept vocabulary directly")
                 } else if let maximumCount = resolved.maximumCount {
                     Text("\(configuration.model.displayName): \(resolved.terms.count)/\(maximumCount) words used")
@@ -300,6 +297,19 @@ struct VocabularyView: View {
             .font(.caption)
             .foregroundStyle(.secondary)
         }
+    }
+
+    private func previewMode(for scope: VocabularyScopeSelection) -> ModeConfig? {
+        let matchedMode: ModeConfig?
+        switch scope.kind {
+        case .application:
+            matchedMode = ModeManager.shared.getConfigurationForApp(scope.identifier)
+        case .domain:
+            matchedMode = ModeManager.shared.getConfigurationForURL(scope.identifier)
+        }
+        return matchedMode
+            ?? ModeManager.shared.getDefaultConfiguration()
+            ?? ModeManager.shared.currentEffectiveConfiguration
     }
 
     private func addWords(scope: VocabularyScopeSelection?) {
