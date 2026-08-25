@@ -43,7 +43,12 @@ class AudioTranscriptionService: ObservableObject {
         self.serviceRegistry = serviceRegistry
     }
 
-    func retranscribeAudio(from url: URL, using model: any TranscriptionModel, mode: ModeConfig? = nil) async throws
+    func retranscribeAudio(
+        from url: URL,
+        using model: any TranscriptionModel,
+        mode: ModeConfig? = nil,
+        vocabularyUsageContext: VocabularyUsageContext = .none
+    ) async throws
         -> AudioRetranscriptionResult
     {
         guard FileManager.default.fileExists(atPath: url.path) else {
@@ -61,9 +66,16 @@ class AudioTranscriptionService: ObservableObject {
                 for: model,
                 realtimeEnabled: mode?.isRealtimeTranscriptionEnabled
             )
+            let vocabulary = TranscriptionVocabularyContext.resolve(
+                from: modelContext,
+                usageContext: vocabularyUsageContext,
+                model: model,
+                isRealtimeEnabled: false
+            )
             let requestContext = TranscriptionRequestContext(
                 language: language,
-                prompt: model.provider == .whisper ? UserDefaults.standard.string(forKey: "TranscriptionPrompt") : nil
+                prompt: model.provider == .whisper ? UserDefaults.standard.string(forKey: "TranscriptionPrompt") : nil,
+                customVocabulary: vocabulary.terms
             )
             let modeName = (mode?.isEnabled == true) ? mode?.name : nil
             let modeEmoji = (mode?.isEnabled == true) ? mode?.icon.value : nil
@@ -125,7 +137,8 @@ class AudioTranscriptionService: ObservableObject {
                 do {
                     let (enhancedText, enhancementDuration, promptName) = try await enhancementService.enhance(
                         text,
-                        configuration: enhancementConfiguration
+                        configuration: enhancementConfiguration,
+                        customVocabularyTerms: vocabulary.applicableTerms
                     )
                     let newTranscription = Transcription(
                         text: originalText,
@@ -140,6 +153,7 @@ class AudioTranscriptionService: ObservableObject {
                         enhancementDuration: enhancementDuration,
                         aiRequestSystemMessage: enhancementService.lastSystemMessageSent,
                         aiRequestUserMessage: enhancementService.lastUserMessageSent,
+                        vocabularyUsageContext: vocabularyUsageContext,
                         modeName: modeName,
                         modeEmoji: modeEmoji
                     )
@@ -170,6 +184,7 @@ class AudioTranscriptionService: ObservableObject {
                         transcriptionModelName: model.displayName,
                         promptName: nil,
                         transcriptionDuration: transcriptionDuration,
+                        vocabularyUsageContext: vocabularyUsageContext,
                         modeName: modeName,
                         modeEmoji: modeEmoji
                     )
@@ -199,6 +214,7 @@ class AudioTranscriptionService: ObservableObject {
                     transcriptionModelName: model.displayName,
                     promptName: nil,
                     transcriptionDuration: transcriptionDuration,
+                    vocabularyUsageContext: vocabularyUsageContext,
                     modeName: modeName,
                     modeEmoji: modeEmoji
                 )

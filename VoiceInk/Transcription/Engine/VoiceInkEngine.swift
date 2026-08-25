@@ -1400,6 +1400,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
             transcriptionModelName: ModeRuntimeResolver.transcriptionConfiguration(
                 transcriptionModelManager: transcriptionModelManager
             )?.model.displayName,
+            vocabularyUsageContext: activeRecordingVocabularyUsageContext,
             modeName: modeMetadata.name,
             modeEmoji: modeMetadata.emoji,
             transcriptionStatus: transcriptionStatus

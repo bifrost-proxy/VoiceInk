@@ -119,16 +119,21 @@ class BrowserURLService {
             try await waitUntilExit(task, browser: browser)
 
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            guard task.terminationStatus == 0 else {
+                logger.error(
+                    "❌ AppleScript failed for \(browser.displayName, privacy: .public) status=\(task.terminationStatus, privacy: .public)"
+                )
+                throw BrowserURLError.executionFailed
+            }
             if let output = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) {
                 if output.isEmpty {
                     logger.error("❌ Empty output from AppleScript for \(browser.displayName, privacy: .public)")
                     throw BrowserURLError.noActiveTab
                 }
 
-                // Check if output contains error messages
-                if output.lowercased().contains("error") {
+                guard Self.isValidBrowserURL(output) else {
                     logger.error(
-                        "❌ AppleScript error for \(browser.displayName, privacy: .public); outputLength=\(output.count, privacy: .public)")
+                        "❌ AppleScript returned an invalid URL for \(browser.displayName, privacy: .public); outputLength=\(output.count, privacy: .public)")
                     throw BrowserURLError.executionFailed
                 }
 
@@ -153,6 +158,14 @@ class BrowserURLService {
             )
             throw BrowserURLError.executionFailed
         }
+    }
+
+    static func isValidBrowserURL(_ value: String) -> Bool {
+        guard let components = URLComponents(string: value),
+            let scheme = components.scheme,
+            !scheme.isEmpty
+        else { return false }
+        return components.host?.isEmpty == false || scheme.caseInsensitiveCompare("file") == .orderedSame
     }
 
     private func waitUntilExit(_ task: Process, browser: BrowserType) async throws {

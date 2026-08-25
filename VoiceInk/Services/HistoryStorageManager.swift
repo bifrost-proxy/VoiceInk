@@ -318,6 +318,7 @@ final class HistoryStorageManager: ObservableObject {
             transcription.transcriptionModelName, transcription.aiEnhancementModelName,
             transcription.promptName, transcription.aiRequestSystemMessage, transcription.aiRequestUserMessage,
             transcription.modeName, transcription.modeEmoji,
+            transcription.vocabularyBundleIdentifier, transcription.vocabularyDomain,
             transcription.transcriptionStatus,
         ]
         let textBytes = strings.compactMap { $0 }.reduce(0) { $0 + $1.utf8.count }

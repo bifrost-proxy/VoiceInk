@@ -276,6 +276,26 @@ struct ScopedVocabularyTests {
         #expect(!ModeManager.bundleIdentifiersMatch("com.apple.Notes", "com.apple.mail"))
     }
 
+    @Test func transcriptionPreservesVocabularyUsageContextForRetry() {
+        let transcription = Transcription(
+            text: "VoiceInk",
+            duration: 1,
+            vocabularyUsageContext: VocabularyUsageContext(
+                bundleIdentifier: "com.microsoft.VSCode",
+                applicationName: "Visual Studio Code",
+                domain: "https://docs.example.com/error-handling"
+            )
+        )
+
+        #expect(transcription.vocabularyUsageContext.bundleIdentifier == "com.microsoft.vscode")
+        #expect(transcription.vocabularyUsageContext.domain == "docs.example.com")
+    }
+
+    @Test func browserURLValidationAcceptsErrorWordsButRejectsErrorMessages() {
+        #expect(BrowserURLService.isValidBrowserURL("https://errors.example.com/error-handling"))
+        #expect(!BrowserURLService.isValidBrowserURL("execution error: browser denied access"))
+    }
+
     @Test func requestScopingPreservesResolvedVocabularyForStreamingFallback() {
         let context = TranscriptionRequestContext(
             language: "en",

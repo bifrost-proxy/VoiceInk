@@ -961,6 +961,8 @@ struct VoiceInkTests {
             enhancementDuration: 0.5,
             modeName: "中文",
             modeEmoji: "📝",
+            vocabularyBundleIdentifier: "com.example.editor",
+            vocabularyDomain: "docs.example.com",
             transcriptionStatus: "completed",
             performanceData: performanceData
         )
@@ -985,6 +987,27 @@ struct VoiceInkTests {
 
         #expect(decoded == snapshot)
         #expect(decodedPerformance == performance)
+
+        var legacyVocabularyPropertyList = try #require(
+            PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
+        )
+        var legacyVocabularyTranscription = try #require(
+            legacyVocabularyPropertyList["transcription"] as? [String: Any]
+        )
+        legacyVocabularyTranscription.removeValue(forKey: "vocabularyBundleIdentifier")
+        legacyVocabularyTranscription.removeValue(forKey: "vocabularyDomain")
+        legacyVocabularyPropertyList["transcription"] = legacyVocabularyTranscription
+        let legacyVocabularyData = try PropertyListSerialization.data(
+            fromPropertyList: legacyVocabularyPropertyList,
+            format: .binary,
+            options: 0
+        )
+        let decodedLegacyVocabularySnapshot = try PropertyListDecoder().decode(
+            CloudUsageDataSyncService.Snapshot.self,
+            from: legacyVocabularyData
+        )
+        #expect(decodedLegacyVocabularySnapshot.transcription.vocabularyBundleIdentifier == nil)
+        #expect(decodedLegacyVocabularySnapshot.transcription.vocabularyDomain == nil)
 
         var snapshotWithRemovedEditTrackingFields = try #require(
             PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
@@ -1899,7 +1922,8 @@ struct VoiceInkTests {
             timestamp: Date(timeIntervalSince1970: 1_700_000_000), duration: 2,
             transcriptionModelName: "test-model", aiEnhancementModelName: nil, promptName: nil,
             transcriptionDuration: 1, enhancementDuration: nil, modeName: "Dictation",
-            modeEmoji: nil, transcriptionStatus: "completed", performanceData: nil)
+            modeEmoji: nil, vocabularyBundleIdentifier: nil, vocabularyDomain: nil,
+            transcriptionStatus: "completed", performanceData: nil)
         let metric = CloudUsageDataSyncService.MetricPayload(
             id: metricID, transcriptionId: recordID, timestamp: Date(timeIntervalSince1970: 1_700_000_001),
             source: "recorder", wordCount: 4, audioDuration: 2,
@@ -1999,7 +2023,8 @@ struct VoiceInkTests {
             timestamp: Date(timeIntervalSince1970: 1_700_000_000), duration: 3,
             transcriptionModelName: "legacy-model", aiEnhancementModelName: nil, promptName: nil,
             transcriptionDuration: 1.5, enhancementDuration: nil, modeName: "Dictation",
-            modeEmoji: nil, transcriptionStatus: "completed", performanceData: nil)
+            modeEmoji: nil, vocabularyBundleIdentifier: nil, vocabularyDomain: nil,
+            transcriptionStatus: "completed", performanceData: nil)
         let metric = CloudUsageDataSyncService.MetricPayload(
             id: metricID, transcriptionId: recordID, timestamp: Date(timeIntervalSince1970: 1_700_000_001),
             source: "recorder", wordCount: 2, audioDuration: 3, transcriptionModelName: "legacy-model",
@@ -2073,6 +2098,7 @@ struct VoiceInkTests {
                 timestamp: timestamp, duration: 1, transcriptionModelName: "legacy-model",
                 aiEnhancementModelName: nil, promptName: nil, transcriptionDuration: 0.5,
                 enhancementDuration: nil, modeName: "Dictation", modeEmoji: nil,
+                vocabularyBundleIdentifier: nil, vocabularyDomain: nil,
                 transcriptionStatus: "completed", performanceData: nil)
             let metric = CloudUsageDataSyncService.MetricPayload(
                 id: metricID, transcriptionId: recordID, timestamp: timestamp, source: "recorder",
