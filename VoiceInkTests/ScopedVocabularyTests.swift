@@ -384,6 +384,17 @@ struct ScopedVocabularyTests {
         #expect(state.selectedScope == nil)
     }
 
+    @Test func quickAddQueuesSubmissionUntilScopeResolutionCompletes() {
+        var pending = DictionaryQuickAddPendingSubmissionState()
+
+        pending.queue("VoiceInk")
+
+        #expect(pending.take(isReady: false) == nil)
+        #expect(pending.input == "VoiceInk")
+        #expect(pending.take(isReady: true) == "VoiceInk")
+        #expect(pending.input == nil)
+    }
+
     @Test func requestScopingPreservesResolvedVocabularyForStreamingFallback() {
         let context = TranscriptionRequestContext(
             language: "en",

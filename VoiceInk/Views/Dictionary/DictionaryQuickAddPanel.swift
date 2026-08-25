@@ -158,6 +158,24 @@ struct DictionaryQuickAddScopeState: Equatable {
     }
 }
 
+struct DictionaryQuickAddPendingSubmissionState: Equatable {
+    private(set) var input: String?
+
+    mutating func queue(_ input: String) {
+        self.input = input
+    }
+
+    mutating func take(isReady: Bool) -> String? {
+        guard isReady, let input else { return nil }
+        self.input = nil
+        return input
+    }
+
+    mutating func cancel() {
+        input = nil
+    }
+}
+
 // MARK: - View
 
 struct DictionaryQuickAddView: View {
@@ -202,6 +220,7 @@ struct DictionaryQuickAddView: View {
     @State private var replacementInput = ""
     @State private var errorMessage: String?
     @State private var scopeState: DictionaryQuickAddScopeState
+    @State private var pendingSubmission = DictionaryQuickAddPendingSubmissionState()
     @State private var websiteLookupFailure: BrowserURLFailureGuidance?
     @State private var isResolvingWebsite = false
     @FocusState private var focusedField: Field?
@@ -267,6 +286,7 @@ struct DictionaryQuickAddView: View {
             wordInput = ""
             originalInput = ""
             replacementInput = ""
+            pendingSubmission.cancel()
             errorMessage = nil
             DispatchQueue.main.async {
                 focusedField = newMode == .vocabulary ? .word : .original
@@ -341,21 +361,21 @@ struct DictionaryQuickAddView: View {
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(.secondary)
                 Menu {
-                    Button("Global") { scopeState.select(nil) }
+                    Button("Global") { selectVocabularyScope(nil) }
                     if let appScope = currentApplicationScope {
                         Button("Current App · \(appScope.displayName)") {
-                            scopeState.select(appScope)
+                            selectVocabularyScope(appScope)
                         }
                     }
                     if let domainScope = currentDomainScope {
                         Button("Current Website · \(domainScope.displayName)") {
-                            scopeState.select(domainScope)
+                            selectVocabularyScope(domainScope)
                         }
                     }
                     if !existingScopes.isEmpty {
                         Divider()
                         ForEach(existingScopes) { scope in
-                            Button(scope.displayName) { scopeState.select(scope) }
+                            Button(scope.displayName) { selectVocabularyScope(scope) }
                         }
                     }
                 } label: {
@@ -461,7 +481,14 @@ struct DictionaryQuickAddView: View {
     private func submitVocabulary() {
         let input = wordInput.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !input.isEmpty else { return }
-        guard !isResolvingWebsite || scopeState.hasUserSelection else { return }
+        guard !isResolvingWebsite || scopeState.hasUserSelection else {
+            pendingSubmission.queue(input)
+            return
+        }
+        persistVocabulary(input)
+    }
+
+    private func persistVocabulary(_ input: String) {
         let scopeKind = scopeState.selectedScope?.kind.rawValue ?? "global"
         Self.logger.notice("Quick add vocabulary submitting scope=\(scopeKind, privacy: .public)")
         let error: String?
@@ -486,6 +513,17 @@ struct DictionaryQuickAddView: View {
         onDismiss()
     }
 
+    private func selectVocabularyScope(_ scope: VocabularyScopeSelection?) {
+        scopeState.select(scope)
+        submitPendingVocabularyIfPossible()
+    }
+
+    private func submitPendingVocabularyIfPossible() {
+        let isReady = !isResolvingWebsite || scopeState.hasUserSelection
+        guard let input = pendingSubmission.take(isReady: isReady) else { return }
+        persistVocabulary(input)
+    }
+
     private func captureCurrentWebsite() async {
         guard let bundleIdentifier = initialUsageContext.bundleIdentifier,
             let browser = BrowserType.allCases.first(where: {
@@ -495,7 +533,6 @@ struct DictionaryQuickAddView: View {
 
         isResolvingWebsite = true
         websiteLookupFailure = nil
-        defer { isResolvingWebsite = false }
 
         do {
             let url = try await BrowserURLService.shared.getCurrentURL(from: browser)
@@ -504,12 +541,15 @@ struct DictionaryQuickAddView: View {
             let scopeKind = domain == nil ? "application" : "domain"
             Self.logger.notice("Quick add automatic scope resolved scope=\(scopeKind, privacy: .public)")
         } catch is CancellationError {
+            isResolvingWebsite = false
             return
         } catch {
             scopeState.applyDetectedDomain(nil)
             Self.logger.notice("Quick add automatic scope fell back scope=application")
             websiteLookupFailure = BrowserURLFailureGuidance.make(error: error, browser: browser)
         }
+        isResolvingWebsite = false
+        submitPendingVocabularyIfPossible()
     }
 
     private func resizeForCurrentState(mode selectedMode: Mode? = nil) {
