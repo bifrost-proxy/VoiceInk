@@ -14,13 +14,14 @@ struct HistoryStorageSnapshot: Equatable, Sendable {
 }
 
 struct HistoryStorageCleanupResult: Equatable, Sendable {
-    var deletedRecordCount = 0
+    var reclaimedAudioCount = 0
     var deletedAudioBytes: Int64 = 0
 }
 
-/// Calculates history storage on demand and enforces local-only retention
-/// limits. Automatic limit cleanup intentionally does not create cloud
-/// tombstones; a small Mac must never delete another device's archive.
+/// Calculates history storage on demand and enforces rolling source-audio
+/// limits. Usage records and metrics are retained indefinitely; a reclaimed
+/// audio ID is synchronized so every device and iCloud converge on the same
+/// metadata-only record.
 @MainActor
 final class HistoryStorageManager: ObservableObject {
     static let shared = HistoryStorageManager()
@@ -102,7 +103,10 @@ final class HistoryStorageManager: ObservableObject {
     }
 
     @discardableResult
-    func enforceLimits(modelContext: ModelContext) async -> HistoryStorageCleanupResult {
+    func enforceLimits(
+        modelContext: ModelContext,
+        usageSync: CloudUsageDataSyncService = .shared
+    ) async -> HistoryStorageCleanupResult {
         guard !isEnforcingLimits else { return HistoryStorageCleanupResult() }
         isEnforcingLimits = true
         defer { isEnforcingLimits = false }
@@ -117,24 +121,28 @@ final class HistoryStorageManager: ObservableObject {
                 sortBy: [SortDescriptor(\Transcription.timestamp, order: .forward)]
             )
             let records = try modelContext.fetch(descriptor)
-            var candidates = records.dropLast().map { ($0, Self.managedSize(for: $0)) }
-            var remainingRecordCount = records.count
-            var totalManagedBytes = records.map(Self.managedSize).reduce(Int64(0), +)
+            let recordsWithAudio = records.filter {
+                guard let url = Self.audioURL(for: $0) else { return false }
+                return FileManager.default.fileExists(atPath: url.path)
+            }
+            var candidates = recordsWithAudio.dropLast().map { ($0, Self.audioSize(for: $0)) }
+            var remainingAudioCount = recordsWithAudio.count
+            var totalAudioBytes = recordsWithAudio.map(Self.audioSize).reduce(Int64(0), +)
             var result = HistoryStorageCleanupResult()
-            var locallyRemovedRecordIDs = Set<UUID>()
 
-            // Keep the newest case even when one recording alone exceeds the
+            // Keep the newest audio even when one recording alone exceeds the
             // configured capacity. The UI reports the remaining overage.
             while !candidates.isEmpty,
                 Self.shouldDelete(
-                    recordCount: remainingRecordCount,
-                    managedBytes: totalManagedBytes,
-                    maximumRecordCount: maximumCount,
+                    audioCount: remainingAudioCount,
+                    audioBytes: totalAudioBytes,
+                    maximumAudioCount: maximumCount,
                     maximumBytes: maximumBytes
                 )
             {
-                let (oldest, oldestSize) = candidates.removeFirst()
-                let removedAudioBytes = Self.audioSize(for: oldest)
+                let (oldest, removedAudioBytes) = candidates.removeFirst()
+                let transcriptionID = oldest.id
+                usageSync.prepareAudioReclamation([transcriptionID])
 
                 if let audioURL = Self.audioURL(for: oldest), FileManager.default.fileExists(atPath: audioURL.path) {
                     do {
@@ -148,32 +156,18 @@ final class HistoryStorageManager: ObservableObject {
                         continue
                     }
                 }
-
-                let transcriptionID = oldest.id
-                let metricDescriptor = FetchDescriptor<SessionMetric>(
-                    predicate: #Predicate<SessionMetric> { metric in
-                        metric.transcriptionId == transcriptionID
-                    }
-                )
-                for metric in try modelContext.fetch(metricDescriptor) {
-                    modelContext.delete(metric)
-                }
-                modelContext.delete(oldest)
-                locallyRemovedRecordIDs.insert(transcriptionID)
-                remainingRecordCount -= 1
-                totalManagedBytes -= oldestSize
-                result.deletedRecordCount += 1
+                oldest.audioFileURL = nil
+                remainingAudioCount -= 1
+                totalAudioBytes -= removedAudioBytes
+                result.reclaimedAudioCount += 1
                 result.deletedAudioBytes += removedAudioBytes
             }
 
-            if result.deletedRecordCount > 0 {
+            if result.reclaimedAudioCount > 0 {
                 try modelContext.save()
-                CloudUsageDataSyncService.shared.recordsWereRemovedLocally(locallyRemovedRecordIDs)
-                DashboardStatsCache.shared.markStale()
                 NotificationCenter.default.post(name: .transcriptionDeleted, object: nil)
-                NotificationCenter.default.post(name: .sessionMetricsDidChange, object: nil)
                 logger.notice(
-                    "Applied history limits deletedRecords=\(result.deletedRecordCount, privacy: .public) deletedAudioBytes=\(result.deletedAudioBytes, privacy: .public)"
+                    "Applied history limits reclaimedAudio=\(result.reclaimedAudioCount, privacy: .public) deletedAudioBytes=\(result.deletedAudioBytes, privacy: .public)"
                 )
             }
 
@@ -187,13 +181,13 @@ final class HistoryStorageManager: ObservableObject {
     }
 
     nonisolated static func shouldDelete(
-        recordCount: Int,
-        managedBytes: Int64,
-        maximumRecordCount: Int,
+        audioCount: Int,
+        audioBytes: Int64,
+        maximumAudioCount: Int,
         maximumBytes: Int64
     ) -> Bool {
-        (maximumRecordCount > 0 && recordCount > maximumRecordCount)
-            || (maximumBytes > 0 && managedBytes > maximumBytes)
+        (maximumAudioCount > 0 && audioCount > maximumAudioCount)
+            || (maximumBytes > 0 && audioBytes > maximumBytes)
     }
 
     nonisolated static func isAutomaticCleanupDue(

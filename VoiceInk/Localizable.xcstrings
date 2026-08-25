@@ -20138,12 +20138,12 @@
         }
       }
     },
-    "Maximum Records" : {
+    "Maximum Saved Audio" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "最多记录数"
+            "value" : "最多保留音频数"
           }
         }
       }
@@ -20153,7 +20153,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "最大存储空间"
+            "value" : "音频存储上限"
           }
         }
       }
@@ -20308,12 +20308,12 @@
         }
       }
     },
-    "VoiceInk syncs configuration and dictionary entries as immutable files in iCloud Drive; concurrent device edits are preserved and reported above. Usage data sync is opt-in and includes transcription history and every persisted session metric. Source audio requires a separate opt-in and is verified by SHA-256. Explicit history deletion syncs to other devices, while automatic local cleanup never deletes their cloud archive. API keys, permissions, device selections, databases, and downloaded models always stay on this Mac." : {
+    "VoiceInk syncs configuration and dictionary entries as immutable files in iCloud Drive; concurrent device edits are preserved and reported above. Usage data sync is opt-in and includes transcription history and every persisted session metric. Source audio requires a separate opt-in and is verified by SHA-256. Rolling cleanup retains usage records but permanently reclaims their audio on every synced device and in iCloud after the configured limit is exceeded. Explicit history deletion syncs to other devices. API keys, permissions, device selections, databases, and downloaded models always stay on this Mac." : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "VoiceInk 通过 iCloud Drive 中的不可变文件同步配置和词典；多设备并发修改会被保留，并在上方显示冲突。使用数据同步需要手动开启，包括转录历史和所有已保存的会话指标。原始音频需要单独开启，并通过 SHA-256 校验。手动删除历史记录会同步到其他设备，而自动本地清理不会删除其他设备的云端归档。API 密钥、权限、设备选择、数据库和已下载模型始终只保留在本机。"
+            "value" : "VoiceInk 通过 iCloud Drive 中的不可变文件同步配置和词典；多设备并发修改会被保留，并在上方显示冲突。使用数据同步需要手动开启，包括转录历史和所有已保存的会话指标。原始音频需要单独开启，并通过 SHA-256 校验。超过配置上限后，滚动清理会永久回收各同步设备和 iCloud 中的音频，但保留使用记录。手动删除历史记录会同步到其他设备。API 密钥、权限、设备选择、数据库和已下载模型始终只保留在本机。"
           }
         }
       }
@@ -20328,12 +20328,12 @@
         }
       }
     },
-    "VoiceInk checks at most once per hour. When either limit is exceeded, it deletes the oldest local history and audio first. The newest record is always retained. Storage defaults to 500 MB." : {
+    "VoiceInk checks at most once per hour. When either limit is exceeded, it reclaims the oldest audio on every synced device and in iCloud while retaining usage records and statistics. The newest audio is always retained. Storage defaults to 500 MB." : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "VoiceInk 每小时最多检查一次。超过任一上限后，会优先删除最旧的本地历史记录和音频，并始终保留最新一条。存储上限默认为 500 MB。"
+            "value" : "VoiceInk 每小时最多检查一次。超过任一上限后，会优先回收各同步设备和 iCloud 中最旧的音频，同时保留使用记录和统计数据，并始终保留最新音频。存储上限默认为 500 MB。"
           }
         }
       }
