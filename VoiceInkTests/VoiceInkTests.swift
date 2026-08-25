@@ -863,25 +863,25 @@ struct VoiceInkTests {
     @Test func historyCapacityLimitsUseEitherThreshold() {
         #expect(
             HistoryStorageManager.shouldDelete(
-                recordCount: 10_000,
-                managedBytes: 100_000_000_000,
-                maximumRecordCount: 0,
+                audioCount: 10_000,
+                audioBytes: 100_000_000_000,
+                maximumAudioCount: 0,
                 maximumBytes: Int64(HistoryStorageSettings.defaultMegabytes) * 1_024 * 1_024
             )
         )
         #expect(
             HistoryStorageManager.shouldDelete(
-                recordCount: 501,
-                managedBytes: 100,
-                maximumRecordCount: 500,
+                audioCount: 501,
+                audioBytes: 100,
+                maximumAudioCount: 500,
                 maximumBytes: 0
             )
         )
         #expect(
             HistoryStorageManager.shouldDelete(
-                recordCount: 10,
-                managedBytes: 1_024,
-                maximumRecordCount: 500,
+                audioCount: 10,
+                audioBytes: 1_024,
+                maximumAudioCount: 500,
                 maximumBytes: 1_000
             )
         )
@@ -979,7 +979,7 @@ struct VoiceInkTests {
     }
 
     @MainActor
-    @Test func historyCapacityCleanupDeletesOldestRecordsFirst() async throws {
+    @Test func historyCapacityCleanupReclaimsOldestAudioAndRetainsRecords() async throws {
         let previousCount = UserDefaults.standard.integer(forKey: CleanupSettingsKeys.maximumHistoryRecordCount)
         let previousStorage = UserDefaults.standard.integer(forKey: CleanupSettingsKeys.maximumHistoryStorageMegabytes)
         defer {
@@ -994,20 +994,47 @@ struct VoiceInkTests {
         let container = try ModelContainer(for: schema, configurations: [configuration])
         let context = container.mainContext
         let timestamps = [100.0, 200.0, 300.0]
+        let audioRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("VoiceInkHistoryCapacity-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: audioRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: audioRoot) }
+        let suite = "VoiceInkTests.HistoryCapacity.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let usageSync = CloudUsageDataSyncService(
+            defaults: defaults,
+            iCloudDriveRootURL: audioRoot.appendingPathComponent("Cloud", isDirectory: true),
+            localRecordingsDirectoryURL: audioRoot
+        )
         for (index, timestamp) in timestamps.enumerated() {
             let record = Transcription(text: "record-\(index)", duration: 1)
             record.timestamp = Date(timeIntervalSince1970: timestamp)
+            let audioURL = audioRoot.appendingPathComponent("record-\(index).wav")
+            try Data(repeating: UInt8(index), count: 1_024).write(to: audioURL)
+            record.audioFileURL = audioURL.absoluteString
             context.insert(record)
         }
+        let duplicateReference = Transcription(text: "duplicate-reference", duration: 1)
+        duplicateReference.timestamp = Date(timeIntervalSince1970: 150)
+        duplicateReference.audioFileURL = audioRoot
+            .appendingPathComponent("record-0.wav").absoluteString
+        context.insert(duplicateReference)
         try context.save()
 
-        let result = await HistoryStorageManager.shared.enforceLimits(modelContext: context)
+        let result = await HistoryStorageManager.shared.enforceLimits(
+            modelContext: context,
+            usageSync: usageSync,
+            recordingsDirectoryURL: audioRoot
+        )
         let remaining = try context.fetch(
             FetchDescriptor<Transcription>(sortBy: [SortDescriptor(\Transcription.timestamp)])
         )
 
-        #expect(result.deletedRecordCount == 1)
-        #expect(remaining.map(\.text) == ["record-1", "record-2"])
+        #expect(result.reclaimedAudioCount == 1)
+        #expect(remaining.map(\.text) == [
+            "record-0", "duplicate-reference", "record-1", "record-2",
+        ])
+        #expect(remaining.map { $0.audioFileURL != nil } == [false, false, true, true])
     }
 
 
@@ -1431,7 +1458,7 @@ struct VoiceInkTests {
     }
 
     @MainActor
-    @Test func cloudUsageV3LocalCleanupCanBeRestoredWithoutCloudWrites() async throws {
+    @Test func cloudUsageV3LocalCleanupRestoresMetadataAfterPublishingAudioReclamation() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("VoiceInkUsageLocalCleanup-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -1474,14 +1501,14 @@ struct VoiceInkTests {
         try await waitForUsageSync(local, after: suppressedStart)
         #expect(try localContainer.mainContext.fetch(FetchDescriptor<Transcription>()).isEmpty)
         #expect(local.locallySuppressedRecordCount == 1)
-        #expect(try syncOperationFiles(root: root, domain: .usage).count == operationCount)
+        #expect(try syncOperationFiles(root: root, domain: .usage).count == operationCount + 1)
 
         let restoreStart = try #require(local.lastSyncedAt)
         local.restoreLocallySuppressedRecords()
         try await waitForUsageSync(local, after: restoreStart)
         #expect(try localContainer.mainContext.fetch(FetchDescriptor<Transcription>()).first?.text == "restore me")
         #expect(local.locallySuppressedRecordCount == 0)
-        #expect(try syncOperationFiles(root: root, domain: .usage).count == operationCount)
+        #expect(try syncOperationFiles(root: root, domain: .usage).count == operationCount + 1)
         source.setEnabled(false)
         local.setEnabled(false)
     }
@@ -1503,6 +1530,210 @@ struct VoiceInkTests {
 
         service.restoreLocallySuppressedRecords()
         #expect(service.locallySuppressedRecordCount == 0)
+    }
+
+    @MainActor
+    @Test func rollingAudioReclamationConvergesAcrossDevicesAndProtectsSharedBlobs() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("VoiceInkAudioReclamation-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let suiteA = "VoiceInkTests.AudioReclamation.A.\(UUID().uuidString)"
+        let suiteB = "VoiceInkTests.AudioReclamation.B.\(UUID().uuidString)"
+        let defaultsA = try #require(UserDefaults(suiteName: suiteA))
+        let defaultsB = try #require(UserDefaults(suiteName: suiteB))
+        defer {
+            defaultsA.removePersistentDomain(forName: suiteA)
+            defaultsB.removePersistentDomain(forName: suiteB)
+        }
+        for defaults in [defaultsA, defaultsB] {
+            defaults.set(true, forKey: CloudSyncSettingsKeys.usageDataSyncEnabled)
+            defaults.set(true, forKey: CloudSyncSettingsKeys.usageAudioSyncEnabled)
+        }
+
+        let schema = Schema([Transcription.self, SessionMetric.self])
+        let containerA = try ModelContainer(
+            for: schema, configurations: [ModelConfiguration(isStoredInMemoryOnly: true)])
+        let containerB = try ModelContainer(
+            for: schema, configurations: [ModelConfiguration(isStoredInMemoryOnly: true)])
+        let audioData = Data(repeating: 0x71, count: 8_192)
+        let digest = VoiceInkSyncEnvelope.sha256(audioData)
+        var records = [Transcription]()
+        for index in 0..<2 {
+            let audioURL = root.appendingPathComponent("source-\(index).wav")
+            try audioData.write(to: audioURL)
+            let record = Transcription(text: "retained-\(index)", duration: 2)
+            record.audioFileURL = audioURL.absoluteString
+            record.timestamp = Date(timeIntervalSince1970: 1_700_000_000 + Double(index))
+            containerA.mainContext.insert(record)
+            records.append(record)
+        }
+        try containerA.mainContext.save()
+
+        let recordingsA = root.appendingPathComponent("Recordings-A", isDirectory: true)
+        let recordingsB = root.appendingPathComponent("Recordings-B", isDirectory: true)
+        let serviceA = CloudUsageDataSyncService(
+            defaults: defaultsA, iCloudDriveRootURL: root, deviceName: "Reclaim A",
+            localRecordingsDirectoryURL: recordingsA)
+        let serviceB = CloudUsageDataSyncService(
+            defaults: defaultsB, iCloudDriveRootURL: root, deviceName: "Reclaim B",
+            localRecordingsDirectoryURL: recordingsB)
+        serviceA.start(modelContext: containerA.mainContext)
+        try await waitForUsageSync(serviceA)
+        serviceB.start(modelContext: containerB.mainContext)
+        try await waitForUsageSync(serviceB)
+
+        let cloudBlob = root
+            .appendingPathComponent("VoiceInk/Sync/v3/Blobs/Audio/\(digest.prefix(2))", isDirectory: true)
+            .appendingPathComponent("\(digest).wav")
+        #expect(FileManager.default.fileExists(atPath: cloudBlob.path))
+        let firstLocalCopy = try await serviceB.materializeAudioOnDemand(for: records[0].id)
+        let secondLocalCopy = try await serviceB.materializeAudioOnDemand(for: records[1].id)
+
+        let firstStart = try #require(serviceA.lastSyncedAt)
+        serviceA.prepareAudioReclamation([records[0].id])
+        serviceA.syncNow()
+        try await waitForUsageSync(serviceA, after: firstStart)
+        #expect(FileManager.default.fileExists(atPath: cloudBlob.path))
+        let firstPull = try #require(serviceB.lastSyncedAt)
+        serviceB.syncNow()
+        try await waitForUsageSync(serviceB, after: firstPull)
+        #expect(!FileManager.default.fileExists(atPath: firstLocalCopy.path))
+        #expect(FileManager.default.fileExists(atPath: secondLocalCopy.path))
+        #expect(try containerB.mainContext.fetch(FetchDescriptor<Transcription>()).count == 2)
+
+        let secondStart = try #require(serviceA.lastSyncedAt)
+        serviceA.prepareAudioReclamation([records[1].id])
+        serviceA.syncNow()
+        try await waitForUsageSync(serviceA, after: secondStart)
+        #expect(!FileManager.default.fileExists(atPath: cloudBlob.path))
+        let secondPull = try #require(serviceB.lastSyncedAt)
+        serviceB.syncNow()
+        try await waitForUsageSync(serviceB, after: secondPull)
+        #expect(!FileManager.default.fileExists(atPath: secondLocalCopy.path))
+        #expect(try containerB.mainContext.fetch(FetchDescriptor<Transcription>()).count == 2)
+        #expect(!serviceB.hasCloudAudio(for: records[0].id))
+        #expect(!serviceB.hasCloudAudio(for: records[1].id))
+        await #expect(throws: CocoaError.self) {
+            _ = try await serviceB.materializeAudioOnDemand(for: records[0].id)
+        }
+        // A stale client can recreate the content-addressed object, but the
+        // monotonic marker makes the next reconciliation remove it again.
+        try FileManager.default.createDirectory(
+            at: cloudBlob.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try audioData.write(to: cloudBlob)
+        let staleUploadSweep = try #require(serviceB.lastSyncedAt)
+        serviceB.syncNow()
+        try await waitForUsageSync(serviceB, after: staleUploadSweep)
+        #expect(!FileManager.default.fileExists(atPath: cloudBlob.path))
+        serviceA.setEnabled(false)
+        serviceB.setEnabled(false)
+    }
+
+    @MainActor
+    @Test func legacyLocallySuppressedRecordsRestoreAsMetadataOnly() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("VoiceInkSuppressedMigration-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sourceSuite = "VoiceInkTests.SuppressedMigration.Source.\(UUID().uuidString)"
+        let receivingSuite = "VoiceInkTests.SuppressedMigration.Receiving.\(UUID().uuidString)"
+        let sourceDefaults = try #require(UserDefaults(suiteName: sourceSuite))
+        let receivingDefaults = try #require(UserDefaults(suiteName: receivingSuite))
+        defer {
+            sourceDefaults.removePersistentDomain(forName: sourceSuite)
+            receivingDefaults.removePersistentDomain(forName: receivingSuite)
+        }
+        for defaults in [sourceDefaults, receivingDefaults] {
+            defaults.set(true, forKey: CloudSyncSettingsKeys.usageDataSyncEnabled)
+            defaults.set(true, forKey: CloudSyncSettingsKeys.usageAudioSyncEnabled)
+        }
+        let schema = Schema([Transcription.self, SessionMetric.self])
+        let sourceContainer = try ModelContainer(
+            for: schema, configurations: [ModelConfiguration(isStoredInMemoryOnly: true)])
+        let receivingContainer = try ModelContainer(
+            for: schema, configurations: [ModelConfiguration(isStoredInMemoryOnly: true)])
+        let record = Transcription(text: "restore retained usage", duration: 1)
+        let audioData = Data(repeating: 0x42, count: 4_096)
+        let audioURL = root.appendingPathComponent("migration-source.wav")
+        try audioData.write(to: audioURL)
+        record.audioFileURL = audioURL.absoluteString
+        sourceContainer.mainContext.insert(record)
+        try sourceContainer.mainContext.save()
+
+        let source = CloudUsageDataSyncService(
+            defaults: sourceDefaults, iCloudDriveRootURL: root, deviceName: "Migration Source",
+            localRecordingsDirectoryURL: root.appendingPathComponent("Migration-Source-Local"))
+        source.start(modelContext: sourceContainer.mainContext)
+        try await waitForUsageSync(source)
+
+        receivingDefaults.set(
+            [record.id.uuidString],
+            forKey: "CloudUsageDataSyncV3.locallySuppressedRecordIDs"
+        )
+        let receiving = CloudUsageDataSyncService(
+            defaults: receivingDefaults, iCloudDriveRootURL: root, deviceName: "Migration Receiver",
+            localRecordingsDirectoryURL: root.appendingPathComponent("Migration-Receiving-Local"))
+        #expect(receiving.locallySuppressedRecordCount == 0)
+        receiving.start(modelContext: receivingContainer.mainContext)
+        try await waitForUsageSync(receiving)
+
+        let restored = try #require(
+            receivingContainer.mainContext.fetch(FetchDescriptor<Transcription>()).first)
+        #expect(restored.id == record.id)
+        #expect(restored.text == "restore retained usage")
+        #expect(restored.audioFileURL == nil)
+        #expect(!receiving.hasCloudAudio(for: record.id))
+        let digest = VoiceInkSyncEnvelope.sha256(audioData)
+        let cloudBlob = root
+            .appendingPathComponent("VoiceInk/Sync/v3/Blobs/Audio/\(digest.prefix(2))", isDirectory: true)
+            .appendingPathComponent("\(digest).wav")
+        #expect(!FileManager.default.fileExists(atPath: cloudBlob.path))
+        let sourcePull = try #require(source.lastSyncedAt)
+        source.syncNow()
+        try await waitForUsageSync(source, after: sourcePull)
+        #expect(!FileManager.default.fileExists(atPath: audioURL.path))
+        #expect(try sourceContainer.mainContext.fetch(FetchDescriptor<Transcription>()).count == 1)
+        source.setEnabled(false)
+        receiving.setEnabled(false)
+    }
+
+    @MainActor
+    @Test func malformedAudioReclamationMarkerDoesNotCreateRetryLoop() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("VoiceInkMalformedReclamation-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sourceSuite = "VoiceInkTests.MalformedReclamation.Source.\(UUID().uuidString)"
+        let receivingSuite = "VoiceInkTests.MalformedReclamation.Receiving.\(UUID().uuidString)"
+        let sourceDefaults = try #require(UserDefaults(suiteName: sourceSuite))
+        let receivingDefaults = try #require(UserDefaults(suiteName: receivingSuite))
+        defer {
+            sourceDefaults.removePersistentDomain(forName: sourceSuite)
+            receivingDefaults.removePersistentDomain(forName: receivingSuite)
+        }
+        let recordID = UUID()
+        let sourceCore = ICloudDriveSyncCore(
+            defaults: sourceDefaults, iCloudDriveRootURL: root, deviceName: "Malformed Source")
+        _ = try sourceCore.append(VoiceInkSyncMutationBatch(mutations: [
+            VoiceInkSyncMutation(
+                key: "audio-reclamation/\(recordID.uuidString)",
+                value: Data([0x01, 0x02, 0x03])
+            )
+        ]), domain: .usage)
+
+        receivingDefaults.set(true, forKey: CloudSyncSettingsKeys.usageDataSyncEnabled)
+        let container = try ModelContainer(
+            for: Schema([Transcription.self, SessionMetric.self]),
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)])
+        let receiving = CloudUsageDataSyncService(
+            defaults: receivingDefaults, iCloudDriveRootURL: root,
+            localRecordingsDirectoryURL: root.appendingPathComponent("Receiving-Local"))
+        receiving.start(modelContext: container.mainContext)
+        try await waitForUsageSync(receiving)
+        let settledAt = try #require(receiving.lastSyncedAt)
+        try await Task.sleep(for: .seconds(6))
+        #expect(receiving.lastSyncedAt == settledAt)
+        receiving.setEnabled(false)
     }
 
     @MainActor
