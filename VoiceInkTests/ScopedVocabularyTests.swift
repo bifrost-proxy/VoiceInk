@@ -266,6 +266,16 @@ struct ScopedVocabularyTests {
         #expect(try context.fetch(FetchDescriptor<ScopedVocabularyWord>()).count == 2)
     }
 
+    @Test func applicationModeLookupTreatsBundleIdentifierCasingAsEquivalent() {
+        #expect(
+            ModeManager.bundleIdentifiersMatch(
+                "com.microsoft.VSCode",
+                "com.microsoft.vscode"
+            )
+        )
+        #expect(!ModeManager.bundleIdentifiersMatch("com.apple.Notes", "com.apple.mail"))
+    }
+
     @Test func requestScopingPreservesResolvedVocabularyForStreamingFallback() {
         let context = TranscriptionRequestContext(
             language: "en",
