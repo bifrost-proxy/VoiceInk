@@ -23,11 +23,17 @@ final class DictionaryQuickAddManager {
         guard !isVisible else { return }
 
         previousApp = NSWorkspace.shared.frontmostApplication
+        let usageContext = VocabularyUsageContext(
+            bundleIdentifier: previousApp?.bundleIdentifier,
+            applicationName: previousApp?.localizedName,
+            domain: nil
+        )
 
         let initialSize = NSSize(width: 500, height: DictionaryQuickAddView.Mode.vocabulary.panelHeight)
         let newPanel = DictionaryQuickAddPanel(manager: self, size: initialSize)
 
         let view = DictionaryQuickAddView(
+            initialUsageContext: usageContext,
             onDismiss: { [weak self] in self?.hide() },
             onResize: { [weak self] height in
                 self?.panel?.resize(to: NSSize(width: 500, height: height))
@@ -139,7 +145,7 @@ struct DictionaryQuickAddView: View {
 
         var panelHeight: CGFloat {
             switch self {
-            case .vocabulary: return 130
+            case .vocabulary: return 164
             case .replacement: return 164
             }
         }
@@ -147,6 +153,7 @@ struct DictionaryQuickAddView: View {
 
     @Environment(\.modelContext) private var modelContext
     @Query private var vocabularyWords: [VocabularyWord]
+    @Query private var scopedVocabularyWords: [ScopedVocabularyWord]
     @Query private var wordReplacements: [WordReplacement]
 
     @State private var mode: Mode = .vocabulary
@@ -154,10 +161,13 @@ struct DictionaryQuickAddView: View {
     @State private var originalInput = ""
     @State private var replacementInput = ""
     @State private var errorMessage: String?
+    @State private var selectedVocabularyScope: VocabularyScopeSelection?
+    @State private var capturedDomain: String?
     @FocusState private var focusedField: Field?
 
     enum Field: Hashable { case word, original, replacement }
 
+    let initialUsageContext: VocabularyUsageContext
     let onDismiss: () -> Void
     let onResize: (CGFloat) -> Void
 
@@ -189,6 +199,14 @@ struct DictionaryQuickAddView: View {
         }
         .onAppear {
             DispatchQueue.main.async { focusedField = .word }
+        }
+        .task {
+            guard let bundleIdentifier = initialUsageContext.bundleIdentifier,
+                let browser = BrowserType.allCases.first(where: { $0.bundleIdentifier.lowercased() == bundleIdentifier })
+            else { return }
+            if let url = try? await BrowserURLService.shared.getCurrentURL(from: browser) {
+                capturedDomain = VocabularyDomain.normalizedHost(from: url)
+            }
         }
         .onChange(of: mode) { _, newMode in
             wordInput = ""
@@ -249,15 +267,47 @@ struct DictionaryQuickAddView: View {
     }
 
     private var vocabularyInput: some View {
-        HStack(spacing: 11) {
-            Image(systemName: mode.icon)
-                .font(.system(size: 14))
-                .foregroundStyle(.secondary)
-            TextField("", text: $wordInput, prompt: Text("e.g. Prakash, VoiceInk").foregroundColor(.secondary))
-                .textFieldStyle(.roundedBorder)
-                .font(.system(size: 14))
-                .focused($focusedField, equals: .word)
-                .onSubmit { submitVocabulary() }
+        VStack(spacing: 8) {
+            HStack(spacing: 11) {
+                Image(systemName: mode.icon)
+                    .font(.system(size: 14))
+                    .foregroundStyle(.secondary)
+                TextField("", text: $wordInput, prompt: Text("e.g. Prakash, VoiceInk").foregroundColor(.secondary))
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 14))
+                    .focused($focusedField, equals: .word)
+                    .onSubmit { submitVocabulary() }
+            }
+
+            HStack(spacing: 8) {
+                Text("Scope")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+                Menu {
+                    Button("Global") { selectedVocabularyScope = nil }
+                    if let appScope = currentApplicationScope {
+                        Button("Current App · \(appScope.displayName)") {
+                            selectedVocabularyScope = appScope
+                        }
+                    }
+                    if let domainScope = currentDomainScope {
+                        Button("Current Website · \(domainScope.displayName)") {
+                            selectedVocabularyScope = domainScope
+                        }
+                    }
+                    if !existingScopes.isEmpty {
+                        Divider()
+                        ForEach(existingScopes) { scope in
+                            Button(scope.displayName) { selectedVocabularyScope = scope }
+                        }
+                    }
+                } label: {
+                    Text(selectedVocabularyScope?.displayName ?? String(localized: "Global"))
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .menuStyle(.borderlessButton)
+            }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 14)
@@ -325,16 +375,57 @@ struct DictionaryQuickAddView: View {
     private func submitVocabulary() {
         let input = wordInput.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !input.isEmpty else { return }
-        if let error = DictionaryService.addVocabularyWords(
-            input,
-            existing: Array(vocabularyWords),
-            context: modelContext
-        )
-        {
+        let error: String?
+        if let selectedVocabularyScope {
+            error = DictionaryService.addScopedVocabularyWords(
+                input,
+                scope: selectedVocabularyScope,
+                existing: Array(scopedVocabularyWords),
+                context: modelContext
+            )
+        } else {
+            error = DictionaryService.addVocabularyWords(
+                input,
+                existing: Array(vocabularyWords),
+                context: modelContext
+            )
+        }
+        if let error {
             errorMessage = error
             return
         }
         onDismiss()
+    }
+
+    private var currentApplicationScope: VocabularyScopeSelection? {
+        guard let bundleIdentifier = initialUsageContext.bundleIdentifier else { return nil }
+        return VocabularyScopeSelection(
+            kind: .application,
+            identifier: bundleIdentifier,
+            displayName: initialUsageContext.applicationName
+        )
+    }
+
+    private var currentDomainScope: VocabularyScopeSelection? {
+        guard let capturedDomain else { return nil }
+        return VocabularyScopeSelection(kind: .domain, identifier: capturedDomain, displayName: capturedDomain)
+    }
+
+    private var existingScopes: [VocabularyScopeSelection] {
+        var values: [String: VocabularyScopeSelection] = [:]
+        for item in scopedVocabularyWords {
+            guard let kind = item.scopeKind,
+                let scope = VocabularyScopeSelection(
+                    kind: kind,
+                    identifier: item.scopeIdentifier,
+                    displayName: item.scopeDisplayName
+                )
+            else { continue }
+            values[scope.id] = scope
+        }
+        return values.values.sorted {
+            $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
+        }
     }
 
     private func submitReplacement() {

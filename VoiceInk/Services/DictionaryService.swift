@@ -61,6 +61,68 @@ enum DictionaryService {
         }
     }
 
+    @discardableResult
+    static func addScopedVocabularyWords(
+        _ input: String,
+        scope: VocabularyScopeSelection,
+        existing: [ScopedVocabularyWord],
+        context: ModelContext
+    ) -> String? {
+        let parts =
+            input
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard !parts.isEmpty else { return nil }
+
+        var existingKeys = Set(
+            existing
+                .filter {
+                    $0.scopeKind == scope.kind
+                        && normalizedScopeIdentifier($0.scopeIdentifier, kind: scope.kind) == scope.identifier
+                }
+                .map { TranscriptionVocabularyContext.normalizedKey($0.word) }
+        )
+        var inserted: [ScopedVocabularyWord] = []
+        for word in parts {
+            let key = TranscriptionVocabularyContext.normalizedKey(word)
+            guard existingKeys.insert(key).inserted else {
+                if parts.count == 1 {
+                    return String(format: String(localized: "'%@' is already in this vocabulary"), word)
+                }
+                continue
+            }
+            let item = ScopedVocabularyWord(
+                word: word,
+                scopeKind: scope.kind,
+                scopeIdentifier: scope.identifier,
+                scopeDisplayName: scope.displayName
+            )
+            context.insert(item)
+            inserted.append(item)
+        }
+        guard !inserted.isEmpty else { return nil }
+
+        do {
+            try context.save()
+            NotificationCenter.default.post(name: .portableConfigurationDidChange, object: nil)
+            return nil
+        } catch {
+            inserted.forEach { context.delete($0) }
+            return String(format: String(localized: "Failed to add vocabulary: %@"), error.localizedDescription)
+        }
+    }
+
+    static func normalizedScopeIdentifier(_ identifier: String, kind: VocabularyScopeKind) -> String? {
+        switch kind {
+        case .application:
+            let value = identifier.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            return value.isEmpty ? nil : value
+        case .domain:
+            return VocabularyDomain.normalizedHost(from: identifier)
+        }
+    }
+
     // MARK: - Duplicate Cleanup
 
     @discardableResult
@@ -81,6 +143,25 @@ enum DictionaryService {
 
                 context.delete(vocabularyWord)
                 deletedVocabularyCount += 1
+            }
+        }
+
+        if let scopedVocabularyWords = try? context.fetch(FetchDescriptor<ScopedVocabularyWord>()) {
+            var seenScopedWords = Set<String>()
+            for item in scopedVocabularyWords.sorted(by: { $0.dateAdded < $1.dateAdded }) {
+                guard let kind = item.scopeKind,
+                    let identifier = normalizedScopeIdentifier(item.scopeIdentifier, kind: kind)
+                else {
+                    context.delete(item)
+                    deletedVocabularyCount += 1
+                    continue
+                }
+                let wordKey = TranscriptionVocabularyContext.normalizedKey(item.word)
+                let key = "\(kind.rawValue)|\(identifier)|\(wordKey)"
+                if !seenScopedWords.insert(key).inserted {
+                    context.delete(item)
+                    deletedVocabularyCount += 1
+                }
             }
         }
 

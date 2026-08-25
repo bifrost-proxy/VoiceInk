@@ -84,7 +84,8 @@ class TranscriptionServiceRegistry {
                 modelContext: modelContext,
                 fluidAudioService: model.provider == .fluidAudio ? fluidAudioTranscriptionService : nil,
                 sherpaOnnxService: model.provider == .sherpaOnnx ? sherpaOnnxTranscriptionService : nil,
-                onPartialTranscript: onPartialTranscript
+                onPartialTranscript: onPartialTranscript,
+                customVocabulary: configuration.vocabulary?.terms
             )
             let fallback = service(for: model.provider)
             return managedSession(

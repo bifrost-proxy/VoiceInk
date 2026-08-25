@@ -230,7 +230,8 @@ class TranscriptionPipeline {
                             let (enhancedText, enhancementDuration, promptName) = try await enhancementService.enhance(
                                 textForAI,
                                 configuration: resolvedEnhancementConfiguration,
-                                contextSnapshot: contextSnapshot
+                                contextSnapshot: contextSnapshot,
+                                customVocabularyTerms: transcriptionConfiguration.vocabulary?.applicableTerms
                             )
                             if shouldBypassEnhancement() {
                                 finalText = cleanedText

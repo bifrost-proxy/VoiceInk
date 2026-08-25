@@ -3,7 +3,8 @@ import Foundation
 import os
 
 struct ModeConfigurationApplication {
-    let completion: Task<Void, Never>
+    let initialUsageContext: VocabularyUsageContext
+    let completion: Task<VocabularyUsageContext, Never>
     let waitsForBrowserURL: Bool
 }
 
@@ -23,75 +24,100 @@ class ActiveWindowService: ObservableObject {
     @discardableResult
     func beginApplyingConfiguration(
         modeId: UUID? = nil,
+        target: RecordingContextTarget? = nil,
+        resolveVocabularyDomain: Bool = false,
         shouldApply: @escaping @MainActor () -> Bool = { true }
     ) -> ModeConfigurationApplication {
-        if let modeId = modeId,
-            let config = ModeManager.shared.getConfiguration(with: modeId)
-        {
-            guard shouldApply() else {
-                return ModeConfigurationApplication(completion: Task {}, waitsForBrowserURL: false)
-            }
-            ModeManager.shared.setActiveConfiguration(config)
-            return ModeConfigurationApplication(completion: Task {}, waitsForBrowserURL: false)
+        let frontmostApp = target.flatMap { NSRunningApplication(processIdentifier: $0.processID) }
+            ?? NSWorkspace.shared.frontmostApplication
+        guard let frontmostApp,
+            let bundleIdentifier = target?.activeSurface.bundleIdentifier ?? frontmostApp.bundleIdentifier
+        else {
+            return immediateApplication(context: .none)
         }
 
-        guard let frontmostApp = NSWorkspace.shared.frontmostApplication,
-            let bundleIdentifier = frontmostApp.bundleIdentifier
-        else {
-            return ModeConfigurationApplication(completion: Task {}, waitsForBrowserURL: false)
-        }
+        let usageContext = VocabularyUsageContext(
+            bundleIdentifier: bundleIdentifier,
+            applicationName: target?.activeSurface.applicationName ?? frontmostApp.localizedName,
+            domain: nil
+        )
 
         guard shouldApply() else {
-            return ModeConfigurationApplication(completion: Task {}, waitsForBrowserURL: false)
+            return immediateApplication(context: usageContext)
         }
         currentApplication = frontmostApp
 
-        let quickConfig =
-            ModeManager.shared.getConfigurationForApp(bundleIdentifier)
-            ?? ModeManager.shared.getDefaultConfiguration()
-
-        if let quickConfig {
-            ModeManager.shared.setActiveConfiguration(quickConfig)
+        if let modeId,
+            let config = ModeManager.shared.getConfiguration(with: modeId)
+        {
+            ModeManager.shared.setActiveConfiguration(config)
+        } else {
+            let quickConfig =
+                ModeManager.shared.getConfigurationForApp(bundleIdentifier)
+                ?? ModeManager.shared.getDefaultConfiguration()
+            if let quickConfig {
+                ModeManager.shared.setActiveConfiguration(quickConfig)
+            }
         }
 
         guard let browserType = BrowserType.allCases.first(where: { $0.bundleIdentifier == bundleIdentifier }) else {
-            return ModeConfigurationApplication(completion: Task {}, waitsForBrowserURL: false)
+            return immediateApplication(context: usageContext)
         }
 
         let hasURLSpecificConfiguration = ModeManager.shared.configurations.contains { configuration in
             configuration.isEnabled && !configuration.allURLConfigs.isEmpty
         }
-        guard hasURLSpecificConfiguration else {
-            return ModeConfigurationApplication(completion: Task {}, waitsForBrowserURL: false)
+        let shouldResolveBrowserURL = resolveVocabularyDomain || (modeId == nil && hasURLSpecificConfiguration)
+        guard shouldResolveBrowserURL else {
+            return immediateApplication(context: usageContext)
         }
 
         let completion = Task { [weak self] in
-            guard let self else { return }
+            guard let self else { return usageContext }
 
             do {
                 let currentURL = try await self.browserURLService.getCurrentURL(from: browserType)
                 await MainActor.run {
-                    guard shouldApply(),
+                    guard modeId == nil,
+                        shouldApply(),
                         let config = ModeManager.shared.getConfigurationForURL(currentURL)
                     else {
                         return
                     }
                     ModeManager.shared.setActiveConfiguration(config)
                 }
+                return VocabularyUsageContext(
+                    bundleIdentifier: bundleIdentifier,
+                    applicationName: usageContext.applicationName,
+                    domain: currentURL
+                )
             } catch is CancellationError {
-                return
+                return usageContext
             } catch {
                 self.logger.error(
                     "❌ Failed to get URL from \(browserType.displayName, privacy: .public): \(error, privacy: .public)")
+                return usageContext
             }
         }
-        return ModeConfigurationApplication(completion: completion, waitsForBrowserURL: true)
+        return ModeConfigurationApplication(
+            initialUsageContext: usageContext,
+            completion: completion,
+            waitsForBrowserURL: true
+        )
     }
 
     func applyConfiguration(modeId: UUID? = nil) async {
         let application = await MainActor.run {
             beginApplyingConfiguration(modeId: modeId)
         }
-        await application.completion.value
+        _ = await application.completion.value
+    }
+
+    private func immediateApplication(context: VocabularyUsageContext) -> ModeConfigurationApplication {
+        ModeConfigurationApplication(
+            initialUsageContext: context,
+            completion: Task { context },
+            waitsForBrowserURL: false
+        )
     }
 }

@@ -19,6 +19,15 @@ final class CloudConfigurationSyncService: ObservableObject {
         }
     }
 
+    struct ScopedVocabularyItem: Codable, Equatable, Sendable {
+        let id: UUID
+        let word: String
+        let scopeKind: VocabularyScopeKind
+        let scopeIdentifier: String
+        let scopeDisplayName: String?
+        let dateAdded: Date
+    }
+
     struct ReplacementItem: Codable, Equatable, Sendable {
         let id: UUID
         let originalText: String
@@ -794,6 +803,30 @@ final class CloudConfigurationSyncService: ObservableObject {
                 result["vocabulary/\(VoiceInkSyncEnvelope.sha256(Data(normalized.utf8)))"] = data
             }
         }
+        if let words = try? modelContext.fetch(FetchDescriptor<ScopedVocabularyWord>()) {
+            for item in words {
+                guard let scopeKind = item.scopeKind,
+                    let scopeIdentifier = DictionaryService.normalizedScopeIdentifier(
+                        item.scopeIdentifier,
+                        kind: scopeKind
+                    )
+                else { continue }
+                let normalizedWord = Self.normalizedDictionaryText(item.word)
+                guard !normalizedWord.isEmpty else { continue }
+                let value = ScopedVocabularyItem(
+                    id: item.id,
+                    word: item.word.trimmingCharacters(in: .whitespacesAndNewlines),
+                    scopeKind: scopeKind,
+                    scopeIdentifier: scopeIdentifier,
+                    scopeDisplayName: item.scopeDisplayName,
+                    dateAdded: item.dateAdded
+                )
+                let identity = "\(scopeKind.rawValue)|\(scopeIdentifier)|\(normalizedWord)"
+                if let data = try? PropertyListEncoder.voiceInkDictionary.encode(value) {
+                    result["scoped-vocabulary/\(VoiceInkSyncEnvelope.sha256(Data(identity.utf8)))"] = data
+                }
+            }
+        }
         if let replacements = try? modelContext.fetch(FetchDescriptor<WordReplacement>()) {
             for item in replacements {
                 for original in Self.replacementTokens(item.originalText) {
@@ -820,11 +853,15 @@ final class CloudConfigurationSyncService: ObservableObject {
         let remoteVocabulary = values
             .filter { $0.key.hasPrefix("vocabulary/") }
             .compactMap { try? PropertyListDecoder().decode(VocabularyItem.self, from: $0.value) }
+        let remoteScopedVocabulary = values
+            .filter { $0.key.hasPrefix("scoped-vocabulary/") }
+            .compactMap { try? PropertyListDecoder().decode(ScopedVocabularyItem.self, from: $0.value) }
         let remoteReplacements = values
             .filter { $0.key.hasPrefix("replacement/") }
             .compactMap { try? PropertyListDecoder().decode(ReplacementItem.self, from: $0.value) }
 
         let localVocabulary = try context.fetch(FetchDescriptor<VocabularyWord>())
+        let localScopedVocabulary = (try? context.fetch(FetchDescriptor<ScopedVocabularyWord>())) ?? []
         let localReplacements = try context.fetch(FetchDescriptor<WordReplacement>())
         let localVocabularyMap = Dictionary(
             localVocabulary.map { (Self.normalizedDictionaryText($0.word), $0) },
@@ -837,6 +874,50 @@ final class CloudConfigurationSyncService: ObservableObject {
         for (key, local) in localVocabularyMap where remoteVocabularyMap[key] == nil { context.delete(local) }
         for (key, remote) in remoteVocabularyMap where localVocabularyMap[key] == nil {
             context.insert(VocabularyWord(word: remote.word, dateAdded: remote.dateAdded))
+        }
+
+        func scopedKey(kind: VocabularyScopeKind, identifier: String, word: String) -> String? {
+            guard let normalizedIdentifier = DictionaryService.normalizedScopeIdentifier(identifier, kind: kind) else {
+                return nil
+            }
+            let normalizedWord = Self.normalizedDictionaryText(word)
+            guard !normalizedWord.isEmpty else { return nil }
+            return "\(kind.rawValue)|\(normalizedIdentifier)|\(normalizedWord)"
+        }
+        let localScopedVocabularyMap = Dictionary(
+            localScopedVocabulary.compactMap { item -> (String, ScopedVocabularyWord)? in
+                guard let kind = item.scopeKind,
+                    let key = scopedKey(kind: kind, identifier: item.scopeIdentifier, word: item.word)
+                else { return nil }
+                return (key, item)
+            },
+            uniquingKeysWith: { first, _ in first }
+        )
+        let remoteScopedVocabularyMap = Dictionary(
+            remoteScopedVocabulary.compactMap { item -> (String, ScopedVocabularyItem)? in
+                guard let key = scopedKey(
+                    kind: item.scopeKind,
+                    identifier: item.scopeIdentifier,
+                    word: item.word
+                ) else { return nil }
+                return (key, item)
+            },
+            uniquingKeysWith: { first, _ in first }
+        )
+        for (key, local) in localScopedVocabularyMap where remoteScopedVocabularyMap[key] == nil {
+            context.delete(local)
+        }
+        for (key, remote) in remoteScopedVocabularyMap where localScopedVocabularyMap[key] == nil {
+            context.insert(
+                ScopedVocabularyWord(
+                    id: remote.id,
+                    word: remote.word,
+                    scopeKind: remote.scopeKind,
+                    scopeIdentifier: remote.scopeIdentifier,
+                    scopeDisplayName: remote.scopeDisplayName,
+                    dateAdded: remote.dateAdded
+                )
+            )
         }
 
         let localReplacementMap = Dictionary(

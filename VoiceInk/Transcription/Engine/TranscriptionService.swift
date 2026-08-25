@@ -4,22 +4,26 @@ struct TranscriptionRequestContext {
     let language: String?
     let prompt: String?
     let speechRecognitionContext: RecognitionContextEnvelope?
+    let customVocabulary: [String]?
 
     init(
         language: String?,
         prompt: String?,
-        speechRecognitionContext: RecognitionContextEnvelope? = nil
+        speechRecognitionContext: RecognitionContextEnvelope? = nil,
+        customVocabulary: [String]? = nil
     ) {
         self.language = language
         self.prompt = prompt
         self.speechRecognitionContext = speechRecognitionContext
+        self.customVocabulary = customVocabulary
     }
 
     static var currentDefaults: TranscriptionRequestContext {
         TranscriptionRequestContext(
             language: UserDefaults.standard.string(forKey: "SelectedLanguage") ?? "auto",
             prompt: UserDefaults.standard.string(forKey: "TranscriptionPrompt"),
-            speechRecognitionContext: nil
+            speechRecognitionContext: nil,
+            customVocabulary: nil
         )
     }
 
@@ -30,7 +34,8 @@ struct TranscriptionRequestContext {
                 prompt: nil,
                 speechRecognitionContext: model.provider == .aliyunQwen || model.provider == .doubaoSpeech
                     ? speechRecognitionContext
-                    : nil
+                    : nil,
+                customVocabulary: customVocabulary
             )
         }
 

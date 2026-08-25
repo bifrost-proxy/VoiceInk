@@ -295,9 +295,10 @@ class StreamingTranscriptionService {
         modelContext: ModelContext, fluidAudioService: FluidAudioTranscriptionService? = nil,
         sherpaOnnxService: SherpaOnnxTranscriptionService? = nil,
         onPartialTranscript: (@MainActor (String) -> Void)? = nil,
-        providerFactory: ProviderFactory? = nil
+        providerFactory: ProviderFactory? = nil,
+        customVocabulary: [String]? = nil
     ) {
-        self.customVocabulary = TranscriptionVocabularyContext.uniqueTerms(from: modelContext)
+        self.customVocabulary = customVocabulary ?? TranscriptionVocabularyContext.uniqueTerms(from: modelContext)
         self.fluidAudioService = fluidAudioService
         self.sherpaOnnxService = sherpaOnnxService
         self.onPartialTranscript = onPartialTranscript

@@ -58,6 +58,7 @@ struct VoiceInkApp: App {
         let schema = Schema([
             Transcription.self,
             VocabularyWord.self,
+            ScopedVocabularyWord.self,
             WordReplacement.self,
             SessionMetric.self,
         ])
@@ -245,6 +246,7 @@ struct VoiceInkApp: App {
 
         let defaultStoreURL = appSupportURL.appendingPathComponent("default.store")
         let dictionaryStoreURL = appSupportURL.appendingPathComponent("dictionary.store")
+        let scopedDictionaryStoreURL = appSupportURL.appendingPathComponent("scoped-dictionary.store")
         let statsStoreURL = appSupportURL.appendingPathComponent("stats.store")
 
         let transcriptSchema = Schema([Transcription.self])
@@ -261,6 +263,13 @@ struct VoiceInkApp: App {
             url: dictionaryStoreURL
         )
 
+        let scopedDictionarySchema = Schema([ScopedVocabularyWord.self])
+        let scopedDictionaryConfig = ModelConfiguration(
+            "scoped-dictionary",
+            schema: scopedDictionarySchema,
+            url: scopedDictionaryStoreURL
+        )
+
         let statsSchema = Schema([SessionMetric.self])
         let statsConfig = ModelConfiguration(
             "stats",
@@ -269,7 +278,9 @@ struct VoiceInkApp: App {
         )
 
         do {
-            return try ModelContainer(for: schema, configurations: transcriptConfig, dictionaryConfig, statsConfig)
+            return try ModelContainer(
+                for: schema,
+                configurations: transcriptConfig, dictionaryConfig, scopedDictionaryConfig, statsConfig)
         } catch {
             logger.error(
                 "❌ Failed to create persistent ModelContainer:\n\(Self.fullErrorDescription(error), privacy: .public)")
@@ -284,11 +295,17 @@ struct VoiceInkApp: App {
         let dictionarySchema = Schema([VocabularyWord.self, WordReplacement.self])
         let dictionaryConfig = ModelConfiguration("dictionary", schema: dictionarySchema, isStoredInMemoryOnly: true)
 
+        let scopedDictionarySchema = Schema([ScopedVocabularyWord.self])
+        let scopedDictionaryConfig = ModelConfiguration(
+            "scoped-dictionary", schema: scopedDictionarySchema, isStoredInMemoryOnly: true)
+
         let statsSchema = Schema([SessionMetric.self])
         let statsConfig = ModelConfiguration("stats", schema: statsSchema, isStoredInMemoryOnly: true)
 
         do {
-            return try ModelContainer(for: schema, configurations: transcriptConfig, dictionaryConfig, statsConfig)
+            return try ModelContainer(
+                for: schema,
+                configurations: transcriptConfig, dictionaryConfig, scopedDictionaryConfig, statsConfig)
         } catch {
             logger.error(
                 "❌ Failed to create in-memory ModelContainer:\n\(Self.fullErrorDescription(error), privacy: .public)")

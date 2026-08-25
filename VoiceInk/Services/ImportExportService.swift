@@ -143,6 +143,22 @@ class ImportExportService {
             exportedDictionaryItems = items.map { WordBackup(word: $0.word) }
         }
 
+        var exportedScopedDictionaryItems: [ScopedWordBackup]? = nil
+        let scopedVocabularyDescriptor = FetchDescriptor<ScopedVocabularyWord>()
+        if let items = try? modelContext.fetch(scopedVocabularyDescriptor), !items.isEmpty {
+            let backups = items.compactMap { item -> ScopedWordBackup? in
+                guard let scopeKind = item.scopeKind else { return nil }
+                return ScopedWordBackup(
+                    word: item.word,
+                    scopeKind: scopeKind,
+                    scopeIdentifier: item.scopeIdentifier,
+                    scopeDisplayName: item.scopeDisplayName,
+                    dateAdded: item.dateAdded
+                )
+            }
+            exportedScopedDictionaryItems = backups.isEmpty ? nil : backups
+        }
+
         // Fetch word replacements from SwiftData
         var exportedWordReplacements: [String: String]? = nil
         let replacementsDescriptor = FetchDescriptor<WordReplacement>()
@@ -199,6 +215,7 @@ class ImportExportService {
             modeConfigs: modeConfigs,
             modeShortcuts: modeShortcuts.isEmpty ? nil : modeShortcuts,
             vocabularyWords: exportedDictionaryItems,
+            scopedVocabularyWords: exportedScopedDictionaryItems,
             wordReplacements: exportedWordReplacements,
             generalSettings: generalSettingsToExport,
             customEmojis: emojiManager.customEmojis,
