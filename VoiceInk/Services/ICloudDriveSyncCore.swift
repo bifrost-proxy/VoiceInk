@@ -484,8 +484,9 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
                 !fileManager.fileExists(atPath: domainURL.path)
             {
                 // Foundation accepts this call for an absent ordinary local path. Only the base
-                // FileManager plus an injected root has that test-fixture meaning; File Provider
-                // doubles and the production iCloud root must retain their pending marker.
+                // FileManager plus an injected root has that test-fixture meaning. An accepted
+                // production File Provider request remains pending because it can represent a
+                // remote item whose placeholder has not appeared locally yet.
                 _ = downloadRequestLock.withLock { requestedDomainDownloads.remove(domain) }
             }
         } catch {
@@ -493,14 +494,17 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
             let missingInjectedPlainDirectory = iCloudDriveRootOverride != nil
                 && fileManager.isMember(of: FileManager.self)
                 && !fileManager.fileExists(atPath: domainURL.path)
-            let missingInjectedProviderDouble = iCloudDriveRootOverride != nil
-                && requestError.domain == NSCocoaErrorDomain
+            let itemWasNotFound = requestError.domain == NSCocoaErrorDomain
                 && (requestError.code == NSFileNoSuchFileError
                     || requestError.code == NSFileReadNoSuchFileError)
-            if missingInjectedPlainDirectory || missingInjectedProviderDouble
+            if missingInjectedPlainDirectory
+                || (itemWasNotFound && confirmedMissingDirectory(at: domainURL))
             {
-                // An injected ordinary-directory root uses absence to model an empty domain.
-                // Production iCloud roots have no override and always remain pending here.
+                // A current, enumerable ancestor makes the missing path authoritative: this is a
+                // first-time domain and append may create it. Explicitly injected ordinary roots
+                // are local fixtures whose absence always means empty, even when Base FileManager
+                // reports a permission error. Production roots still require both an actual
+                // not-found response and the authoritative ancestor proof.
                 _ = downloadRequestLock.withLock { requestedDomainDownloads.remove(domain) }
                 return
             }
@@ -508,6 +512,51 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
             // reject this request while offline or before it has exposed the placeholder, so keep
             // the readiness gate closed until a later scan observes an actual current directory.
         }
+    }
+
+    /// Confirms absence only by walking an already-materialized directory hierarchy. A missing
+    /// child under a current, successfully enumerated ancestor is a new domain; an unavailable
+    /// ancestor is indistinguishable from an unexposed File Provider placeholder and must retry.
+    private func confirmedMissingDirectory(at targetURL: URL) -> Bool {
+        guard let cloudRoot = iCloudDriveRootURL?.standardizedFileURL else { return false }
+        let target = targetURL.standardizedFileURL
+        let rootPath = cloudRoot.path.hasSuffix("/") ? cloudRoot.path : cloudRoot.path + "/"
+        guard target.path.hasPrefix(rootPath) else { return false }
+        let relativeComponents = target.path.dropFirst(rootPath.count).split(separator: "/")
+        guard !relativeComponents.isEmpty else { return false }
+
+        let directoryKeys: Set<URLResourceKey> = [
+            .isDirectoryKey, .isUbiquitousItemKey, .ubiquitousItemDownloadingStatusKey,
+        ]
+        var parent = cloudRoot
+        for component in relativeComponents {
+            guard fileManager.fileExists(atPath: parent.path) else { return false }
+            let state: OperationResourceState
+            do {
+                state = try resourceStateProvider(parent, directoryKeys)
+            } catch {
+                return false
+            }
+            guard state.isDirectory == true,
+                !state.isUbiquitousItem || state.downloadingStatus == .current
+            else { return false }
+
+            let children: [URL]
+            do {
+                children = try fileManager.contentsOfDirectory(
+                    at: parent,
+                    includingPropertiesForKeys: Array(directoryKeys),
+                    options: []
+                )
+            } catch {
+                return false
+            }
+            guard let child = children.first(where: { $0.lastPathComponent == component }) else {
+                return true
+            }
+            parent = child
+        }
+        return false
     }
 
     func append(_ batch: VoiceInkSyncMutationBatch, domain: VoiceInkSyncDomain) throws -> VoiceInkSyncEnvelope {

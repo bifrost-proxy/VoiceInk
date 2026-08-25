@@ -828,6 +828,31 @@ struct VoiceInkTests {
         #expect(fileManager.downloadRequests.count == 1)
     }
 
+    @Test func incrementalRegisterInitializesConfirmedMissingDomain() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "VoiceInkConfirmedMissingDirectory-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let suite = "VoiceInkTests.ConfirmedMissingDirectory.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let fileManager = DownloadRequestRecordingFileManager()
+        let local = ICloudDriveSyncCore(
+            defaults: defaults,
+            fileManager: fileManager,
+            iCloudDriveRootURL: root
+        )
+
+        local.requestDownload(in: .dictionary)
+        let result = try local.readIncrementally(in: .dictionary, fullScan: true)
+
+        #expect(result.performedFullScan)
+        #expect(result.newEnvelopes.isEmpty)
+        #expect(result.affectedKeys.isEmpty)
+        #expect(fileManager.downloadRequests.count == 1)
+    }
+
     @Test func incrementalRegisterKeepsMissingDirectoryPendingWhenDownloadIsRejected() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(
@@ -853,6 +878,51 @@ struct VoiceInkTests {
         let error = try #require(capturedError)
         #expect(ICloudSyncRetryPolicy.isPendingICloudDownload(error))
         #expect(local.registerCheckpointWriteCountForTesting == 1)
+    }
+
+    @Test func incrementalRegisterKeepsMissingDirectoryPendingWhenAncestorIsUnavailable() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "VoiceInkUnavailableDirectoryAncestor-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let suite = "VoiceInkTests.UnavailableDirectoryAncestor.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let fileManager = DownloadRequestRecordingFileManager()
+        let local = ICloudDriveSyncCore(
+            defaults: defaults,
+            fileManager: fileManager,
+            iCloudDriveRootURL: root,
+            resourceStateProvider: { url, keys in
+                if url.standardizedFileURL == root.standardizedFileURL {
+                    return ICloudDriveSyncCore.OperationResourceState(
+                        isRegularFile: nil,
+                        isDirectory: true,
+                        isUbiquitousItem: true,
+                        downloadingStatus: .notDownloaded
+                    )
+                }
+                let values = try url.resourceValues(forKeys: keys)
+                return ICloudDriveSyncCore.OperationResourceState(
+                    isRegularFile: values.isRegularFile,
+                    isDirectory: values.isDirectory,
+                    isUbiquitousItem: values.isUbiquitousItem == true,
+                    downloadingStatus: values.ubiquitousItemDownloadingStatus
+                )
+            }
+        )
+
+        local.requestDownload(in: .dictionary)
+        var capturedError: Error?
+        do {
+            _ = try local.readIncrementally(in: .dictionary, fullScan: true)
+        } catch {
+            capturedError = error
+        }
+        let error = try #require(capturedError)
+        #expect(ICloudSyncRetryPolicy.isPendingICloudDownload(error))
+        #expect(fileManager.downloadRequests.count == 1)
     }
 
     @Test func incompleteFirstScanRemainsAuthoritativeAfterDirectoryMaterializes() throws {
