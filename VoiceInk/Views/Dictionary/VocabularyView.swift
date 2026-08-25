@@ -266,7 +266,15 @@ struct VocabularyView: View {
 
     @ViewBuilder
     private func vocabularyPreview(for scope: VocabularyScopeSelection) -> some View {
-        if let configuration = ModeRuntimeResolver.transcriptionConfiguration(
+        if scope.kind == .domain {
+            HStack(spacing: 6) {
+                Image(systemName: "info.circle.fill")
+                    .foregroundStyle(AppTheme.Status.info)
+                Text("Model and vocabulary limit depend on the current page and its matched mode")
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        } else if let configuration = ModeRuntimeResolver.transcriptionConfiguration(
             mode: previewMode(for: scope),
             transcriptionModelManager: transcriptionModelManager
         ) {
@@ -278,7 +286,8 @@ struct VocabularyView: View {
             let resolved = TranscriptionVocabularyContext.resolve(
                 from: modelContext,
                 usageContext: usageContext,
-                model: configuration.model
+                model: configuration.model,
+                isRealtimeEnabled: configuration.isRealtimeEnabled
             )
             HStack(spacing: 6) {
                 Image(systemName: resolved.omittedCount > 0 ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
@@ -305,7 +314,7 @@ struct VocabularyView: View {
         case .application:
             matchedMode = ModeManager.shared.getConfigurationForApp(scope.identifier)
         case .domain:
-            matchedMode = ModeManager.shared.getConfigurationForURL(scope.identifier)
+            matchedMode = nil
         }
         return matchedMode
             ?? ModeManager.shared.getDefaultConfiguration()

@@ -89,6 +89,19 @@ struct RecognitionContextTests {
         #expect(automationDenied.message.contains("Automation"))
         #expect(automationDenied.shouldOfferAutomationSettings)
         #expect(BrowserURLFailureGuidance.automationSettingsURL.absoluteString.contains("Privacy_Automation"))
+
+        #expect(
+            BrowserURLLookupImpact(
+                affectsURLMode: true,
+                affectsWebsiteVocabulary: false
+            ).message?.contains("mode") == true
+        )
+        let combinedImpact = BrowserURLLookupImpact(
+            affectsURLMode: true,
+            affectsWebsiteVocabulary: true
+        ).message
+        #expect(combinedImpact?.contains("mode") == true)
+        #expect(combinedImpact?.contains("vocabulary") == true)
     }
 
     @Test func featureExtractionNormalizesDeduplicatesAndMergesSources() throws {

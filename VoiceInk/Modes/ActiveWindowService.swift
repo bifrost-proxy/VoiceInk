@@ -45,6 +45,24 @@ struct BrowserURLFailureGuidance: Equatable {
     )!
 }
 
+struct BrowserURLLookupImpact: Equatable {
+    let affectsURLMode: Bool
+    let affectsWebsiteVocabulary: Bool
+
+    var message: String? {
+        switch (affectsURLMode, affectsWebsiteVocabulary) {
+        case (true, true):
+            return String(localized: "Website-specific mode and vocabulary were not applied.")
+        case (true, false):
+            return String(localized: "The website-specific mode was not applied.")
+        case (false, true):
+            return String(localized: "Website vocabulary was not applied.")
+        case (false, false):
+            return nil
+        }
+    }
+}
+
 class ActiveWindowService: ObservableObject {
     static let shared = ActiveWindowService()
     @Published var currentApplication: NSRunningApplication?
@@ -111,7 +129,8 @@ class ActiveWindowService: ObservableObject {
         let hasURLSpecificConfiguration = ModeManager.shared.configurations.contains { configuration in
             configuration.isEnabled && !configuration.allURLConfigs.isEmpty
         }
-        let shouldResolveBrowserURL = resolveVocabularyDomain || (modeId == nil && hasURLSpecificConfiguration)
+        let affectsURLMode = modeId == nil && hasURLSpecificConfiguration
+        let shouldResolveBrowserURL = resolveVocabularyDomain || affectsURLMode
         guard shouldResolveBrowserURL else {
             return immediateApplication(context: usageContext)
         }
@@ -142,7 +161,14 @@ class ActiveWindowService: ObservableObject {
                     "❌ Failed to get URL from \(browserType.displayName, privacy: .public): \(error, privacy: .public)")
                 await MainActor.run {
                     guard shouldApply() else { return }
-                    self.showBrowserURLFailure(error, browser: browserType)
+                    self.showBrowserURLFailure(
+                        error,
+                        browser: browserType,
+                        impact: BrowserURLLookupImpact(
+                            affectsURLMode: affectsURLMode,
+                            affectsWebsiteVocabulary: resolveVocabularyDomain
+                        )
+                    )
                 }
                 return usageContext
             }
@@ -170,9 +196,15 @@ class ActiveWindowService: ObservableObject {
     }
 
     @MainActor
-    private func showBrowserURLFailure(_ error: Error, browser: BrowserType) {
+    private func showBrowserURLFailure(
+        _ error: Error,
+        browser: BrowserType,
+        impact: BrowserURLLookupImpact
+    ) {
         let guidance = BrowserURLFailureGuidance.make(error: error, browser: browser)
-        let message = guidance.message + " " + String(localized: "Website vocabulary was not applied.")
+        let message = [guidance.message, impact.message]
+            .compactMap { $0 }
+            .joined(separator: " ")
 
         let actionButton: (label: String, action: () -> Void)? = if guidance.shouldOfferAutomationSettings {
             (

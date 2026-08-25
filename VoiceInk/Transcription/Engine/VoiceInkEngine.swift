@@ -622,7 +622,8 @@ class VoiceInkEngine: NSObject, ObservableObject {
         let vocabulary = TranscriptionVocabularyContext.resolve(
             from: modelContext,
             usageContext: activeRecordingVocabularyUsageContext,
-            model: resolvedConfiguration.model
+            model: resolvedConfiguration.model,
+            isRealtimeEnabled: resolvedConfiguration.isRealtimeEnabled
         )
         let transcriptionConfiguration = resolvedConfiguration
             .addingSpeechRecognitionContext(recognitionContext)
@@ -1114,7 +1115,8 @@ class VoiceInkEngine: NSObject, ObservableObject {
             let vocabulary = TranscriptionVocabularyContext.resolve(
                 from: modelContext,
                 usageContext: activeRecordingVocabularyUsageContext,
-                model: contextAwareBaseConfiguration.model
+                model: contextAwareBaseConfiguration.model,
+                isRealtimeEnabled: contextAwareBaseConfiguration.isRealtimeEnabled
             )
             transcriptionConfiguration = contextAwareBaseConfiguration.addingVocabulary(vocabulary)
         }

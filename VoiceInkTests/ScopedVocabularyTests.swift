@@ -167,6 +167,72 @@ struct ScopedVocabularyTests {
         }
     }
 
+    @Test func aliyunCapabilityHonorsTheVocabularyToggleAndStreamingLimit() throws {
+        let model = CloudModel(
+            name: "aliyun-test",
+            displayName: "Aliyun Test",
+            description: "",
+            provider: .aliyunQwen,
+            speed: 1,
+            accuracy: 1,
+            isMultilingual: true,
+            supportedLanguages: [:]
+        )
+        let disabledSettings = aliyunSettings(useVoiceInkVocabulary: false)
+        let enabledSettings = aliyunSettings(useVoiceInkVocabulary: true)
+
+        #expect(
+            !TranscriptionVocabularyCapability.supportsVocabulary(
+                for: model,
+                aliyunSettings: disabledSettings
+            )
+        )
+        #expect(
+            TranscriptionVocabularyCapability.supportsVocabulary(
+                for: model,
+                aliyunSettings: enabledSettings
+            )
+        )
+        #expect(
+            TranscriptionVocabularyCapability.maximumCount(
+                for: model,
+                isRealtimeEnabled: true
+            ) == 2_000
+        )
+        #expect(
+            TranscriptionVocabularyCapability.maximumCount(
+                for: model,
+                isRealtimeEnabled: false
+            ) == nil
+        )
+
+        let container = try makeContainer()
+        let context = container.mainContext
+        context.insert(VocabularyWord(word: "VoiceInk"))
+        try context.save()
+        let disabledResolution = TranscriptionVocabularyContext.resolve(
+            from: context,
+            usageContext: .none,
+            model: model,
+            isRealtimeEnabled: true,
+            aliyunSettings: disabledSettings
+        )
+        #expect(disabledResolution.terms.isEmpty)
+        #expect(disabledResolution.applicableTerms == ["VoiceInk"])
+        #expect(disabledResolution.omittedCount == 1)
+        #expect(disabledResolution.maximumCount == 0)
+
+        let enabledResolution = TranscriptionVocabularyContext.resolve(
+            from: context,
+            usageContext: .none,
+            model: model,
+            isRealtimeEnabled: true,
+            aliyunSettings: enabledSettings
+        )
+        #expect(enabledResolution.terms == ["VoiceInk"])
+        #expect(enabledResolution.maximumCount == 2_000)
+    }
+
     @Test func dictionaryAllowsSameTermAcrossScopesButRejectsSameScopeDuplicate() throws {
         let container = try makeContainer()
         let context = container.mainContext
@@ -270,6 +336,28 @@ struct ScopedVocabularyTests {
             description: "",
             isMultilingualModel: true,
             supportedLanguages: [:]
+        )
+    }
+
+    private func aliyunSettings(useVoiceInkVocabulary: Bool) -> AliyunQwenSpeechSettings {
+        let defaults = AliyunQwenSpeechSettings.defaults
+        return AliyunQwenSpeechSettings(
+            region: defaults.region,
+            apiHost: defaults.apiHost,
+            semanticPunctuationEnabled: defaults.semanticPunctuationEnabled,
+            maxSentenceSilenceMilliseconds: defaults.maxSentenceSilenceMilliseconds,
+            multiThresholdModeEnabled: defaults.multiThresholdModeEnabled,
+            heartbeatEnabled: defaults.heartbeatEnabled,
+            speechNoiseThresholdEnabled: defaults.speechNoiseThresholdEnabled,
+            speechNoiseThreshold: defaults.speechNoiseThreshold,
+            useVoiceInkVocabulary: useVoiceInkVocabulary,
+            vocabularyWeight: defaults.vocabularyWeight,
+            contextPrompt: defaults.contextPrompt,
+            useSelectedTextContext: defaults.useSelectedTextContext,
+            useClipboardContext: defaults.useClipboardContext,
+            useApplicationContext: defaults.useApplicationContext,
+            useWindowTitleContext: defaults.useWindowTitleContext,
+            keepConnectionReady: defaults.keepConnectionReady
         )
     }
 }

@@ -86,9 +86,14 @@ enum VocabularyDomain {
 }
 
 enum TranscriptionVocabularyCapability {
-    static func supportsVocabulary(for model: any TranscriptionModel) -> Bool {
+    static func supportsVocabulary(
+        for model: any TranscriptionModel,
+        aliyunSettings: AliyunQwenSpeechSettings = .current()
+    ) -> Bool {
         switch model.provider {
-        case .elevenLabs, .deepgram, .soniox, .speechmatics, .assemblyAI, .doubaoSpeech, .aliyunQwen:
+        case .aliyunQwen:
+            return aliyunSettings.useVoiceInkVocabulary
+        case .elevenLabs, .deepgram, .soniox, .speechmatics, .assemblyAI, .doubaoSpeech:
             return true
         case .whisper, .fluidAudio, .sherpaOnnx, .qwenMlx, .groq, .mistral, .gemini,
             .xai, .nativeApple, .custom, .cartesia:
@@ -96,10 +101,15 @@ enum TranscriptionVocabularyCapability {
         }
     }
 
-    static func maximumCount(for model: any TranscriptionModel) -> Int? {
+    static func maximumCount(
+        for model: any TranscriptionModel,
+        isRealtimeEnabled: Bool = false
+    ) -> Int? {
         switch model.provider {
         case .deepgram, .doubaoSpeech:
             return 50
+        case .aliyunQwen where isRealtimeEnabled:
+            return 2_000
         default:
             return nil
         }
@@ -136,12 +146,17 @@ enum TranscriptionVocabularyContext {
     static func resolve(
         from modelContext: ModelContext,
         usageContext: VocabularyUsageContext,
-        model: any TranscriptionModel
+        model: any TranscriptionModel,
+        isRealtimeEnabled: Bool = false,
+        aliyunSettings: AliyunQwenSpeechSettings = .current()
     ) -> ResolvedVocabulary {
         let candidates = applicableEntries(from: modelContext, usageContext: usageContext)
         let applicableTerms = candidates.map(\.term)
 
-        guard TranscriptionVocabularyCapability.supportsVocabulary(for: model) else {
+        guard TranscriptionVocabularyCapability.supportsVocabulary(
+            for: model,
+            aliyunSettings: aliyunSettings
+        ) else {
             return ResolvedVocabulary(
                 terms: [],
                 applicableTerms: applicableTerms,
@@ -153,7 +168,10 @@ enum TranscriptionVocabularyContext {
             )
         }
 
-        let maximumCount = TranscriptionVocabularyCapability.maximumCount(for: model)
+        let maximumCount = TranscriptionVocabularyCapability.maximumCount(
+            for: model,
+            isRealtimeEnabled: isRealtimeEnabled
+        )
         let selected = maximumCount.map { Array(candidates.prefix($0)) } ?? candidates
         var domainUsed = 0
         var applicationUsed = 0
