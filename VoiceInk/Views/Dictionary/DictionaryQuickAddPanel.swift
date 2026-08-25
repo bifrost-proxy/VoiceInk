@@ -1,4 +1,5 @@
 import AppKit
+import os
 import SwiftData
 import SwiftUI
 
@@ -123,9 +124,48 @@ class DictionaryQuickAddPanel: NSPanel {
     }
 }
 
+struct DictionaryQuickAddScopeState: Equatable {
+    private(set) var applicationScope: VocabularyScopeSelection?
+    private(set) var domainScope: VocabularyScopeSelection?
+    private(set) var selectedScope: VocabularyScopeSelection?
+    private(set) var hasUserSelection = false
+
+    init(usageContext: VocabularyUsageContext) {
+        applicationScope = usageContext.bundleIdentifier.flatMap {
+            VocabularyScopeSelection(
+                kind: .application,
+                identifier: $0,
+                displayName: usageContext.applicationName
+            )
+        }
+        domainScope = usageContext.domain.flatMap {
+            VocabularyScopeSelection(kind: .domain, identifier: $0, displayName: $0)
+        }
+        selectedScope = domainScope ?? applicationScope
+    }
+
+    mutating func select(_ scope: VocabularyScopeSelection?) {
+        selectedScope = scope
+        hasUserSelection = true
+    }
+
+    mutating func applyDetectedDomain(_ value: String?) {
+        domainScope = value.flatMap {
+            VocabularyScopeSelection(kind: .domain, identifier: $0, displayName: $0)
+        }
+        guard !hasUserSelection else { return }
+        selectedScope = domainScope ?? applicationScope
+    }
+}
+
 // MARK: - View
 
 struct DictionaryQuickAddView: View {
+    private static let logger = Logger(
+        subsystem: "com.prakashjoshipax.voiceink",
+        category: "DictionaryQuickAdd"
+    )
+
     enum Mode: CaseIterable {
         case vocabulary, replacement
 
@@ -161,8 +201,7 @@ struct DictionaryQuickAddView: View {
     @State private var originalInput = ""
     @State private var replacementInput = ""
     @State private var errorMessage: String?
-    @State private var selectedVocabularyScope: VocabularyScopeSelection?
-    @State private var capturedDomain: String?
+    @State private var scopeState: DictionaryQuickAddScopeState
     @State private var websiteLookupFailure: BrowserURLFailureGuidance?
     @State private var isResolvingWebsite = false
     @FocusState private var focusedField: Field?
@@ -172,6 +211,25 @@ struct DictionaryQuickAddView: View {
     let initialUsageContext: VocabularyUsageContext
     let onDismiss: () -> Void
     let onResize: (CGFloat) -> Void
+
+    init(
+        initialUsageContext: VocabularyUsageContext,
+        onDismiss: @escaping () -> Void,
+        onResize: @escaping (CGFloat) -> Void
+    ) {
+        self.initialUsageContext = initialUsageContext
+        self.onDismiss = onDismiss
+        self.onResize = onResize
+        _scopeState = State(
+            initialValue: DictionaryQuickAddScopeState(usageContext: initialUsageContext)
+        )
+        let waitsForWebsite = initialUsageContext.bundleIdentifier.map { bundleIdentifier in
+            BrowserType.allCases.contains {
+                $0.bundleIdentifier.caseInsensitiveCompare(bundleIdentifier) == .orderedSame
+            }
+        } ?? false
+        _isResolvingWebsite = State(initialValue: waitsForWebsite)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -283,29 +341,30 @@ struct DictionaryQuickAddView: View {
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(.secondary)
                 Menu {
-                    Button("Global") { selectedVocabularyScope = nil }
+                    Button("Global") { scopeState.select(nil) }
                     if let appScope = currentApplicationScope {
                         Button("Current App · \(appScope.displayName)") {
-                            selectedVocabularyScope = appScope
+                            scopeState.select(appScope)
                         }
                     }
                     if let domainScope = currentDomainScope {
                         Button("Current Website · \(domainScope.displayName)") {
-                            selectedVocabularyScope = domainScope
+                            scopeState.select(domainScope)
                         }
                     }
                     if !existingScopes.isEmpty {
                         Divider()
                         ForEach(existingScopes) { scope in
-                            Button(scope.displayName) { selectedVocabularyScope = scope }
+                            Button(scope.displayName) { scopeState.select(scope) }
                         }
                     }
                 } label: {
-                    Text(selectedVocabularyScope?.displayName ?? String(localized: "Global"))
+                    Text(scopeState.selectedScope?.displayName ?? String(localized: "Global"))
                         .lineLimit(1)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .menuStyle(.borderlessButton)
+                .accessibilityIdentifier("dictionary.quickAdd.scope")
                 if isResolvingWebsite {
                     ProgressView()
                         .controlSize(.small)
@@ -402,8 +461,11 @@ struct DictionaryQuickAddView: View {
     private func submitVocabulary() {
         let input = wordInput.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !input.isEmpty else { return }
+        guard !isResolvingWebsite || scopeState.hasUserSelection else { return }
+        let scopeKind = scopeState.selectedScope?.kind.rawValue ?? "global"
+        Self.logger.notice("Quick add vocabulary submitting scope=\(scopeKind, privacy: .public)")
         let error: String?
-        if let selectedVocabularyScope {
+        if let selectedVocabularyScope = scopeState.selectedScope {
             error = DictionaryService.addScopedVocabularyWords(
                 input,
                 scope: selectedVocabularyScope,
@@ -437,11 +499,15 @@ struct DictionaryQuickAddView: View {
 
         do {
             let url = try await BrowserURLService.shared.getCurrentURL(from: browser)
-            capturedDomain = VocabularyDomain.normalizedHost(from: url)
+            let domain = VocabularyDomain.normalizedHost(from: url)
+            scopeState.applyDetectedDomain(domain)
+            let scopeKind = domain == nil ? "application" : "domain"
+            Self.logger.notice("Quick add automatic scope resolved scope=\(scopeKind, privacy: .public)")
         } catch is CancellationError {
             return
         } catch {
-            capturedDomain = nil
+            scopeState.applyDetectedDomain(nil)
+            Self.logger.notice("Quick add automatic scope fell back scope=application")
             websiteLookupFailure = BrowserURLFailureGuidance.make(error: error, browser: browser)
         }
     }
@@ -454,17 +520,11 @@ struct DictionaryQuickAddView: View {
     }
 
     private var currentApplicationScope: VocabularyScopeSelection? {
-        guard let bundleIdentifier = initialUsageContext.bundleIdentifier else { return nil }
-        return VocabularyScopeSelection(
-            kind: .application,
-            identifier: bundleIdentifier,
-            displayName: initialUsageContext.applicationName
-        )
+        scopeState.applicationScope
     }
 
     private var currentDomainScope: VocabularyScopeSelection? {
-        guard let capturedDomain else { return nil }
-        return VocabularyScopeSelection(kind: .domain, identifier: capturedDomain, displayName: capturedDomain)
+        scopeState.domainScope
     }
 
     private var existingScopes: [VocabularyScopeSelection] {

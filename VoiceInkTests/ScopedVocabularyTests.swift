@@ -296,6 +296,94 @@ struct ScopedVocabularyTests {
         #expect(!BrowserURLService.isValidBrowserURL("execution error: browser denied access"))
     }
 
+    @Test func quickAddDefaultsToTheCurrentApplication() throws {
+        let state = DictionaryQuickAddScopeState(
+            usageContext: VocabularyUsageContext(
+                bundleIdentifier: "com.example.editor",
+                applicationName: "Example Editor",
+                domain: nil
+            )
+        )
+
+        let selected = try #require(state.selectedScope)
+        #expect(selected.kind == .application)
+        #expect(selected.identifier == "com.example.editor")
+        #expect(selected.displayName == "Example Editor")
+        #expect(!state.hasUserSelection)
+    }
+
+    @Test func quickAddPromotesABrowserTargetToItsDetectedDomain() throws {
+        var state = DictionaryQuickAddScopeState(
+            usageContext: VocabularyUsageContext(
+                bundleIdentifier: "com.google.Chrome",
+                applicationName: "Google Chrome",
+                domain: nil
+            )
+        )
+
+        state.applyDetectedDomain("https://Docs.Example.com/path")
+
+        let selected = try #require(state.selectedScope)
+        #expect(selected.kind == .domain)
+        #expect(selected.identifier == "docs.example.com")
+        #expect(selected.displayName == "docs.example.com")
+    }
+
+    @Test func quickAddPrefersAnExistingDomainOverItsApplication() throws {
+        let state = DictionaryQuickAddScopeState(
+            usageContext: VocabularyUsageContext(
+                bundleIdentifier: "com.google.Chrome",
+                applicationName: "Google Chrome",
+                domain: "https://docs.example.com/path"
+            )
+        )
+
+        let selected = try #require(state.selectedScope)
+        #expect(selected.kind == .domain)
+        #expect(selected.identifier == "docs.example.com")
+    }
+
+    @Test func quickAddKeepsTheApplicationWhenWebsiteDetectionFails() throws {
+        var state = DictionaryQuickAddScopeState(
+            usageContext: VocabularyUsageContext(
+                bundleIdentifier: "com.google.Chrome",
+                applicationName: "Google Chrome",
+                domain: nil
+            )
+        )
+
+        state.applyDetectedDomain(nil)
+
+        let selected = try #require(state.selectedScope)
+        #expect(selected.kind == .application)
+        #expect(selected.identifier == "com.google.chrome")
+    }
+
+    @Test func quickAddFallsBackToGlobalWithoutAUsableTarget() {
+        let state = DictionaryQuickAddScopeState(usageContext: .none)
+
+        #expect(state.applicationScope == nil)
+        #expect(state.domainScope == nil)
+        #expect(state.selectedScope == nil)
+    }
+
+    @Test func quickAddDoesNotOverrideAManualScopeWhileWebsiteDetectionFinishes() {
+        var state = DictionaryQuickAddScopeState(
+            usageContext: VocabularyUsageContext(
+                bundleIdentifier: "com.google.Chrome",
+                applicationName: "Google Chrome",
+                domain: nil
+            )
+        )
+
+        state.select(nil)
+        state.applyDetectedDomain("https://docs.example.com/path")
+
+        #expect(state.hasUserSelection)
+        #expect(state.domainScope?.identifier == "docs.example.com")
+        #expect(state.selectedScope == nil)
+    }
+
     @Test func requestScopingPreservesResolvedVocabularyForStreamingFallback() {
         let context = TranscriptionRequestContext(
             language: "en",
