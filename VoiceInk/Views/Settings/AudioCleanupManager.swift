@@ -128,9 +128,6 @@ class AudioCleanupManager {
                         FileManager.default.fileExists(atPath: url.path)
                     {
                         do {
-                            CloudUsageDataSyncService.shared.prepareAudioReclamation([
-                                transcription.id
-                            ])
                             try FileManager.default.removeItem(at: url)
                             transcription.audioFileURL = nil
                             deletedCount += 1
@@ -181,9 +178,6 @@ class AudioCleanupManager {
                         FileManager.default.fileExists(atPath: url.path)
                     {
                         do {
-                            CloudUsageDataSyncService.shared.prepareAudioReclamation([
-                                transcription.id
-                            ])
                             try FileManager.default.removeItem(at: url)
                             transcription.audioFileURL = nil
                             deletedCount += 1

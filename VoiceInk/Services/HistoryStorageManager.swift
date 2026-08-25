@@ -122,19 +122,28 @@ final class HistoryStorageManager: ObservableObject {
                 sortBy: [SortDescriptor(\Transcription.timestamp, order: .forward)]
             )
             let records = try modelContext.fetch(descriptor)
-            let recordsWithAudio = records.filter {
+            var recordsByAudioPath = [String: [Transcription]]()
+            var audioURLByPath = [String: URL]()
+            for record in records {
                 guard let url = Self.audioURL(
-                    for: $0, recordingsDirectory: recordingsDirectoryURL)
-                else { return false }
-                return FileManager.default.fileExists(atPath: url.path)
+                    for: record, recordingsDirectory: recordingsDirectoryURL),
+                    FileManager.default.fileExists(atPath: url.path)
+                else { continue }
+                let path = url.standardizedFileURL.path
+                recordsByAudioPath[path, default: []].append(record)
+                audioURLByPath[path] = url
             }
-            var candidates = recordsWithAudio.dropLast().map {
-                ($0, Self.audioSize(for: $0, recordingsDirectory: recordingsDirectoryURL))
+            let audioPaths = recordsByAudioPath.keys.sorted { lhs, rhs in
+                let lhsTimestamp = recordsByAudioPath[lhs]?.map(\.timestamp).max() ?? .distantPast
+                let rhsTimestamp = recordsByAudioPath[rhs]?.map(\.timestamp).max() ?? .distantPast
+                if lhsTimestamp != rhsTimestamp { return lhsTimestamp < rhsTimestamp }
+                return lhs < rhs
             }
-            var remainingAudioCount = recordsWithAudio.count
-            var totalAudioBytes = recordsWithAudio.map {
-                Self.audioSize(for: $0, recordingsDirectory: recordingsDirectoryURL)
-            }.reduce(Int64(0), +)
+            var candidates = Array(audioPaths.dropLast())
+            var remainingAudioCount = audioPaths.count
+            var totalAudioBytes = audioPaths.reduce(Int64(0)) { total, path in
+                total + Self.fileSize(at: audioURLByPath[path] ?? URL(fileURLWithPath: path))
+            }
             var result = HistoryStorageCleanupResult()
 
             // Keep the newest audio even when one recording alone exceeds the
@@ -147,14 +156,13 @@ final class HistoryStorageManager: ObservableObject {
                     maximumBytes: maximumBytes
                 )
             {
-                let (oldest, removedAudioBytes) = candidates.removeFirst()
-                let transcriptionID = oldest.id
-                usageSync.prepareAudioReclamation([transcriptionID])
+                let path = candidates.removeFirst()
+                let affectedRecords = recordsByAudioPath[path] ?? []
+                let audioURL = audioURLByPath[path] ?? URL(fileURLWithPath: path)
+                let removedAudioBytes = Self.fileSize(at: audioURL)
+                usageSync.prepareAudioReclamation(Set(affectedRecords.map(\.id)))
 
-                if let audioURL = Self.audioURL(
-                    for: oldest, recordingsDirectory: recordingsDirectoryURL),
-                    FileManager.default.fileExists(atPath: audioURL.path)
-                {
+                if FileManager.default.fileExists(atPath: audioURL.path) {
                     do {
                         try FileManager.default.removeItem(at: audioURL)
                     } catch {
@@ -166,7 +174,9 @@ final class HistoryStorageManager: ObservableObject {
                         continue
                     }
                 }
-                oldest.audioFileURL = nil
+                for record in affectedRecords {
+                    record.audioFileURL = nil
+                }
                 remainingAudioCount -= 1
                 totalAudioBytes -= removedAudioBytes
                 result.reclaimedAudioCount += 1

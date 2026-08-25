@@ -1531,6 +1531,7 @@ final class CloudUsageDataSyncService: ObservableObject {
             guard let recordID = Self.recordID(fromAudioReclamationKey: key)
             else { continue }
             let markers = validAudioReclamationCandidates(recordID, in: register)
+            guard !markers.isEmpty else { continue }
             var hasDurableMarker = false
             for marker in markers {
                 if marker.envelope.authorDeviceID != syncCore.deviceID {
