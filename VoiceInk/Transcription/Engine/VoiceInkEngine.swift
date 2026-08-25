@@ -1304,6 +1304,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
 
     private func requestRecordingCancellation() {
         shouldCancelRecording = true
+        cancelActiveRecordingModeTask()
 
         if (recordingState == .transcribing || recordingState == .enhancing),
             let activePipelineTranscriptionID
