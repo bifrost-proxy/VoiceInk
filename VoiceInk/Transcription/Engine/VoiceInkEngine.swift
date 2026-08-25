@@ -376,7 +376,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
 
                         let startID = UUID()
                         self.activeRecordingStartID = startID
-                        let lockedTarget = RecordingContextTarget.capture()
+                        let lockedTarget = RecordingContextTarget.captureIdentity()
                         var activeModeTask: Task<VocabularyUsageContext, Never>?
 
                         do {
@@ -448,9 +448,13 @@ class VoiceInkEngine: NSObject, ObservableObject {
                             activeModeTask = modeApplication.completion
                             self.activeRecordingModeTask = modeApplication.completion
                             self.activeRecordingVocabularyUsageContext = modeApplication.initialUsageContext
+                            let contextTarget = self.recordingContextTarget(
+                                from: lockedTarget,
+                                modeId: modeId
+                            )
                             let shouldPrepareRecognitionContext = self.startRecordingContextCapture(
                                 modeId: modeId,
-                                target: lockedTarget
+                                target: contextTarget
                             )
                             let canPrepareStreamingImmediately = !modeApplication.waitsForBrowserURL
                                 && !shouldPrepareRecognitionContext
@@ -482,7 +486,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
                             }
 
                             if modeApplication.waitsForBrowserURL {
-                                self.refreshRecordingContextForResolvedMode(target: lockedTarget)
+                                self.refreshRecordingContextForResolvedMode(target: contextTarget)
                             }
 
                             if !canPrepareStreamingImmediately {
@@ -949,6 +953,14 @@ class VoiceInkEngine: NSObject, ObservableObject {
         )
     }
 
+    private func recordingContextTarget(
+        from target: RecordingContextTarget?,
+        modeId: UUID?
+    ) -> RecordingContextTarget? {
+        guard recordingContextPlan(modeId: modeId).needsWindowContext else { return target }
+        return target?.capturingWindowContext()
+    }
+
     @discardableResult
     private func startRecordingContextCapture(
         modeId: UUID?,
@@ -994,7 +1006,8 @@ class VoiceInkEngine: NSObject, ObservableObject {
             capturedModeID: activeRecordingContextModeID,
             resolvedModeID: resolvedModeID
         ) else { return }
-        _ = startRecordingContextCapture(modeId: resolvedModeID, target: target)
+        let contextTarget = recordingContextTarget(from: target, modeId: resolvedModeID)
+        _ = startRecordingContextCapture(modeId: resolvedModeID, target: contextTarget)
     }
 
     private func initialRecognitionContext() async -> RecognitionContextEnvelope? {

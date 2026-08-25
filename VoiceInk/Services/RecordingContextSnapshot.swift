@@ -36,9 +36,19 @@ struct RecordingContextTarget: Equatable, Sendable {
     let processID: pid_t
     let activeSurface: ActiveSurfaceContext
     let windowFrame: CGRect?
+    let hasCapturedWindowContext: Bool
 
     @MainActor
     static func capture(excluding excludedProcessID: pid_t = ProcessInfo.processInfo.processIdentifier) -> Self? {
+        captureIdentity(excluding: excludedProcessID)?.capturingWindowContext()
+    }
+
+    /// Captures only NSWorkspace metadata. Keep this on the recording startup path;
+    /// unlike AX window reads, it cannot block on the frontmost application.
+    @MainActor
+    static func captureIdentity(
+        excluding excludedProcessID: pid_t = ProcessInfo.processInfo.processIdentifier
+    ) -> Self? {
         guard let application = NSWorkspace.shared.frontmostApplication,
             application.processIdentifier != excludedProcessID
         else {
@@ -46,6 +56,24 @@ struct RecordingContextTarget: Equatable, Sendable {
         }
 
         let processID = application.processIdentifier
+        let applicationName = normalized(application.localizedName)
+            ?? normalized(application.bundleURL?.deletingPathExtension().lastPathComponent)
+            ?? "Unknown Application"
+        return RecordingContextTarget(
+            processID: processID,
+            activeSurface: ActiveSurfaceContext(
+                applicationName: applicationName,
+                bundleIdentifier: application.bundleIdentifier,
+                windowTitle: nil
+            ),
+            windowFrame: nil,
+            hasCapturedWindowContext: false
+        )
+    }
+
+    @MainActor
+    func capturingWindowContext() -> Self {
+        guard !hasCapturedWindowContext else { return self }
         var windowTitle: String?
         var windowFrame: CGRect?
         if AXIsProcessTrusted() {
@@ -60,17 +88,15 @@ struct RecordingContextTarget: Equatable, Sendable {
             }
         }
 
-        let applicationName = normalized(application.localizedName)
-            ?? normalized(application.bundleURL?.deletingPathExtension().lastPathComponent)
-            ?? "Unknown Application"
         return RecordingContextTarget(
             processID: processID,
             activeSurface: ActiveSurfaceContext(
-                applicationName: applicationName,
-                bundleIdentifier: application.bundleIdentifier,
+                applicationName: activeSurface.applicationName,
+                bundleIdentifier: activeSurface.bundleIdentifier,
                 windowTitle: windowTitle
             ),
-            windowFrame: windowFrame
+            windowFrame: windowFrame,
+            hasCapturedWindowContext: true
         )
     }
 
@@ -126,6 +152,7 @@ struct RecordingContextCapturePlan: Equatable, Sendable {
     var needsSelectedText: Bool { sources.contains(.selectedText) }
     var needsClipboard: Bool { sources.contains(.clipboard) }
     var needsScreenOCR: Bool { sources.contains(.screenOCR) }
+    var needsWindowContext: Bool { sources.contains(.windowTitle) || needsScreenOCR }
     var needsActiveSurface: Bool {
         sources.contains(.application) || sources.contains(.windowTitle)
             || needsSelectedText || needsScreenOCR

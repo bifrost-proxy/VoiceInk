@@ -36,6 +36,7 @@ struct RecognitionContextTests {
         #expect(plan.sources == [.selectedText, .application])
         #expect(!plan.needsClipboard)
         #expect(!plan.needsScreenOCR)
+        #expect(!plan.needsWindowContext)
 
         var enhancementMode = mode
         enhancementMode.isAIEnhancementEnabled = true
@@ -46,6 +47,7 @@ struct RecognitionContextTests {
         #expect(enhancementPlan.sources == [
             .selectedText, .clipboard, .application, .windowTitle, .screenOCR,
         ])
+        #expect(enhancementPlan.needsWindowContext)
     }
 
     @Test func contextCaptureRefreshesWhenBrowserResolutionChangesTheMode() {
