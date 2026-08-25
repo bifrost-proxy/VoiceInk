@@ -255,7 +255,7 @@ struct VoiceInkTests {
         #expect(!FileManager.default.fileExists(atPath: operations.path))
     }
 
-    @Test func syncCoreSplitsLargeMutationSetsIntoValidImmutableOperations() throws {
+    @Test func syncCoreSplitsLargeMutationSetsIntoValidImmutableOperations() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("VoiceInkChunkedSync-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -274,17 +274,27 @@ struct VoiceInkTests {
             ),
         ]
 
-        let written = try core.appendChunked(mutations, domain: .configuration)
+        // Property-list encoding and hashing of this deliberately large payload
+        // can monopolize the x86_64 test host under Rosetta long enough for the
+        // app-host watchdog to restart it. Keep the production API synchronous,
+        // but run this test's CPU-bound work away from the host executor.
+        let (written, retried, initialReadCount, retriedReadCount) = try await Task.detached {
+            let written = try core.appendChunked(mutations, domain: .configuration)
+            let initialReadCount = try core.readAll(in: .configuration).count
+            let retried = try core.appendChunked(mutations, domain: .configuration)
+            let retriedReadCount = try core.readAll(in: .configuration).count
+            return (written, retried, initialReadCount, retriedReadCount)
+        }.value
+
         #expect(written.count == 2)
         #expect(written.flatMap { $0.mutations } == mutations)
-        #expect(try core.readAll(in: .configuration).count == 2)
+        #expect(initialReadCount == 2)
         for item in written {
             #expect(item.envelope.payload.count <= ICloudDriveSyncCore.maximumPayloadBytes)
         }
 
-        let retried = try core.appendChunked(mutations, domain: .configuration)
         #expect(retried.map(\.envelope.operationID) == written.map(\.envelope.operationID))
-        #expect(try core.readAll(in: .configuration).count == 2)
+        #expect(retriedReadCount == 2)
     }
 
     @Test func readingUnchangedOperationsDoesNotRewriteTheFrontier() throws {
