@@ -689,6 +689,8 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
         let scan: OperationURLScan
         if mustScanAll {
             scan = try operationURLs(in: domain)
+        } else if let directoryScan = try pendingOperationDirectoryScan(in: domain) {
+            scan = directoryScan
         } else {
             scan = scanOperationURLs(
                 hintedOperationURLs.filter {
@@ -800,11 +802,38 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
 
     private func operationURLs(in domain: VoiceInkSyncDomain) throws -> OperationURLScan {
         guard let domainURL = operationsURL(for: domain) else { return OperationURLScan() }
+        if let directoryScan = try pendingOperationDirectoryScan(in: domain) {
+            return directoryScan
+        }
+        guard fileManager.fileExists(atPath: domainURL.path) else { return OperationURLScan() }
+
+        let keys: [URLResourceKey] = [
+            .isRegularFileKey, .isUbiquitousItemKey, .ubiquitousItemDownloadingStatusKey,
+        ]
+        guard let enumerator = fileManager.enumerator(
+            at: domainURL,
+            includingPropertiesForKeys: keys,
+            options: [.skipsHiddenFiles]
+        ) else { throw CocoaError(.fileReadUnknown) }
+        var urls = Set<URL>()
+        for case let url as URL in enumerator where url.pathExtension == "syncop" {
+            urls.insert(url)
+        }
+        return scanOperationURLs(urls)
+    }
+
+    /// Returns a non-nil scan only while the domain directory itself is not ready. Both full
+    /// reconciliation and metadata-driven incremental reads must honor this gate; otherwise a
+    /// visible hint can conceal sibling operations whose directory descendants are still hidden.
+    private func pendingOperationDirectoryScan(
+        in domain: VoiceInkSyncDomain
+    ) throws -> OperationURLScan? {
+        guard let domainURL = operationsURL(for: domain) else { return nil }
         guard fileManager.fileExists(atPath: domainURL.path) else {
             return downloadRequestLock.withLock {
                 requestedDomainDownloads.contains(domain)
                     ? OperationURLScan(hasPendingDownload: true)
-                    : OperationURLScan()
+                    : nil
             }
         }
         let directoryKeys: Set<URLResourceKey> = [
@@ -829,20 +858,7 @@ final class ICloudDriveSyncCore: @unchecked Sendable {
             return scan
         }
         _ = downloadRequestLock.withLock { requestedDomainDownloads.remove(domain) }
-
-        let keys: [URLResourceKey] = [
-            .isRegularFileKey, .isUbiquitousItemKey, .ubiquitousItemDownloadingStatusKey,
-        ]
-        guard let enumerator = fileManager.enumerator(
-            at: domainURL,
-            includingPropertiesForKeys: keys,
-            options: [.skipsHiddenFiles]
-        ) else { throw CocoaError(.fileReadUnknown) }
-        var urls = Set<URL>()
-        for case let url as URL in enumerator where url.pathExtension == "syncop" {
-            urls.insert(url)
-        }
-        return scanOperationURLs(urls)
+        return nil
     }
 
     /// Requests every unavailable payload discovered in one pass. Throwing from the enumeration

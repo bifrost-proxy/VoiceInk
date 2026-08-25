@@ -492,10 +492,19 @@ final class CloudConfigurationSyncService: ObservableObject {
             try? await Task.sleep(for: .seconds(delay))
             guard let self, !Task.isCancelled else { return }
             self.retryTask = nil
+            let queuedApplyDictionary = self.pendingApplyDictionary
+            let queuedRecordLocalChanges = self.pendingRecordLocalChanges
+            let queuedOperationURLs = self.pendingOperationURLs
+            self.syncRequestedWhileRunning = false
+            self.pendingApplyDictionary = false
+            self.pendingRecordLocalChanges = false
+            self.pendingFullScan = false
+            self.pendingOperationURLs.removeAll()
             self.requestSync(
-                applyDictionary: self.modelContainer != nil || applyDictionary,
-                recordLocalChanges: recordLocalChanges,
-                fullScan: true
+                applyDictionary: applyDictionary || queuedApplyDictionary,
+                recordLocalChanges: recordLocalChanges || queuedRecordLocalChanges,
+                fullScan: true,
+                operationURLs: queuedOperationURLs
             )
         }
     }
