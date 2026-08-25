@@ -78,10 +78,15 @@ struct RecordingContextTarget: Equatable, Sendable {
         var windowFrame: CGRect?
         if AXIsProcessTrusted() {
             let applicationElement = AXUIElementCreateApplication(processID)
-            if let window = copyAXElementAttribute(kAXFocusedWindowAttribute, from: applicationElement) {
-                windowTitle = normalized(copyStringAttribute(kAXTitleAttribute, from: window))
-                if let position = copyCGPointAttribute(kAXPositionAttribute, from: window),
-                    let size = copyCGSizeAttribute(kAXSizeAttribute, from: window)
+            if let window = Self.copyAXElementAttribute(
+                kAXFocusedWindowAttribute,
+                from: applicationElement
+            ) {
+                windowTitle = Self.normalized(
+                    Self.copyStringAttribute(kAXTitleAttribute, from: window)
+                )
+                if let position = Self.copyCGPointAttribute(kAXPositionAttribute, from: window),
+                    let size = Self.copyCGSizeAttribute(kAXSizeAttribute, from: window)
                 {
                     windowFrame = CGRect(origin: position, size: size)
                 }
