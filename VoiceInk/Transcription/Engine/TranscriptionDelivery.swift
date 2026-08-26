@@ -8,12 +8,14 @@ final class TranscriptionDelivery {
     typealias CheckInputTarget = @MainActor (RecordingInputTarget) -> RecordingInputTargetAvailability
     typealias CopyToClipboard = @MainActor (String) -> Bool
     typealias NotifyUnavailableTarget = @MainActor () -> Void
+    typealias PerformAutoSend = @MainActor (AutoSendKey) -> Void
 
     private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "TranscriptionDelivery")
     private let pasteAtCursor: PasteAtCursor
     private let checkInputTarget: CheckInputTarget
     private let copyToClipboard: CopyToClipboard
     private let notifyUnavailableTarget: NotifyUnavailableTarget
+    private let performAutoSend: PerformAutoSend
 
     init(
         pasteAtCursor: @escaping PasteAtCursor = { text, canPostPaste in
@@ -34,12 +36,16 @@ final class TranscriptionDelivery {
                 type: .warning,
                 duration: 6.0
             )
+        },
+        performAutoSend: @escaping PerformAutoSend = { key in
+            CursorPaster.performAutoSend(key)
         }
     ) {
         self.pasteAtCursor = pasteAtCursor
         self.checkInputTarget = checkInputTarget
         self.copyToClipboard = copyToClipboard
         self.notifyUnavailableTarget = notifyUnavailableTarget
+        self.performAutoSend = performAutoSend
     }
 
     struct Request {
@@ -258,14 +264,14 @@ final class TranscriptionDelivery {
             pasteResult == .commandPosted,
             Self.canAutoSend(after: initialAvailability)
         {
-            Task { @MainActor [checkInputTarget] in
+            Task { @MainActor [checkInputTarget, performAutoSend] in
                 try? await Task.sleep(nanoseconds: 500_000_000)
                 if let inputTarget,
                     !Self.canAutoSend(after: checkInputTarget(inputTarget))
                 {
                     return
                 }
-                CursorPaster.performAutoSend(autoSendKey)
+                performAutoSend(autoSendKey)
             }
         }
     }

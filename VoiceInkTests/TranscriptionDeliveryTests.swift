@@ -243,6 +243,66 @@ struct TranscriptionDeliveryTests {
             ])
     }
 
+    @Test func targetChangedAfterPasteSuppressesAutoSend() async throws {
+        let defaults = UserDefaults.standard
+        let previousAppendSpace = defaults.object(forKey: "AppendTrailingSpace")
+        defer {
+            restore(previousAppendSpace, forKey: "AppendTrailingSpace", in: defaults)
+        }
+        defaults.set(false, forKey: "AppendTrailingSpace")
+
+        var checkCount = 0
+        var sentKeys: [AutoSendKey] = []
+        let delivery = TranscriptionDelivery(
+            pasteAtCursor: { _, canPostPaste in
+                canPostPaste() ? .commandPosted : .commandNotPosted
+            },
+            checkInputTarget: { _ in
+                checkCount += 1
+                return checkCount < 3 ? .active : .unavailable
+            },
+            performAutoSend: { key in
+                sentKeys.append(key)
+            }
+        )
+
+        let transcription = Transcription(
+            text: "original",
+            duration: 1,
+            transcriptionStatus: .completed
+        )
+        await delivery.deliver(
+            TranscriptionDelivery.Request(
+                transcription: transcription,
+                text: "do not send",
+                output: OutputRuntimeConfiguration(
+                    mode: nil,
+                    outputMode: .paste,
+                    autoSendKey: .enter,
+                    customCommand: nil
+                ),
+                responseConfig: nil,
+                responseError: nil,
+                isAssistantFollowUp: false,
+                inputTarget: makeInputTarget()
+            ),
+            actions: TranscriptionDelivery.Actions(
+                setState: { _ in },
+                dismiss: {},
+                sendFollowUp: { _, _ in },
+                showResponse: { _, _ in },
+                failResponse: { _ in }
+            )
+        )
+
+        for _ in 0..<100 where checkCount < 3 {
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+
+        #expect(checkCount == 3)
+        #expect(sentKeys.isEmpty)
+    }
+
     private func makeInputTarget() -> RecordingInputTarget {
         RecordingInputTarget(
             processID: ProcessInfo.processInfo.processIdentifier,
