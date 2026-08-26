@@ -76,7 +76,7 @@ struct RuntimeRecoveryTests {
         #expect(probe.hardStalls.isEmpty)
     }
 
-    @Test @MainActor func appKitProbeAcknowledgesOnlyAfterApplicationEventDispatch() {
+    @Test @MainActor func appKitProbeAcknowledgesOnlyMatchingDispatchedEvents() throws {
         let eventProbe = AppKitEventProbe()
         defer { eventProbe.stop() }
         var acknowledged = false
@@ -84,17 +84,36 @@ struct RuntimeRecoveryTests {
             acknowledged = true
         }
 
-        eventProbe.requestProbe()
-        for _ in 0..<100 where !acknowledged {
-            if let event = NSApplication.shared.nextEvent(
-                matching: .applicationDefined,
-                until: Date(timeIntervalSinceNow: 0.01),
-                inMode: .default,
-                dequeue: true
-            ) {
-                NSApplication.shared.sendEvent(event)
-            }
-        }
+        let unrelatedEvent = try #require(
+            NSEvent.otherEvent(
+                with: .applicationDefined,
+                location: .zero,
+                modifierFlags: [],
+                timestamp: 0,
+                windowNumber: 0,
+                context: nil,
+                subtype: 1,
+                data1: 0,
+                data2: 0
+            )
+        )
+        #expect(eventProbe.handleDispatchedEvent(unrelatedEvent) === unrelatedEvent)
+        #expect(!acknowledged)
+
+        let probeEvent = try #require(
+            NSEvent.otherEvent(
+                with: .applicationDefined,
+                location: .zero,
+                modifierFlags: [],
+                timestamp: 0,
+                windowNumber: 0,
+                context: nil,
+                subtype: AppKitEventProbe.eventSubtype,
+                data1: 1,
+                data2: 0
+            )
+        )
+        #expect(eventProbe.handleDispatchedEvent(probeEvent) == nil)
 
         #expect(acknowledged)
     }

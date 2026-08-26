@@ -400,17 +400,24 @@ final class MainThreadLivenessMonitor: @unchecked Sendable {
 /// only after NSApplication dispatches it through the local event monitor.
 @MainActor
 final class AppKitEventProbe {
-    private static let eventSubtype = Int16(22_089)
+    static let eventSubtype = Int16(22_089)
     private var monitor: Any?
     private var sequence: Int = 0
     var onAcknowledged: (() -> Void)?
 
     init() {
         monitor = NSEvent.addLocalMonitorForEvents(matching: .applicationDefined) { [weak self] event in
-            guard event.subtype.rawValue == Self.eventSubtype else { return event }
-            self?.onAcknowledged?()
-            return nil
+            self?.handleDispatchedEvent(event) ?? event
         }
+    }
+
+    /// Handles the event after AppKit dispatches it to the local monitor. Kept
+    /// separate from event-queue pumping so the dispatch boundary can be
+    /// simulated deterministically on both native and Rosetta test runners.
+    func handleDispatchedEvent(_ event: NSEvent) -> NSEvent? {
+        guard event.subtype.rawValue == Self.eventSubtype else { return event }
+        onAcknowledged?()
+        return nil
     }
 
     func requestProbe() {
