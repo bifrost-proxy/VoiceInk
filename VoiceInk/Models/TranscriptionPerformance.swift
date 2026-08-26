@@ -4,7 +4,7 @@ import Foundation
 /// Values stay optional so older records and non-streaming providers never
 /// acquire measurements that were not actually observed.
 struct TranscriptionPerformanceSnapshot: Codable, Equatable, Sendable {
-    static let currentSchemaVersion = 2
+    static let currentSchemaVersion = 3
 
     var schemaVersion: Int = currentSchemaVersion
     var executionMode: String
@@ -30,6 +30,19 @@ struct TranscriptionPerformanceSnapshot: Codable, Equatable, Sendable {
     var transportSendFailures: Int?
     var transportFailedBytes: Int?
     var terminalReceiveError: String?
+    var sessionID: String?
+    var attemptID: String?
+    var firstAudioAt: Date?
+    var firstServerEventAt: Date?
+    var lastServerEventAt: Date?
+    var commitSentAt: Date?
+    var maxBacklogBytes: Int?
+    var maxBacklogDuration: TimeInterval?
+    var maxPacketSendDuration: TimeInterval?
+    var terminationReason: String?
+    var recoveryStrategy: String?
+    var cancelToSocketCloseDuration: TimeInterval?
+    var concurrentAttemptCount: Int?
     var captureDroppedBuffers: UInt64?
     var captureDroppedFrames: UInt64?
     var captureInputFrames: UInt64?

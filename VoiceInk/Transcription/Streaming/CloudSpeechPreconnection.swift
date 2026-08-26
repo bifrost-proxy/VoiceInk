@@ -40,18 +40,25 @@ enum CloudSpeechConnectionTarget: Equatable, @unchecked Sendable {
         }
     }
 
+    var openTimeout: TimeInterval {
+        switch self {
+        case .doubao: 4
+        case .aliyun: 10
+        }
+    }
+
     func makeRequest() -> URLRequest {
         switch self {
         case .doubao(let apiKey, let resourceID, let endpoint):
             var request = URLRequest(url: endpoint)
-            request.timeoutInterval = 10
+            request.timeoutInterval = openTimeout
             request.setValue(apiKey, forHTTPHeaderField: "X-Api-Key")
             request.setValue(resourceID, forHTTPHeaderField: "X-Api-Resource-Id")
             request.setValue(UUID().uuidString, forHTTPHeaderField: "X-Api-Connect-Id")
             return request
         case .aliyun(let apiKey, let endpoint):
             var request = URLRequest(url: endpoint)
-            request.timeoutInterval = 10
+            request.timeoutInterval = openTimeout
             request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
             request.setValue("VoiceInk/macOS", forHTTPHeaderField: "User-Agent")
             return request
@@ -85,18 +92,23 @@ struct URLSessionCloudSpeechWebSocketConnector: CloudSpeechWebSocketConnecting {
     ) async throws -> any CloudSpeechWebSocketConnection {
         let delegate = CloudSpeechWebSocketDelegate(onClosed: onClosed)
         let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = 10
+        configuration.timeoutIntervalForRequest = target.openTimeout
         let session = URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
         let task = session.webSocketTask(with: target.makeRequest())
         let connection = URLSessionCloudSpeechWebSocketConnection(session: session, task: task)
         task.resume()
 
-        do {
-            try await delegate.waitUntilOpen(timeout: 10)
-            return connection
-        } catch {
+        return try await withTaskCancellationHandler {
+            do {
+                try await delegate.waitUntilOpen(timeout: target.openTimeout)
+                try Task.checkCancellation()
+                return connection
+            } catch {
+                connection.close()
+                throw error
+            }
+        } onCancel: {
             connection.close()
-            throw error
         }
     }
 }

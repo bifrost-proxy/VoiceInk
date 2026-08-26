@@ -62,8 +62,14 @@ protocol StreamingTranscriptionProvider: AnyObject {
 
     /// Stream of transcription events from the provider
     var transcriptionEvents: AsyncStream<StreamingTranscriptionEvent> { get }
+
+    /// Number of coordinated provider attempts observed for this session, when
+    /// the provider exposes process-wide attempt ownership.
+    func observedConcurrentAttemptCount() async -> Int?
 }
 
 extension StreamingTranscriptionProvider {
     var stopDisposition: StreamingStopDisposition { .finalizeStreaming }
+
+    func observedConcurrentAttemptCount() async -> Int? { nil }
 }
