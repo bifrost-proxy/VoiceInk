@@ -92,9 +92,13 @@ jobs:
             -parallel-testing-enabled NO
           )
           if [[ "$architecture" == "x86_64" ]]; then
-            # Cross-architecture WMO builds can exhaust the hosted arm64 runner
-            # when several package targets compile at once.
-            xcodebuild_args+=(-jobs 1)
+            # Cross-architecture WMO builds can exhaust the hosted arm64 runner.
+            # Keep the Release configuration, but compile Swift files serially
+            # instead of retaining whole-module IR for every package target.
+            xcodebuild_args+=(
+              -jobs 1
+              SWIFT_COMPILATION_MODE=singlefile
+            )
 
             # NSFileCoordinator can stall these tests after a long Rosetta
             # app-host session. Keep their x86 coverage, but run each in a
@@ -113,6 +117,7 @@ jobs:
                 -only-testing:"$split_test" \
                 -parallel-testing-enabled NO \
                 -jobs 1 \
+                SWIFT_COMPILATION_MODE=singlefile \
                 ARCHS="$architecture" \
                 ONLY_ACTIVE_ARCH=YES \
                 CODE_SIGNING_ALLOWED=NO \
