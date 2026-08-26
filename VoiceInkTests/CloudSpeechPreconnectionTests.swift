@@ -191,6 +191,9 @@ struct CloudSpeechPreconnectionTests {
         for _ in 0..<200 {
             let snapshot = await pool.snapshot()
             if snapshot.readyKeys.contains(target.key), await connector.openCount == 2 {
+                #expect(snapshot.failureCounts[target.key] == 1)
+                await pool.recordUseCompleted(for: target)
+                #expect(await pool.snapshot().failureCounts[target.key] == 0)
                 await pool.shutdown()
                 return
             }
@@ -198,6 +201,39 @@ struct CloudSpeechPreconnectionTests {
         }
         Issue.record("Timed out waiting for the replacement standby connection")
         await pool.shutdown()
+    }
+
+    @Test func runtimeRecoveryInvalidatesAndRebuildsActiveStandbyConnections() async throws {
+        let connector = FakeCloudSpeechConnector()
+        let pool = CloudSpeechConnectionPool(connector: connector)
+        let target = CloudSpeechConnectionTarget.aliyun(
+            apiKey: "test-key",
+            endpoint: URL(string: "wss://example.com/api-ws/v1/inference")!
+        )
+
+        await pool.reconcile(targets: [target])
+        try await waitUntilReady(pool, key: target.key)
+        await pool.recoverRuntimeConnections()
+        try await waitUntilReady(pool, key: target.key)
+
+        #expect(await connector.openCount == 2)
+        #expect(await connector.connection(at: 0)?.isClosed == true)
+        await pool.shutdown()
+    }
+
+    @Test func retryPolicyOpensACircuitAfterRepeatedUnstableConnections() {
+        #expect(
+            CloudSpeechConnectionPool.retryDelay(failureCount: 1, jitter: 0)
+                == .milliseconds(500)
+        )
+        #expect(
+            CloudSpeechConnectionPool.retryDelay(failureCount: 4, jitter: 0)
+                == .seconds(4)
+        )
+        #expect(
+            CloudSpeechConnectionPool.retryDelay(failureCount: 5, jitter: 0)
+                == .seconds(5 * 60)
+        )
     }
 
     @Test func idleStandbyPausesAndTheNextUseReactivatesIt() async throws {

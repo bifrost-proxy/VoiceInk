@@ -105,6 +105,18 @@ final class ModelPrewarmService: ObservableObject {
         logger.notice("Cancelled model prewarm because recording started")
     }
 
+    func suspendForRuntimePressure() {
+        guard let prewarmTask else { return }
+        prewarmTask.cancel()
+        self.prewarmTask = nil
+        logger.notice("Cancelled model prewarm because runtime pressure increased")
+    }
+
+    func recoverAfterRuntimeInterruption() {
+        logger.notice("Scheduling model prewarm after runtime recovery")
+        schedulePrewarmTask()
+    }
+
     // MARK: - Core Prewarming Logic
 
     private func performPrewarm() async {

@@ -569,6 +569,23 @@ class RecordingShortcutManager: ObservableObject {
         refreshShortcutMonitoring()
     }
 
+    /// Rebuilds every process-local shortcut monitor after macOS resumes the
+    /// app or restarts an event-related service. Re-enabling an existing event
+    /// tap is not sufficient when its Mach port or run-loop source is stale.
+    @discardableResult
+    func recoverRuntimeMonitoring() -> Bool {
+        let succeeded: Bool
+        if AXIsProcessTrusted() {
+            succeeded = refreshShortcutMonitoringAfterAccessibilityAuthorization()
+        } else {
+            succeeded = refreshShortcutMonitoring()
+        }
+        logger.notice(
+            "Runtime shortcut monitoring rebuild completed. succeeded=\(succeeded, privacy: .public) accessibilityTrusted=\(AXIsProcessTrusted(), privacy: .public)"
+        )
+        return succeeded
+    }
+
     func refreshForOnboardingStateChange() {
         refreshShortcutMonitoring()
     }
