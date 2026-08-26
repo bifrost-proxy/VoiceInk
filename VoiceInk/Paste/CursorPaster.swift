@@ -6,6 +6,7 @@ import os
 class CursorPaster {
     private typealias ClipboardItemSnapshot = [(NSPasteboard.PasteboardType, Data)]
     private typealias ClipboardSnapshot = [ClipboardItemSnapshot]
+    typealias PasteAuthorization = @MainActor () -> Bool
     private static let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "CursorPaster")
 
     enum PasteResult: Equatable {
@@ -20,7 +21,7 @@ class CursorPaster {
     static func pasteAtCursor(_ text: String) {
         Task {
             let pasteTask = await MainActor.run {
-                startPasteAtCursor(text)
+                startPasteAtCursor(text, canPostPaste: { true })
             }
             _ = await pasteTask.value
         }
@@ -28,19 +29,28 @@ class CursorPaster {
 
     @MainActor
     @discardableResult
-    static func startPasteAtCursor(_ text: String) -> Task<PasteResult, Never> {
+    static func startPasteAtCursor(
+        _ text: String,
+        canPostPaste: @escaping PasteAuthorization = { true }
+    ) -> Task<PasteResult, Never> {
         Task { @MainActor in
-            await performPasteSession(text)
+            await performPasteSession(text, canPostPaste: canPostPaste)
         }
     }
 
     @MainActor
-    static func pasteAtCursorAndWaitUntilPosted(_ text: String) async -> PasteResult {
-        await startPasteAtCursor(text).value
+    static func pasteAtCursorAndWaitUntilPosted(
+        _ text: String,
+        canPostPaste: @escaping PasteAuthorization = { true }
+    ) async -> PasteResult {
+        await startPasteAtCursor(text, canPostPaste: canPostPaste).value
     }
 
     @MainActor
-    private static func performPasteSession(_ text: String) async -> PasteResult {
+    private static func performPasteSession(
+        _ text: String,
+        canPostPaste: @escaping PasteAuthorization
+    ) async -> PasteResult {
         let pasteboard = NSPasteboard.general
         let shouldRestoreClipboard = UserDefaults.standard.bool(forKey: "restoreClipboardAfterPaste")
         let savedContents = shouldRestoreClipboard ? snapshotClipboard(from: pasteboard) : []
@@ -58,9 +68,13 @@ class CursorPaster {
         }
 
         await wait(prePasteDelay)
+        guard canPostPaste() else {
+            logger.notice("Paste command canceled because the original window is no longer active")
+            return .commandNotPosted
+        }
 
         let pasteResult = await postPasteCommand()
-        if shouldRestoreClipboard {
+        if shouldRestoreClipboard, Self.shouldRestoreClipboard(after: pasteResult) {
             scheduleClipboardRestore(
                 savedContents,
                 expectedText: text,
@@ -70,6 +84,10 @@ class CursorPaster {
         }
 
         return pasteResult
+    }
+
+    static func shouldRestoreClipboard(after pasteResult: PasteResult) -> Bool {
+        pasteResult == .commandPosted
     }
 
     private static func snapshotClipboard(from pasteboard: NSPasteboard) -> ClipboardSnapshot {

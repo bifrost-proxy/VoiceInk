@@ -3,39 +3,49 @@ import os
 
 @MainActor
 final class TranscriptionDelivery {
-    typealias PasteAtCursor = @MainActor (String) async -> CursorPaster.PasteResult
-    typealias RestoreInputTarget = @MainActor (RecordingInputTarget) async -> RecordingInputTargetRestoration
+    typealias PasteAtCursor =
+        @MainActor (String, @escaping CursorPaster.PasteAuthorization) async -> CursorPaster.PasteResult
+    typealias CheckInputTarget = @MainActor (RecordingInputTarget) -> RecordingInputTargetAvailability
     typealias CopyToClipboard = @MainActor (String) -> Bool
     typealias NotifyUnavailableTarget = @MainActor () -> Void
+    typealias PerformAutoSend = @MainActor (AutoSendKey) -> Void
 
     private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "TranscriptionDelivery")
     private let pasteAtCursor: PasteAtCursor
-    private let restoreInputTarget: RestoreInputTarget
+    private let checkInputTarget: CheckInputTarget
     private let copyToClipboard: CopyToClipboard
     private let notifyUnavailableTarget: NotifyUnavailableTarget
+    private let performAutoSend: PerformAutoSend
 
     init(
-        pasteAtCursor: @escaping PasteAtCursor = { text in
-            await CursorPaster.pasteAtCursorAndWaitUntilPosted(text)
+        pasteAtCursor: @escaping PasteAtCursor = { text, canPostPaste in
+            await CursorPaster.pasteAtCursorAndWaitUntilPosted(text, canPostPaste: canPostPaste)
         },
-        restoreInputTarget: @escaping RestoreInputTarget = { target in
-            await RecordingInputTargetService.restore(target)
+        checkInputTarget: @escaping CheckInputTarget = { target in
+            RecordingInputTargetService.availability(of: target)
         },
         copyToClipboard: @escaping CopyToClipboard = { text in
             ClipboardManager.copyToClipboard(text)
         },
         notifyUnavailableTarget: @escaping NotifyUnavailableTarget = {
             NotificationManager.shared.showNotification(
-                title: String(localized: "Original input is no longer available. Transcription copied to clipboard."),
+                title: String(
+                    localized:
+                        "Automatic paste was unavailable. Transcription copied—press Command+V to paste."
+                ),
                 type: .warning,
                 duration: 6.0
             )
+        },
+        performAutoSend: @escaping PerformAutoSend = { key in
+            CursorPaster.performAutoSend(key)
         }
     ) {
         self.pasteAtCursor = pasteAtCursor
-        self.restoreInputTarget = restoreInputTarget
+        self.checkInputTarget = checkInputTarget
         self.copyToClipboard = copyToClipboard
         self.notifyUnavailableTarget = notifyUnavailableTarget
+        self.performAutoSend = performAutoSend
     }
 
     struct Request {
@@ -225,40 +235,49 @@ final class TranscriptionDelivery {
         SoundManager.shared.playStopSound()
         await actions.dismiss()
 
-        let initialRestoration = if let inputTarget {
-            await restoreInputTarget(inputTarget)
+        let initialAvailability = if let inputTarget {
+            checkInputTarget(inputTarget)
         } else {
-            RecordingInputTargetRestoration.restored
+            RecordingInputTargetAvailability.active
         }
 
-        if initialRestoration == .unavailable {
+        if initialAvailability == .unavailable {
             if copyToClipboard(pastedText) {
                 notifyUnavailableTarget()
             }
             return
         }
 
-        let pasteResult = await pasteAtCursor(pastedText)
+        let pasteResult = await pasteAtCursor(pastedText) { [checkInputTarget] in
+            guard let inputTarget else { return true }
+            return checkInputTarget(inputTarget) == .active
+        }
+        if pasteResult == .commandNotPosted {
+            if copyToClipboard(pastedText) {
+                notifyUnavailableTarget()
+            }
+            return
+        }
 
         let autoSendKey = output.outputMode == .paste ? output.autoSendKey : .none
         if autoSendKey.isEnabled,
             pasteResult == .commandPosted,
-            Self.canAutoSend(after: initialRestoration)
+            Self.canAutoSend(after: initialAvailability)
         {
-            Task { @MainActor [restoreInputTarget] in
+            Task { @MainActor [checkInputTarget, performAutoSend] in
                 try? await Task.sleep(nanoseconds: 500_000_000)
                 if let inputTarget,
-                    !Self.canAutoSend(after: await restoreInputTarget(inputTarget))
+                    !Self.canAutoSend(after: checkInputTarget(inputTarget))
                 {
                     return
                 }
-                CursorPaster.performAutoSend(autoSendKey)
+                performAutoSend(autoSendKey)
             }
         }
     }
 
-    static func canAutoSend(after restoration: RecordingInputTargetRestoration) -> Bool {
-        restoration == .restored
+    static func canAutoSend(after availability: RecordingInputTargetAvailability) -> Bool {
+        availability == .active
     }
 
 }
