@@ -155,14 +155,99 @@ struct StreamingIntegrityTests {
     }
 
     @MainActor
-    private func makeService(provider: IntegrityProbeProvider) throws -> StreamingTranscriptionService {
+    @Test func fullyStableSnapshotIsSafeWhenFinalFrameIsMissing() async throws {
+        let provider = IntegrityProbeProvider(suppressCommitEvent: true)
+        let service = try makeService(
+            provider: provider,
+            deadlines: StreamingDeadlines(final: .milliseconds(20))
+        )
+
+        service.prepareForStart()
+        try await service.startStreaming(
+            model: IntegrityTestModel(),
+            context: TranscriptionRequestContext(language: "auto", prompt: nil)
+        )
+        provider.emitSnapshot(text: "stable result", stableText: "stable result")
+        for _ in 0..<20 where service.performanceSnapshot.firstServerEventAt == nil {
+            await Task.yield()
+        }
+
+        let result = try await service.stopAndFinalize()
+        guard case .finalized(let text) = result else {
+            Issue.record("A fully stable snapshot should be usable after a lost final frame")
+            return
+        }
+        #expect(text == "stable result")
+        #expect(service.performanceSnapshot.terminationReason == StreamingTerminationReason.stableSnapshot.rawValue)
+    }
+
+    @MainActor
+    @Test func ordinaryPartialIsNeverPromotedWhenFinalFrameIsMissing() async throws {
+        let provider = IntegrityProbeProvider(suppressCommitEvent: true)
+        let service = try makeService(
+            provider: provider,
+            deadlines: StreamingDeadlines(final: .milliseconds(20))
+        )
+
+        service.prepareForStart()
+        try await service.startStreaming(
+            model: IntegrityTestModel(),
+            context: TranscriptionRequestContext(language: "auto", prompt: nil)
+        )
+        provider.emitSnapshot(text: "unsafe partial", stableText: "safe")
+        for _ in 0..<20 where service.performanceSnapshot.firstServerEventAt == nil {
+            await Task.yield()
+        }
+
+        let result = try await service.stopAndFinalize()
+        guard case .finalized(let text) = result else {
+            Issue.record("Missing final should return an empty streaming result for complete-file recovery")
+            return
+        }
+        #expect(text.isEmpty)
+        #expect(service.performanceSnapshot.terminationReason == StreamingTerminationReason.missingFinal.rawValue)
+    }
+
+    @MainActor
+    @Test func audioDurationBacklogLimitRejectsRealtimePathWithoutLosingWAVRecovery() async throws {
+        let provider = IntegrityProbeProvider(sendDelay: .milliseconds(100))
+        let service = try makeService(
+            provider: provider,
+            deadlines: StreamingDeadlines(drain: .milliseconds(20))
+        )
+
+        service.prepareForStart(model: IntegrityTestModel(provider: .doubaoSpeech))
+        try await service.startStreaming(
+            model: IntegrityTestModel(provider: .doubaoSpeech),
+            context: TranscriptionRequestContext(language: "auto", prompt: nil)
+        )
+        for _ in 0..<100 {
+            service.sendAudioChunk(Data(repeating: 0x55, count: 320))
+        }
+
+        let result = try await service.stopAndFinalize()
+        guard case .requiresBatchFallback = result else {
+            Issue.record("More than 750 ms of queued audio must force complete-file recovery")
+            return
+        }
+        #expect((service.performanceSnapshot.droppedChunks ?? 0) > 0)
+        #expect((service.performanceSnapshot.maxBacklogBytes ?? 0) <= StreamingAudioIntegrityPolicy.maximumBacklogBytes)
+        #expect(service.performanceSnapshot.terminationReason == StreamingTerminationReason.sendBacklog.rawValue)
+    }
+
+    @MainActor
+    private func makeService(
+        provider: IntegrityProbeProvider,
+        deadlines: StreamingDeadlines = .production
+    ) throws -> StreamingTranscriptionService {
         let container = try ModelContainer(
             for: VocabularyWord.self,
             configurations: ModelConfiguration(isStoredInMemoryOnly: true)
         )
         return StreamingTranscriptionService(
             modelContext: ModelContext(container),
-            providerFactory: { _, _, _ in provider }
+            providerFactory: { _, _, _ in provider },
+            deadlines: deadlines
         )
     }
 }
@@ -264,14 +349,23 @@ private final class IntegrityProbeProvider: StreamingTranscriptionProvider {
     private let lock = NSLock()
     private let failSendAt: Int?
     private let errorOnCommit: Bool
+    private let suppressCommitEvent: Bool
+    private let sendDelay: Duration?
     private var sendAttempts = 0
     private var commitCount = 0
     private let continuation: AsyncStream<StreamingTranscriptionEvent>.Continuation
     let transcriptionEvents: AsyncStream<StreamingTranscriptionEvent>
 
-    init(failSendAt: Int? = nil, errorOnCommit: Bool = false) {
+    init(
+        failSendAt: Int? = nil,
+        errorOnCommit: Bool = false,
+        suppressCommitEvent: Bool = false,
+        sendDelay: Duration? = nil
+    ) {
         self.failSendAt = failSendAt
         self.errorOnCommit = errorOnCommit
+        self.suppressCommitEvent = suppressCommitEvent
+        self.sendDelay = sendDelay
         let pair = AsyncStream.makeStream(of: StreamingTranscriptionEvent.self)
         transcriptionEvents = pair.stream
         continuation = pair.continuation
@@ -280,6 +374,9 @@ private final class IntegrityProbeProvider: StreamingTranscriptionProvider {
     func connect(model _: any TranscriptionModel, language _: String?) async throws {}
 
     func sendAudioChunk(_: Data) async throws {
+        if let sendDelay {
+            try await Task.sleep(for: sendDelay)
+        }
         let shouldFail = lock.withLock {
             sendAttempts += 1
             return sendAttempts == failSendAt
@@ -293,7 +390,7 @@ private final class IntegrityProbeProvider: StreamingTranscriptionProvider {
         lock.withLock { commitCount += 1 }
         if errorOnCommit {
             continuation.yield(.error(IntegrityTestError.receiveFailed))
-        } else {
+        } else if !suppressCommitEvent {
             continuation.yield(.committed(text: "complete"))
         }
     }
@@ -304,6 +401,10 @@ private final class IntegrityProbeProvider: StreamingTranscriptionProvider {
 
     func emit(error: Error) {
         continuation.yield(.error(error))
+    }
+
+    func emitSnapshot(text: String, stableText: String) {
+        continuation.yield(.snapshot(text: text, stableText: stableText))
     }
 
     func snapshot() -> (sendAttempts: Int, commitCount: Int) {

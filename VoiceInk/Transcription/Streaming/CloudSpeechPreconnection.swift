@@ -44,7 +44,7 @@ enum CloudSpeechConnectionTarget: Equatable, @unchecked Sendable {
         switch self {
         case .doubao(let apiKey, let resourceID, let endpoint):
             var request = URLRequest(url: endpoint)
-            request.timeoutInterval = 10
+            request.timeoutInterval = 4
             request.setValue(apiKey, forHTTPHeaderField: "X-Api-Key")
             request.setValue(resourceID, forHTTPHeaderField: "X-Api-Resource-Id")
             request.setValue(UUID().uuidString, forHTTPHeaderField: "X-Api-Connect-Id")
@@ -85,14 +85,14 @@ struct URLSessionCloudSpeechWebSocketConnector: CloudSpeechWebSocketConnecting {
     ) async throws -> any CloudSpeechWebSocketConnection {
         let delegate = CloudSpeechWebSocketDelegate(onClosed: onClosed)
         let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = 10
+        configuration.timeoutIntervalForRequest = 4
         let session = URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
         let task = session.webSocketTask(with: target.makeRequest())
         let connection = URLSessionCloudSpeechWebSocketConnection(session: session, task: task)
         task.resume()
 
         do {
-            try await delegate.waitUntilOpen(timeout: 10)
+            try await delegate.waitUntilOpen(timeout: 4)
             return connection
         } catch {
             connection.close()

@@ -77,6 +77,22 @@ struct DoubaoWAVPayload: Sendable {
     }
 }
 
+private final class DoubaoReplayCancellation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var session: DoubaoWebSocketSession?
+
+    func setSession(_ session: DoubaoWebSocketSession?) {
+        lock.withLock { self.session = session }
+    }
+
+    func cancel() {
+        let session = lock.withLock { self.session }
+        Task {
+            await session?.disconnect()
+        }
+    }
+}
+
 struct DoubaoWebSocketReplayTranscriber: DoubaoReplayTranscribing {
     private let logger = Logger(
         subsystem: "com.prakashjoshipax.voiceink",
@@ -85,15 +101,18 @@ struct DoubaoWebSocketReplayTranscriber: DoubaoReplayTranscribing {
     private let connectionPool: CloudSpeechConnectionPool
     private let connector: any CloudSpeechWebSocketConnecting
     private let paceAudioInRealtime: Bool
+    private let onPartialTranscript: (@Sendable (String) -> Void)?
 
     init(
         connectionPool: CloudSpeechConnectionPool = .shared,
         connector: any CloudSpeechWebSocketConnecting = URLSessionCloudSpeechWebSocketConnector(),
-        paceAudioInRealtime: Bool = true
+        paceAudioInRealtime: Bool = true,
+        onPartialTranscript: (@Sendable (String) -> Void)? = nil
     ) {
         self.connectionPool = connectionPool
         self.connector = connector
         self.paceAudioInRealtime = paceAudioInRealtime
+        self.onPartialTranscript = onPartialTranscript
     }
 
     func transcribe(
@@ -103,6 +122,31 @@ struct DoubaoWebSocketReplayTranscriber: DoubaoReplayTranscribing {
         customVocabulary: [String],
         settings: DoubaoSpeechSettings,
         recognitionContext: RecognitionContextEnvelope?
+    ) async throws -> String {
+        let cancellation = DoubaoReplayCancellation()
+        return try await withTaskCancellationHandler {
+            try await performTranscription(
+                wavData: wavData,
+                apiKey: apiKey,
+                resourceID: resourceID,
+                customVocabulary: customVocabulary,
+                settings: settings,
+                recognitionContext: recognitionContext,
+                cancellation: cancellation
+            )
+        } onCancel: {
+            cancellation.cancel()
+        }
+    }
+
+    private func performTranscription(
+        wavData: Data,
+        apiKey: String,
+        resourceID: String,
+        customVocabulary: [String],
+        settings: DoubaoSpeechSettings,
+        recognitionContext: RecognitionContextEnvelope?,
+        cancellation: DoubaoReplayCancellation
     ) async throws -> String {
         let startedAt = Date()
         var stage = "parse"
@@ -120,6 +164,7 @@ struct DoubaoWebSocketReplayTranscriber: DoubaoReplayTranscribing {
                 connector: connector
             )
             session = replaySession
+            cancellation.setSession(replaySession)
             stage = "connect"
             try await replaySession.connect(
                 apiKey: apiKey,
@@ -131,6 +176,22 @@ struct DoubaoWebSocketReplayTranscriber: DoubaoReplayTranscribing {
                 startReceiving: false,
                 allowPreconnectedConnection: false
             )
+
+            // Receive while paced replay is still sending so partial snapshots
+            // keep the retry visible instead of arriving only after the whole
+            // file has been uploaded. The bound includes audio duration plus
+            // the four-second final-response allowance.
+            let receiveTimeoutMilliseconds = Int64(
+                ceil((paceAudioInRealtime ? estimatedDuration : 0) * 1_000)
+            ) + 4_000
+            let finalTask = Task {
+                try await replaySession.receiveFinalTranscript(
+                    timeout: .milliseconds(receiveTimeoutMilliseconds),
+                    onSnapshot: { [onPartialTranscript] response in
+                        onPartialTranscript?(response.text)
+                    }
+                )
+            }
 
             stage = "send"
             var offset = 0
@@ -155,10 +216,11 @@ struct DoubaoWebSocketReplayTranscriber: DoubaoReplayTranscribing {
             stage = "commit"
             try await replaySession.commit()
             stage = "finalResponse"
-            let transcript = try await replaySession.receiveFinalTranscript()
+            let transcript = try await finalTask.value
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             await replaySession.disconnect()
             session = nil
+            cancellation.setSession(nil)
 
             guard !transcript.isEmpty else {
                 throw CloudTranscriptionError.noTranscriptionReturned
@@ -169,6 +231,7 @@ struct DoubaoWebSocketReplayTranscriber: DoubaoReplayTranscribing {
             return transcript
         } catch {
             await session?.disconnect()
+            cancellation.setSession(nil)
             logger.error(
                 "Doubao full-file fallback completed outcome=failure stage=\(stage, privacy: .public) elapsed=\(Date().timeIntervalSince(startedAt), format: .fixed(precision: 3), privacy: .public)s error=\(error.localizedDescription, privacy: .public)"
             )

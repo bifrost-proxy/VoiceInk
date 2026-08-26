@@ -2,15 +2,25 @@ import Foundation
 import SwiftData
 import os
 
-/// Sendable source that bridges audio chunks from any thread into an AsyncStream.
+private struct QueuedAudioChunk: Sendable {
+    let data: Data
+    let enqueuedAt: ContinuousClock.Instant
+}
+
+/// Sendable source that coalesces provider-specific packets before crossing an
+/// actor boundary and enforces a queue limit expressed as audio duration.
 private final class AudioChunkSource: @unchecked Sendable {
-    let stream: AsyncStream<Data>
-    private let continuation: AsyncStream<Data>.Continuation
+    let stream: AsyncStream<QueuedAudioChunk>
+    private let continuation: AsyncStream<QueuedAudioChunk>.Continuation
+    private let lock = NSLock()
+    private var packetizer: DoubaoAudioPacketizer?
+    private var queuedBytes = 0
+    private var isFinished = false
 
     init() {
         let (stream, continuation) = AsyncStream.makeStream(
-            of: Data.self,
-            bufferingPolicy: .bufferingOldest(StreamingAudioIntegrityPolicy.bufferCapacity)
+            of: QueuedAudioChunk.self,
+            bufferingPolicy: .unbounded
         )
         self.stream = stream
         self.continuation = continuation
@@ -20,19 +30,55 @@ private final class AudioChunkSource: @unchecked Sendable {
         continuation.finish()
     }
 
-    func send(_ data: Data) -> Bool {
-        switch continuation.yield(data) {
-        case .enqueued(_):
-            return true
-        case .dropped(_), .terminated:
-            return false
-        @unknown default:
-            return false
+    func configure(packetizeForDoubao: Bool) {
+        lock.withLock {
+            precondition(queuedBytes == 0 && !isFinished)
+            packetizer = packetizeForDoubao ? DoubaoAudioPacketizer() : nil
+        }
+    }
+
+    func send(_ data: Data) -> (accepted: Bool, backlogBytes: Int) {
+        lock.withLock {
+            guard !isFinished else { return (false, queuedBytes) }
+            let bufferedPacketBytes = packetizer?.bufferedByteCount ?? 0
+            guard queuedBytes + bufferedPacketBytes + data.count
+                <= StreamingAudioIntegrityPolicy.maximumBacklogBytes
+            else {
+                return (false, queuedBytes + bufferedPacketBytes)
+            }
+
+            let packets: [Data]
+            if packetizer != nil {
+                packets = packetizer!.append(data)
+            } else {
+                packets = [data]
+            }
+            for packet in packets {
+                queuedBytes += packet.count
+                continuation.yield(QueuedAudioChunk(data: packet, enqueuedAt: .now))
+            }
+            return (true, queuedBytes + (packetizer?.bufferedByteCount ?? 0))
         }
     }
 
     func finish() {
-        continuation.finish()
+        lock.withLock {
+            guard !isFinished else { return }
+            isFinished = true
+            if var packetizer, let remainder = packetizer.flush() {
+                queuedBytes += remainder.count
+                continuation.yield(QueuedAudioChunk(data: remainder, enqueuedAt: .now))
+                self.packetizer = packetizer
+            }
+            continuation.finish()
+        }
+    }
+
+    func didSend(_ chunk: QueuedAudioChunk) -> (backlogBytes: Int, sendLatency: Duration) {
+        lock.withLock {
+            queuedBytes = max(0, queuedBytes - chunk.data.count)
+            return (queuedBytes, chunk.enqueuedAt.duration(to: .now))
+        }
     }
 }
 
@@ -57,27 +103,30 @@ private actor StreamingTaskCompletionRace {
 
 private final class StreamingOperationFailureBox: @unchecked Sendable {
     private let lock = NSLock()
-    private var storedDescription: String?
+    private var storedError: Error?
 
-    var description: String? {
+    var error: Error? {
         lock.lock()
         defer { lock.unlock() }
-        return storedDescription
+        return storedError
     }
 
     func record(_ error: Error) {
         lock.lock()
-        storedDescription = error.localizedDescription
+        storedError = error
         lock.unlock()
     }
 }
 
 enum StreamingAudioIntegrityPolicy {
-    static let bufferCapacity = 2_048
-    static let startupTimeout: Duration = .seconds(12)
-    static let drainTimeout: Duration = .seconds(10)
-    static let commitTimeout: Duration = .seconds(10)
-    static let disconnectTimeout: Duration = .seconds(3)
+    static let bytesPerSecond = 16_000 * MemoryLayout<Int16>.size
+    static let warningBacklogBytes = bytesPerSecond / 4
+    static let maximumBacklogBytes = bytesPerSecond * 3 / 4
+    static let startupTimeout: Duration = .seconds(4)
+    static let drainTimeout: Duration = .seconds(1)
+    static let commitTimeout: Duration = .seconds(4)
+    static let finalTimeout: Duration = .seconds(4)
+    static let disconnectTimeout: Duration = .milliseconds(500)
 
     static func requiresBatchFallback(
         droppedChunks: Int,
@@ -122,6 +171,16 @@ enum StreamingAudioIntegrityPolicy {
     }
 }
 
+struct StreamingDeadlines: Sendable {
+    var startup: Duration = StreamingAudioIntegrityPolicy.startupTimeout
+    var drain: Duration = StreamingAudioIntegrityPolicy.drainTimeout
+    var commit: Duration = StreamingAudioIntegrityPolicy.commitTimeout
+    var final: Duration = StreamingAudioIntegrityPolicy.finalTimeout
+    var disconnect: Duration = StreamingAudioIntegrityPolicy.disconnectTimeout
+
+    static let production = StreamingDeadlines()
+}
+
 private final class StreamingMetrics: @unchecked Sendable {
     private let lock = NSLock()
     private var receivedChunks = 0
@@ -132,6 +191,11 @@ private final class StreamingMetrics: @unchecked Sendable {
     private var droppedBytes = 0
     private var transportSendFailures = 0
     private var transportFailedBytes = 0
+    private var maximumBacklogBytes = 0
+    private var maximumBacklogDuration: TimeInterval = 0
+    private var maximumPacketSendDuration: TimeInterval = 0
+    private var firstAudioAt: Date?
+    private var backlogWarningReported = false
 
     func reset() {
         lock.lock()
@@ -143,11 +207,19 @@ private final class StreamingMetrics: @unchecked Sendable {
         droppedBytes = 0
         transportSendFailures = 0
         transportFailedBytes = 0
+        maximumBacklogBytes = 0
+        maximumBacklogDuration = 0
+        maximumPacketSendDuration = 0
+        firstAudioAt = nil
+        backlogWarningReported = false
         lock.unlock()
     }
 
     func recordReceived(_ byteCount: Int) {
         lock.lock()
+        if firstAudioAt == nil {
+            firstAudioAt = Date()
+        }
         receivedChunks += 1
         receivedBytes += byteCount
         lock.unlock()
@@ -181,6 +253,32 @@ private final class StreamingMetrics: @unchecked Sendable {
         lock.unlock()
     }
 
+    func recordBacklog(byteCount: Int) -> Bool {
+        lock.withLock {
+            maximumBacklogBytes = max(maximumBacklogBytes, byteCount)
+            maximumBacklogDuration = max(
+                maximumBacklogDuration,
+                Double(byteCount) / Double(StreamingAudioIntegrityPolicy.bytesPerSecond)
+            )
+            guard byteCount >= StreamingAudioIntegrityPolicy.warningBacklogBytes,
+                !backlogWarningReported
+            else {
+                return false
+            }
+            backlogWarningReported = true
+            return true
+        }
+    }
+
+    func recordPacketSend(duration: Duration) {
+        let components = duration.components
+        let seconds = Double(components.seconds)
+            + Double(components.attoseconds) / 1_000_000_000_000_000_000
+        lock.withLock {
+            maximumPacketSendDuration = max(maximumPacketSendDuration, seconds)
+        }
+    }
+
     func snapshot() -> (
         receivedChunks: Int,
         receivedBytes: Int,
@@ -189,7 +287,11 @@ private final class StreamingMetrics: @unchecked Sendable {
         droppedChunks: Int,
         droppedBytes: Int,
         transportSendFailures: Int,
-        transportFailedBytes: Int
+        transportFailedBytes: Int,
+        maximumBacklogBytes: Int,
+        maximumBacklogDuration: TimeInterval,
+        maximumPacketSendDuration: TimeInterval,
+        firstAudioAt: Date?
     ) {
         lock.lock()
         defer { lock.unlock() }
@@ -201,7 +303,11 @@ private final class StreamingMetrics: @unchecked Sendable {
             droppedChunks,
             droppedBytes,
             transportSendFailures,
-            transportFailedBytes
+            transportFailedBytes,
+            maximumBacklogBytes,
+            maximumBacklogDuration,
+            maximumPacketSendDuration,
+            firstAudioAt
         )
     }
 }
@@ -246,10 +352,29 @@ enum StreamingState {
     case idle
     case connecting
     case streaming
+    case draining
     case committing
+    case recovering
+    case cancelling
     case done
     case failed
     case cancelled
+    case closed
+}
+
+enum StreamingTerminationReason: String, Sendable {
+    case completed
+    case stableSnapshot
+    case committedSegments
+    case connectTimeout
+    case sendBacklog
+    case drainTimeout
+    case commitTimeout
+    case missingFinal
+    case sendFailure
+    case receiveFailure
+    case cancelled
+    case disconnectTimeout
 }
 
 enum StreamingStopResult {
@@ -278,6 +403,7 @@ class StreamingTranscriptionService {
     private let fluidAudioService: FluidAudioTranscriptionService?
     private let sherpaOnnxService: SherpaOnnxTranscriptionService?
     private let providerFactory: ProviderFactory?
+    private let deadlines: StreamingDeadlines
     private var onPartialTranscript: (@MainActor (String) -> Void)?
     private let metrics = StreamingMetrics()
     private var stopStartedAt: Date?
@@ -290,19 +416,31 @@ class StreamingTranscriptionService {
     private var drainDuration: TimeInterval?
     private var finalizationDuration: TimeInterval?
     private var terminalReceiveErrorDescription: String?
+    private let sessionID = UUID()
+    private var attemptID: UUID?
+    private var firstServerEventAt: Date?
+    private var lastServerEventAt: Date?
+    private var commitSentAt: Date?
+    private var terminationReason: StreamingTerminationReason?
+    private var recoveryStrategy: String?
+    private var cancelToSocketCloseDuration: TimeInterval?
+    private var latestPreviewText = ""
+    private var latestStableText = ""
 
     init(
         modelContext: ModelContext, fluidAudioService: FluidAudioTranscriptionService? = nil,
         sherpaOnnxService: SherpaOnnxTranscriptionService? = nil,
         onPartialTranscript: (@MainActor (String) -> Void)? = nil,
         providerFactory: ProviderFactory? = nil,
-        customVocabulary: [String]? = nil
+        customVocabulary: [String]? = nil,
+        deadlines: StreamingDeadlines = .production
     ) {
         self.customVocabulary = customVocabulary ?? TranscriptionVocabularyContext.uniqueTerms(from: modelContext)
         self.fluidAudioService = fluidAudioService
         self.sherpaOnnxService = sherpaOnnxService
         self.onPartialTranscript = onPartialTranscript
         self.providerFactory = providerFactory
+        self.deadlines = deadlines
     }
 
     deinit {
@@ -317,7 +455,26 @@ class StreamingTranscriptionService {
     private var commitSignal: AsyncStream<Void>.Continuation?
 
     /// Whether the streaming connection is fully established and actively sending.
-    var isActive: Bool { state == .streaming || state == .committing }
+    var isActive: Bool {
+        state == .streaming || state == .draining || state == .committing || state == .recovering
+    }
+
+    func beginCompleteFileStreamingRecovery() {
+        guard state != .cancelling && state != .cancelled else { return }
+        state = .recovering
+        recoveryStrategy = "freshStreamingReplay"
+    }
+
+    func publishRecoveryPreview(_ text: String) {
+        guard state == .recovering else { return }
+        latestPreviewText = text
+        onPartialTranscript?(text)
+    }
+
+    func finishCompleteFileStreamingRecovery(succeeded: Bool) {
+        guard state == .recovering else { return }
+        state = succeeded ? .done : .failed
+    }
 
     var performanceSnapshot: TranscriptionPerformanceSnapshot {
         var result = TranscriptionPerformanceSnapshot(executionMode: "streaming")
@@ -336,14 +493,27 @@ class StreamingTranscriptionService {
         result.transportSendFailures = counters.transportSendFailures
         result.transportFailedBytes = counters.transportFailedBytes
         result.terminalReceiveError = terminalReceiveErrorDescription
+        result.sessionID = String(sessionID.uuidString.prefix(8))
+        result.attemptID = attemptID.map { String($0.uuidString.prefix(8)) }
+        result.firstAudioAt = counters.firstAudioAt
+        result.firstServerEventAt = firstServerEventAt
+        result.lastServerEventAt = lastServerEventAt
+        result.commitSentAt = commitSentAt
+        result.maxBacklogBytes = counters.maximumBacklogBytes
+        result.maxBacklogDuration = counters.maximumBacklogDuration
+        result.maxPacketSendDuration = counters.maximumPacketSendDuration
+        result.terminationReason = terminationReason?.rawValue
+        result.recoveryStrategy = recoveryStrategy
+        result.cancelToSocketCloseDuration = cancelToSocketCloseDuration
         return result
     }
 
     /// Resets session accounting before the recorder receives its audio
     /// callback. Local model loading is asynchronous, so doing this inside
     /// `startStreaming` could erase chunks already queued during cold start.
-    func prepareForStart() {
+    func prepareForStart(model: (any TranscriptionModel)? = nil) {
         state = .connecting
+        chunkSource.configure(packetizeForDoubao: model?.provider == .doubaoSpeech)
         committedSegments = []
         metrics.reset()
         firstPartialLogged = false
@@ -356,19 +526,30 @@ class StreamingTranscriptionService {
         drainDuration = nil
         finalizationDuration = nil
         terminalReceiveErrorDescription = nil
+        attemptID = nil
+        firstServerEventAt = nil
+        lastServerEventAt = nil
+        commitSentAt = nil
+        terminationReason = nil
+        recoveryStrategy = nil
+        cancelToSocketCloseDuration = nil
+        latestPreviewText = ""
+        latestStableText = ""
     }
 
     /// Start a streaming transcription session for the given model.
     func startStreaming(model: any TranscriptionModel, context: TranscriptionRequestContext) async throws {
         let start = Date()
         if state != .connecting {
-            prepareForStart()
+            prepareForStart(model: model)
         }
 
         let selectedLanguage = context.language ?? "auto"
         let maximumAttempts = shouldImmediatelyRetryConnection(for: model) ? 2 : 1
 
         for attempt in 1...maximumAttempts {
+            let currentAttemptID = UUID()
+            attemptID = currentAttemptID
             let provider = StreamingProviderTransport(
                 provider: createProvider(for: model, context: context)
             )
@@ -378,37 +559,56 @@ class StreamingTranscriptionService {
                 "Streaming start requested model=\(model.displayName, privacy: .public) language=\(selectedLanguage, privacy: .public) attempt=\(attempt, privacy: .public)/\(maximumAttempts, privacy: .public)"
             )
 
-            do {
-                try await provider.connect(model: model, language: selectedLanguage)
-            } catch {
-                await provider.disconnect()
+            let connectFailure = StreamingOperationFailureBox()
+            let connectTask = Task { @MainActor in
+                do {
+                    try await provider.connect(model: model, language: selectedLanguage)
+                } catch {
+                    connectFailure.record(error)
+                }
+            }
+            let connectedInTime = await StreamingAudioIntegrityPolicy.waitForCompletion(
+                of: connectTask,
+                timeout: deadlines.startup
+            )
+            if !connectedInTime || connectFailure.error != nil {
+                _ = await disconnectWithinDeadline(provider)
                 self.provider = nil
 
-                if state == .cancelled {
+                if state == .cancelling || state == .cancelled {
                     throw CancellationError()
                 }
+                if !connectedInTime {
+                    terminationReason = .connectTimeout
+                }
                 guard attempt < maximumAttempts else {
-                    throw error
+                    if !connectedInTime {
+                        throw StreamingTranscriptionError.timeout
+                    }
+                    throw connectFailure.error ?? StreamingTranscriptionError.notConnected
                 }
 
                 logger.warning(
-                    "Streaming connection attempt failed; reconnecting immediately model=\(model.displayName, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
+                    "Streaming connection attempt failed; reconnecting immediately model=\(model.displayName, privacy: .public) timedOut=\(!connectedInTime, privacy: .public) error=\(connectFailure.error?.localizedDescription ?? "deadline", privacy: .public)"
                 )
                 continue
             }
 
             connectionDuration = Date().timeIntervalSince(start)
+            if terminationReason == .connectTimeout {
+                terminationReason = nil
+            }
 
             // If cancel() was called while we were awaiting the connection, tear down immediately.
-            if state == .cancelled {
-                await provider.disconnect()
+            if state == .cancelling || state == .cancelled {
+                _ = await disconnectWithinDeadline(provider)
                 self.provider = nil
-                return
+                throw CancellationError()
             }
 
             state = .streaming
             startSendLoop()
-            await startEventConsumer()
+            await startEventConsumer(attemptID: currentAttemptID)
 
             logger.notice(
                 "Streaming connected model=\(model.displayName, privacy: .public) elapsed=\(Date().timeIntervalSince(start), format: .fixed(precision: 3), privacy: .public)s attempt=\(attempt, privacy: .public)"
@@ -429,7 +629,16 @@ class StreamingTranscriptionService {
     /// Buffers an audio chunk for sending. Safe to call from the recorder processing queue.
     nonisolated func sendAudioChunk(_ data: Data) {
         metrics.recordReceived(data.count)
-        if !chunkSource.send(data) {
+        let enqueueResult = chunkSource.send(data)
+        if metrics.recordBacklog(byteCount: enqueueResult.backlogBytes) {
+            Logger(
+                subsystem: "com.prakashjoshipax.voiceink",
+                category: "StreamingTranscriptionService"
+            ).warning(
+                "Streaming audio backlog crossed warning threshold bytes=\(enqueueResult.backlogBytes, privacy: .public)"
+            )
+        }
+        if !enqueueResult.accepted {
             metrics.recordDropped(data.count)
         }
     }
@@ -454,7 +663,7 @@ class StreamingTranscriptionService {
             return .requiresBatchFallback
         }
 
-        state = .committing
+        state = .draining
         stopStartedAt = Date()
         let beforeDrain = metrics.snapshot()
         logger.notice(
@@ -470,6 +679,16 @@ class StreamingTranscriptionService {
             hasTerminalReceiveError: terminalReceiveErrorDescription != nil,
             drainedInTime: drainedInTime
         ) {
+            if afterDrain.droppedChunks > 0 {
+                terminationReason = .sendBacklog
+            } else if afterDrain.transportSendFailures > 0 {
+                terminationReason = .sendFailure
+            } else if terminalReceiveErrorDescription != nil {
+                terminationReason = .receiveFailure
+            } else if !drainedInTime {
+                terminationReason = .drainTimeout
+            }
+            recoveryStrategy = "completeFile"
             logger.warning(
                 "Streaming audio integrity lost; retrying complete file droppedChunks=\(afterDrain.droppedChunks, privacy: .public) sendFailures=\(afterDrain.transportSendFailures, privacy: .public) receiveError=\(self.terminalReceiveErrorDescription != nil, privacy: .public) drainedInTime=\(drainedInTime, privacy: .public)"
             )
@@ -477,6 +696,8 @@ class StreamingTranscriptionService {
             await cleanupStreaming()
             return .requiresBatchFallback
         }
+
+        state = .committing
 
         // Set up the commit signal BEFORE sending commit to avoid a race with the response.
         let (signalStream, signalContinuation) = AsyncStream.makeStream(of: Void.self)
@@ -494,29 +715,35 @@ class StreamingTranscriptionService {
         }
         let committedInTime = await StreamingAudioIntegrityPolicy.waitForCompletion(
             of: commitTask,
-            timeout: StreamingAudioIntegrityPolicy.commitTimeout
+            timeout: deadlines.commit
         )
-        if !committedInTime || commitFailure.description != nil {
+        if !committedInTime || commitFailure.error != nil {
             commitSignal?.finish()
             commitSignal = nil
-            if let description = commitFailure.description {
+            if let error = commitFailure.error {
+                let description = error.localizedDescription
                 logger.error("Failed to send commit: \(description, privacy: .public)")
             } else {
                 logger.warning("Streaming commit exceeded the reliability deadline")
             }
+            terminationReason = .commitTimeout
+            recoveryStrategy = "completeFile"
             state = .failed
             await cleanupStreaming()
             if !committedInTime {
                 throw StreamingTranscriptionError.timeout
             }
             throw StreamingTranscriptionError.connectionFailed(
-                commitFailure.description ?? "Commit failed"
+                commitFailure.error?.localizedDescription ?? "Commit failed"
             )
         }
+        commitSentAt = Date()
 
         // Wait for the server to acknowledge our commit (or timeout)
         let finalText = await waitForFinalCommit(signalStream: signalStream)
         if terminalReceiveErrorDescription != nil {
+            terminationReason = .receiveFailure
+            recoveryStrategy = "completeFile"
             logger.warning("Streaming receive failed during commit; retrying complete file")
             state = .done
             await cleanupStreaming()
@@ -530,6 +757,9 @@ class StreamingTranscriptionService {
         }
 
         state = .done
+        if terminationReason == nil {
+            terminationReason = .completed
+        }
         await cleanupStreaming()
 
         return .finalized(text: finalText)
@@ -537,7 +767,9 @@ class StreamingTranscriptionService {
 
     /// Cancels the streaming session without waiting for results.
     func cancel() {
-        state = .cancelled
+        guard state != .cancelled && state != .closed else { return }
+        state = .cancelling
+        terminationReason = .cancelled
         onPartialTranscript = nil
         eventConsumerTask?.cancel()
         eventConsumerTask = nil
@@ -552,12 +784,17 @@ class StreamingTranscriptionService {
         let providerToDisconnect = provider
         provider = nil
 
-        Task {
-            await providerToDisconnect?.disconnect()
+        let cancelStartedAt = Date()
+        Task { @MainActor [weak self] in
+            if let providerToDisconnect {
+                _ = await self?.disconnectWithinDeadline(providerToDisconnect)
+            }
+            self?.cancelToSocketCloseDuration = Date().timeIntervalSince(cancelStartedAt)
+            self?.state = .cancelled
         }
 
         committedSegments = []
-        logger.notice("Streaming cancelled")
+        logger.notice("Streaming cancellation requested")
     }
 
     // MARK: - Private
@@ -641,19 +878,23 @@ class StreamingTranscriptionService {
         let source = chunkSource
         let provider = provider
         let metrics = metrics
+        let logger = logger
 
-        sendTask = Task.detached { [weak self] in
+        sendTask = Task.detached {
             for await chunk in source.stream {
                 do {
-                    try await provider?.sendAudioChunk(chunk)
-                    metrics.recordSent(chunk.count)
+                    let sendStartedAt = ContinuousClock.now
+                    try await provider?.sendAudioChunk(chunk.data)
+                    metrics.recordPacketSend(duration: sendStartedAt.duration(to: .now))
+                    metrics.recordSent(chunk.data.count)
+                    let backlog = source.didSend(chunk)
+                    _ = metrics.recordBacklog(byteCount: backlog.backlogBytes)
                 } catch {
                     let desc = error.localizedDescription
-                    metrics.recordTransportSendFailure(chunk.count)
-                    await MainActor.run {
-                        self?.logger.error("Failed to send audio chunk: \(desc, privacy: .public)")
-                        self?.chunkSource.finish()
-                    }
+                    metrics.recordTransportSendFailure(chunk.data.count)
+                    _ = source.didSend(chunk)
+                    logger.error("Failed to send audio chunk: \(desc, privacy: .public)")
+                    source.finish()
                     break
                 }
             }
@@ -668,7 +909,7 @@ class StreamingTranscriptionService {
         if let sendTask {
             completed = await StreamingAudioIntegrityPolicy.waitForCompletion(
                 of: sendTask,
-                timeout: StreamingAudioIntegrityPolicy.drainTimeout
+                timeout: deadlines.drain
             )
         } else {
             completed = true
@@ -686,17 +927,26 @@ class StreamingTranscriptionService {
     }
 
     /// Consumes transcription events throughout the session, accumulating committed segments.
-    private func startEventConsumer() async {
+    private func startEventConsumer(attemptID consumerAttemptID: UUID) async {
         guard let provider = provider else { return }
         let events = await provider.transcriptionEvents
 
         eventConsumerTask = Task.detached { [weak self] in
             for await event in events {
                 guard let self = self else { break }
+                let isCurrentAttempt = await MainActor.run {
+                    self.attemptID == consumerAttemptID
+                        && self.state != .cancelling
+                        && self.state != .cancelled
+                        && self.state != .closed
+                }
+                guard isCurrentAttempt else { continue }
                 switch event {
                 case .committed(let text):
                     let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
                     await MainActor.run {
+                        self.firstServerEventAt = self.firstServerEventAt ?? Date()
+                        self.lastServerEventAt = Date()
                         if !self.firstCommitLogged {
                             self.firstCommitLogged = true
                             if let preparedAt = self.preparedAt {
@@ -709,10 +959,12 @@ class StreamingTranscriptionService {
                         }
                         if !trimmed.isEmpty {
                             self.committedSegments.append(trimmed)
+                            self.latestPreviewText = self.committedSegments.joined(separator: " ")
+                            self.latestStableText = self.latestPreviewText
                         }
                         // Refresh the live preview so it keeps showing the full running transcript
                         // after a commit (instead of resetting to empty until the next partial).
-                        if self.state == .streaming {
+                        if self.state == .streaming || self.state == .draining || self.state == .committing {
                             self.onPartialTranscript?(self.committedSegments.joined(separator: " "))
                         }
                         if self.state == .committing {
@@ -721,6 +973,8 @@ class StreamingTranscriptionService {
                     }
                 case .partial(let text):
                     await MainActor.run {
+                        self.firstServerEventAt = self.firstServerEventAt ?? Date()
+                        self.lastServerEventAt = Date()
                         if !self.firstPartialLogged {
                             self.firstPartialLogged = true
                             if let preparedAt = self.preparedAt {
@@ -728,7 +982,8 @@ class StreamingTranscriptionService {
                             }
                             self.logger.notice("Streaming first partial event chars=\(text.count, privacy: .public)")
                         }
-                        if self.state == .streaming {
+                        self.latestPreviewText = text
+                        if self.state == .streaming || self.state == .draining || self.state == .committing {
                             let prefix = self.committedSegments.joined(separator: " ")
                             let display: String
                             if prefix.isEmpty {
@@ -744,6 +999,8 @@ class StreamingTranscriptionService {
                     }
                 case .snapshot(let text, let stableText):
                     await MainActor.run {
+                        self.firstServerEventAt = self.firstServerEventAt ?? Date()
+                        self.lastServerEventAt = Date()
                         if !self.firstPartialLogged {
                             self.firstPartialLogged = true
                             if let preparedAt = self.preparedAt {
@@ -753,7 +1010,9 @@ class StreamingTranscriptionService {
                                 "Streaming first native snapshot chars=\(text.count, privacy: .public) stableChars=\(stableText.count, privacy: .public)"
                             )
                         }
-                        if self.state == .streaming {
+                        self.latestPreviewText = text
+                        self.latestStableText = stableText
+                        if self.state == .streaming || self.state == .draining || self.state == .committing {
                             self.onPartialTranscript?(text)
                         }
                     }
@@ -761,6 +1020,8 @@ class StreamingTranscriptionService {
                     break
                 case .error(let error):
                     await MainActor.run {
+                        self.firstServerEventAt = self.firstServerEventAt ?? Date()
+                        self.lastServerEventAt = Date()
                         self.logger.error("Streaming event error: \(error, privacy: .public)")
                         if self.terminalReceiveErrorDescription == nil {
                             self.terminalReceiveErrorDescription = error.localizedDescription
@@ -774,9 +1035,10 @@ class StreamingTranscriptionService {
         }
     }
 
-    /// Waits for the server to acknowledge our explicit commit, with a 10-second timeout.
+    /// Waits for an explicit final event. A fully stable snapshot is safe to
+    /// use if the final frame is lost; ordinary partial text is never returned.
     private func waitForFinalCommit(signalStream: AsyncStream<Void>) async -> String {
-        // Race: wait for commit acknowledgment vs timeout
+        let finalTimeout = deadlines.final
         let receivedInTime = await withTaskGroup(of: Bool.self) { group in
             group.addTask { @MainActor in
                 for await _ in signalStream {
@@ -786,7 +1048,7 @@ class StreamingTranscriptionService {
             }
 
             group.addTask {
-                try? await Task.sleep(nanoseconds: 10_000_000_000)  // 10 seconds
+                try? await Task.sleep(for: finalTimeout)
                 return false
             }
 
@@ -802,15 +1064,48 @@ class StreamingTranscriptionService {
         commitSignal?.finish()
         commitSignal = nil
 
-        if !receivedInTime && committedSegments.isEmpty {
-            logger.warning("No transcript received from streaming")
+        if !receivedInTime {
+            let preview = latestPreviewText.trimmingCharacters(in: .whitespacesAndNewlines)
+            let stable = latestStableText.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !stable.isEmpty, stable == preview {
+                terminationReason = .stableSnapshot
+                logger.notice(
+                    "Streaming final frame missing; using fully stable snapshot chars=\(stable.count, privacy: .public)"
+                )
+                return stable
+            }
+
+            if !committedSegments.isEmpty {
+                terminationReason = .committedSegments
+                logger.notice(
+                    "Streaming final frame missing; using committed segments count=\(self.committedSegments.count, privacy: .public)"
+                )
+                return committedSegments.joined(separator: " ")
+            }
+
+            terminationReason = .missingFinal
+            recoveryStrategy = "completeFile"
+            logger.warning("Streaming final frame missing; retrying complete file")
         }
 
         return committedSegments.isEmpty ? "" : committedSegments.joined(separator: " ")
     }
 
+    private func disconnectWithinDeadline(_ provider: StreamingProviderTransport) async -> Bool {
+        let disconnectTask = Task.detached(priority: .utility) {
+            await provider.disconnect()
+        }
+        let disconnected = await StreamingAudioIntegrityPolicy.waitForCompletion(
+            of: disconnectTask,
+            timeout: deadlines.disconnect
+        )
+        if !disconnected {
+            logger.warning("Streaming disconnect exceeded the reliability deadline")
+        }
+        return disconnected
+    }
+
     private func cleanupStreaming() async {
-        onPartialTranscript = nil
         eventConsumerTask?.cancel()
         eventConsumerTask = nil
         sendTask?.cancel()
@@ -819,19 +1114,15 @@ class StreamingTranscriptionService {
         commitSignal?.finish()
         commitSignal = nil
         if let provider {
-            let disconnectTask = Task.detached(priority: .utility) {
-                await provider.disconnect()
-            }
-            let disconnected = await StreamingAudioIntegrityPolicy.waitForCompletion(
-                of: disconnectTask,
-                timeout: StreamingAudioIntegrityPolicy.disconnectTimeout
-            )
+            let disconnected = await disconnectWithinDeadline(provider)
             if !disconnected {
-                logger.warning("Streaming disconnect exceeded the reliability deadline")
+                if terminationReason == nil || terminationReason == .completed {
+                    terminationReason = .disconnectTimeout
+                }
             }
         }
         provider = nil
-        state = .idle
+        state = .closed
         committedSegments = []
     }
 }

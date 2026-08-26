@@ -510,6 +510,111 @@ struct DoubaoStreamingTests {
         #expect(connection.didSendFinalFrame)
     }
 
+    @Test func fullFileRecoveryPublishesStreamingSnapshotsBeforeFinal() async throws {
+        let connection = DoubaoReplayTestConnection(
+            finalText: "恢复完成",
+            partialText: "正在恢复",
+            emitPartialBeforeFinalFrame: true
+        )
+        let connector = DoubaoReplayTestConnector(connection: connection)
+        let partials = ThreadSafeStringProbe()
+        let transcriber = DoubaoWebSocketReplayTranscriber(
+            connectionPool: CloudSpeechConnectionPool(connector: connector),
+            connector: connector,
+            paceAudioInRealtime: false,
+            onPartialTranscript: { partials.append($0) }
+        )
+
+        let result = try await transcriber.transcribe(
+            wavData: makePCM16WAV(pcm: Data(repeating: 0x33, count: 6_400)),
+            apiKey: "doubao-key",
+            resourceID: DoubaoSpeechProvider.defaultResourceID,
+            customVocabulary: [],
+            settings: .defaults,
+            recognitionContext: nil
+        )
+
+        #expect(result == "恢复完成")
+        #expect(partials.values == ["正在恢复"])
+        #expect(connection.receiveCount == 2)
+        #expect(connection.partialWasEmittedBeforeFinalFrame)
+    }
+
+    @Test func attemptCoordinatorNeverGrantsTwoDoubaoAttemptsAtOnce() async throws {
+        let coordinator = DoubaoAttemptCoordinator()
+        let firstID = UUID()
+        let secondID = UUID()
+        try await coordinator.acquire(firstID)
+
+        let secondAcquire = Task {
+            try await coordinator.acquire(secondID)
+        }
+        try await Task.sleep(for: .milliseconds(30))
+        #expect(await coordinator.activeCount == 1)
+        #expect(!secondAcquire.isCancelled)
+
+        await coordinator.release(firstID)
+        try await secondAcquire.value
+        #expect(await coordinator.activeCount == 1)
+        #expect(await coordinator.maximumObservedCount == 1)
+        await coordinator.release(secondID)
+        #expect(await coordinator.activeCount == 0)
+    }
+
+    @Test func attemptCoordinatorBoundsWaitBehindAStaleAttempt() async throws {
+        let coordinator = DoubaoAttemptCoordinator()
+        let firstID = UUID()
+        try await coordinator.acquire(firstID)
+
+        let startedAt = ContinuousClock.now
+        do {
+            try await coordinator.acquire(UUID(), timeout: .milliseconds(20))
+            Issue.record("A stale Doubao attempt must not block a replacement forever")
+        } catch let error as StreamingTranscriptionError {
+            guard case .timeout = error else {
+                Issue.record("Expected timeout while waiting behind a stale attempt")
+                return
+            }
+        }
+        #expect(startedAt.duration(to: .now) < .milliseconds(500))
+        await coordinator.release(firstID)
+    }
+
+    @Test func cancellingRecoveryClosesReceiveImmediately() async throws {
+        let connection = DoubaoBlockingFinalConnection()
+        let connector = SingleDoubaoConnectionConnector(connection: connection)
+        let transcriber = DoubaoWebSocketReplayTranscriber(
+            connectionPool: CloudSpeechConnectionPool(connector: connector),
+            connector: connector,
+            paceAudioInRealtime: false
+        )
+        let task = Task {
+            try await transcriber.transcribe(
+                wavData: makePCM16WAV(pcm: Data(repeating: 0x44, count: 3_200)),
+                apiKey: "doubao-key",
+                resourceID: DoubaoSpeechProvider.defaultResourceID,
+                customVocabulary: [],
+                settings: .defaults,
+                recognitionContext: nil
+            )
+        }
+
+        for _ in 0..<100 where !connection.receiveStarted {
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        #expect(connection.receiveStarted)
+        let cancelledAt = ContinuousClock.now
+        task.cancel()
+        do {
+            _ = try await task.value
+            Issue.record("Cancelled recovery must not produce a transcript")
+        } catch is CancellationError {
+            // Expected.
+        }
+        #expect(connection.isClosed)
+        #expect(cancelledAt.duration(to: .now) < .milliseconds(500))
+    }
+
     @Test func finalFrameEndsReceiveLoopWithoutTurningNormalServerCloseIntoAnError() async throws {
         let connection = DoubaoReplayTestConnection(finalText: "最终结果")
         let connector = DoubaoReplayTestConnector(connection: connection)
@@ -1152,17 +1257,29 @@ private final class DoubaoReplayTestConnector: CloudSpeechWebSocketConnecting, @
 private final class DoubaoReplayTestConnection: CloudSpeechWebSocketConnection, @unchecked Sendable {
     private let lock = NSLock()
     private let finalText: String
+    private let partialText: String?
+    private let emitPartialBeforeFinalFrame: Bool
     private var storedAudioPayload = Data()
     private var storedDidSendFinalFrame = false
     private var storedReceiveCount = 0
+    private var storedPartialWasEmittedBeforeFinalFrame = false
 
-    init(finalText: String) {
+    init(
+        finalText: String,
+        partialText: String? = nil,
+        emitPartialBeforeFinalFrame: Bool = false
+    ) {
         self.finalText = finalText
+        self.partialText = partialText
+        self.emitPartialBeforeFinalFrame = emitPartialBeforeFinalFrame
     }
 
     var audioPayload: Data { lock.withLock { storedAudioPayload } }
     var didSendFinalFrame: Bool { lock.withLock { storedDidSendFinalFrame } }
     var receiveCount: Int { lock.withLock { storedReceiveCount } }
+    var partialWasEmittedBeforeFinalFrame: Bool {
+        lock.withLock { storedPartialWasEmittedBeforeFinalFrame }
+    }
 
     func send(_ message: URLSessionWebSocketTask.Message) async throws {
         guard case .data(let data) = message, data.count >= 8 else { return }
@@ -1179,16 +1296,25 @@ private final class DoubaoReplayTestConnection: CloudSpeechWebSocketConnection, 
     }
 
     func receive() async throws -> URLSessionWebSocketTask.Message {
-        while !didSendFinalFrame {
-            try await Task.sleep(for: .milliseconds(1))
-        }
-        lock.withLock {
+        let receiveCount = lock.withLock {
             storedReceiveCount += 1
+            return storedReceiveCount
         }
+        let isPartial = receiveCount == 1 && partialText != nil
+        if isPartial && emitPartialBeforeFinalFrame {
+            lock.withLock {
+                storedPartialWasEmittedBeforeFinalFrame = !storedDidSendFinalFrame
+            }
+        } else {
+            while !didSendFinalFrame {
+                try await Task.sleep(for: .milliseconds(1))
+            }
+        }
+        let responseText = isPartial ? partialText! : finalText
         let payload = try JSONSerialization.data(withJSONObject: [
-            "result": ["text": finalText, "utterances": []] as [String: Any]
+            "result": ["text": responseText, "utterances": []] as [String: Any]
         ])
-        var frame = Data([0x11, 0x93, 0x10, 0x00])
+        var frame = Data([0x11, isPartial ? 0x91 : 0x93, 0x10, 0x00])
         appendUInt32(1, to: &frame)
         appendUInt32(UInt32(payload.count), to: &frame)
         frame.append(payload)
@@ -1203,5 +1329,68 @@ private final class DoubaoReplayTestConnection: CloudSpeechWebSocketConnection, 
         data.append(UInt8((value >> 16) & 0xFF))
         data.append(UInt8((value >> 8) & 0xFF))
         data.append(UInt8(value & 0xFF))
+    }
+}
+
+private final class ThreadSafeStringProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedValues: [String] = []
+
+    var values: [String] { lock.withLock { storedValues } }
+
+    func append(_ value: String) {
+        lock.withLock { storedValues.append(value) }
+    }
+}
+
+private final class SingleDoubaoConnectionConnector: CloudSpeechWebSocketConnecting, @unchecked Sendable {
+    private let connection: any CloudSpeechWebSocketConnection
+
+    init(connection: any CloudSpeechWebSocketConnection) {
+        self.connection = connection
+    }
+
+    func open(
+        target _: CloudSpeechConnectionTarget,
+        onClosed _: (@Sendable (Error?) -> Void)?
+    ) async throws -> any CloudSpeechWebSocketConnection {
+        connection
+    }
+}
+
+private final class DoubaoBlockingFinalConnection: CloudSpeechWebSocketConnection, @unchecked Sendable {
+    private let lock = NSLock()
+    private var receiveContinuation: CheckedContinuation<URLSessionWebSocketTask.Message, Error>?
+    private var storedReceiveStarted = false
+    private var storedIsClosed = false
+
+    var receiveStarted: Bool { lock.withLock { storedReceiveStarted } }
+    var isClosed: Bool { lock.withLock { storedIsClosed } }
+
+    func send(_: URLSessionWebSocketTask.Message) async throws {}
+
+    func receive() async throws -> URLSessionWebSocketTask.Message {
+        try await withCheckedThrowingContinuation { continuation in
+            let shouldCancel = lock.withLock {
+                storedReceiveStarted = true
+                if storedIsClosed { return true }
+                receiveContinuation = continuation
+                return false
+            }
+            if shouldCancel {
+                continuation.resume(throwing: CancellationError())
+            }
+        }
+    }
+
+    func ping(timeout _: Duration) async throws {}
+
+    func close() {
+        let continuation = lock.withLock {
+            storedIsClosed = true
+            defer { receiveContinuation = nil }
+            return receiveContinuation
+        }
+        continuation?.resume(throwing: CancellationError())
     }
 }

@@ -128,12 +128,15 @@ final class StreamingTranscriptionSession: TranscriptionSession {
     private let fallbackService: TranscriptionService
     private var model: (any TranscriptionModel)?
     private var context: TranscriptionRequestContext = .currentDefaults
+    private var customVocabulary: [String] = []
     private var streamingFailed = false
     private(set) var lastResolution: Resolution?
     private var startupTask: Task<Void, Never>?
     private var startupTaskID: UUID?
     private var fallbackDuration: TimeInterval?
     private var fallbackErrorDescription: String?
+    private var fallbackTask: Task<String, Error>?
+    private var isCancelled = false
     private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "StreamingTranscriptionSession")
 
     init(streamingService: StreamingTranscriptionService, fallbackService: TranscriptionService) {
@@ -147,13 +150,15 @@ final class StreamingTranscriptionSession: TranscriptionSession {
 
         self.model = model
         self.context = context
+        self.customVocabulary = configuration.vocabulary?.terms ?? []
         self.streamingFailed = false
         self.lastResolution = nil
         self.fallbackDuration = nil
         self.fallbackErrorDescription = nil
+        self.isCancelled = false
         logger.notice("Streaming session prepare model=\(model.displayName, privacy: .public)")
 
-        streamingService.prepareForStart()
+        streamingService.prepareForStart(model: model)
 
         // Return callback immediately; WebSocket connects in background
         let service = streamingService
@@ -198,9 +203,21 @@ final class StreamingTranscriptionSession: TranscriptionSession {
     }
 
     func transcribe(audioURL: URL) async throws -> String {
+        try await withTaskCancellationHandler {
+            try await performTranscription(audioURL: audioURL)
+        } onCancel: { [weak self] in
+            Task { @MainActor in
+                self?.cancel()
+            }
+        }
+    }
+
+    private func performTranscription(audioURL: URL) async throws -> String {
         guard let model = model else {
             throw VoiceInkEngineError.transcriptionFailed
         }
+        try Task.checkCancellation()
+        guard !isCancelled else { throw CancellationError() }
 
         // A buffered local model may still be loading when the user releases the shortcut.
         // Let startup finish so queued audio can drain instead of treating it as disconnected.
@@ -217,6 +234,9 @@ final class StreamingTranscriptionSession: TranscriptionSession {
                 streamingService.cancel()
             }
         }
+
+        try Task.checkCancellation()
+        guard !isCancelled else { throw CancellationError() }
 
         if !streamingFailed {
             do {
@@ -238,6 +258,8 @@ final class StreamingTranscriptionSession: TranscriptionSession {
                     lastResolution = .batchFallbackRequested
                     logger.notice("Streaming provider requested full batch transcription")
                 }
+            } catch is CancellationError {
+                throw CancellationError()
             } catch {
                 lastResolution = .batchFallbackAfterStreamingError
                 logger.error("❌ Streaming failed, falling back to batch: \(error, privacy: .public)")
@@ -256,21 +278,66 @@ final class StreamingTranscriptionSession: TranscriptionSession {
 
         let fallbackStart = Date()
         logger.notice(
-            "Batch fallback started model=\(model.displayName, privacy: .public) resolution=\(self.lastResolution?.rawValue ?? "unknown", privacy: .public) file=\(audioURL.lastPathComponent, privacy: .public)"
+            "Complete-file recovery started model=\(model.displayName, privacy: .public) strategy=\(model.provider == .doubaoSpeech ? "freshStreamingReplay" : "providerFallback", privacy: .public) resolution=\(self.lastResolution?.rawValue ?? "unknown", privacy: .public) file=\(audioURL.lastPathComponent, privacy: .public)"
         )
+        try Task.checkCancellation()
+        guard !isCancelled else { throw CancellationError() }
+        let fallbackTask: Task<String, Error>
+        if model.provider == .doubaoSpeech,
+            let apiKey = APIKeyManager.shared.getAPIKey(
+                forProvider: "Doubao Speech",
+                allowAuthenticationUI: false
+            ),
+            !apiKey.isEmpty
+        {
+            streamingService.beginCompleteFileStreamingRecovery()
+            let service = streamingService
+            let replayTranscriber = DoubaoWebSocketReplayTranscriber(
+                onPartialTranscript: { [weak service] text in
+                    Task { @MainActor in
+                        service?.publishRecoveryPreview(text)
+                    }
+                }
+            )
+            let vocabulary = customVocabulary
+            let recognitionContext = context.speechRecognitionContext
+            fallbackTask = Task {
+                let wavData = try await Task.detached(priority: .userInitiated) {
+                    try Data(contentsOf: audioURL, options: [.mappedIfSafe])
+                }.value
+                return try await replayTranscriber.transcribe(
+                    wavData: wavData,
+                    apiKey: apiKey,
+                    resourceID: model.name,
+                    customVocabulary: vocabulary,
+                    settings: .current(),
+                    recognitionContext: recognitionContext
+                )
+            }
+        } else {
+            fallbackTask = Task {
+                try await fallbackService.transcribe(audioURL: audioURL, model: model, context: context)
+            }
+        }
+        self.fallbackTask = fallbackTask
+        defer { self.fallbackTask = nil }
         do {
-            let text = try await fallbackService.transcribe(audioURL: audioURL, model: model, context: context)
+            let text = try await fallbackTask.value
+            try Task.checkCancellation()
+            guard !isCancelled else { throw CancellationError() }
             fallbackDuration = Date().timeIntervalSince(fallbackStart)
             fallbackErrorDescription = nil
+            streamingService.finishCompleteFileStreamingRecovery(succeeded: true)
             logger.notice(
-                "Batch fallback completed outcome=success elapsed=\(self.fallbackDuration ?? 0, format: .fixed(precision: 3), privacy: .public)s chars=\(text.count, privacy: .public)"
+                "Complete-file recovery completed outcome=success elapsed=\(self.fallbackDuration ?? 0, format: .fixed(precision: 3), privacy: .public)s chars=\(text.count, privacy: .public)"
             )
             return text
         } catch {
             fallbackDuration = Date().timeIntervalSince(fallbackStart)
+            streamingService.finishCompleteFileStreamingRecovery(succeeded: false)
             fallbackErrorDescription = "\(String(reflecting: type(of: error))): \(error.localizedDescription)"
             logger.error(
-                "Batch fallback completed outcome=failure elapsed=\(self.fallbackDuration ?? 0, format: .fixed(precision: 3), privacy: .public)s error=\(self.fallbackErrorDescription ?? error.localizedDescription, privacy: .public)"
+                "Complete-file recovery completed outcome=failure elapsed=\(self.fallbackDuration ?? 0, format: .fixed(precision: 3), privacy: .public)s error=\(self.fallbackErrorDescription ?? error.localizedDescription, privacy: .public)"
             )
             throw error
         }
@@ -295,9 +362,12 @@ final class StreamingTranscriptionSession: TranscriptionSession {
     }
 
     func cancel() {
+        isCancelled = true
         startupTask?.cancel()
         startupTask = nil
         startupTaskID = nil
+        fallbackTask?.cancel()
+        fallbackTask = nil
         streamingService.cancel()
     }
 

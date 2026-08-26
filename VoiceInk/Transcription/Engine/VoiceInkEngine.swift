@@ -166,6 +166,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
     @Published private(set) var recordingPermissionGuidance: RecorderPermissionGuidance?
     var currentSession: TranscriptionSession?
     private var currentSessionTranscriptionConfiguration: TranscriptionRuntimeConfiguration?
+    private var activeRealtimeSessionID: UUID?
     private var activeRecordingStartID: UUID?
     private var activePipelineTranscriptionID: UUID?
     private var activePipelineTranscription: Transcription?
@@ -345,6 +346,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
             let canContinueAssistantSession = isAssistantFollowUp && assistantSession.canSendFollowUp
             let recordingUseCase: RecordingUseCase = canContinueAssistantSession ? .assistantFollowUp : .newSession
 
+            cancelSupersededPipelineForNewRecording()
             activePipelineTranscriptionID = nil
             recordingDurationLimiter.cancel()
             shouldCancelRecording = false
@@ -638,18 +640,21 @@ class VoiceInkEngine: NSObject, ObservableObject {
 
         guard serviceRegistry.shouldUseRealtimeTranscription(for: transcriptionConfiguration) else {
             currentSession = nil
+            activeRealtimeSessionID = nil
             currentSessionTranscriptionConfiguration = transcriptionConfiguration
             recorder.onAudioChunk = nil
             _ = realtimeAudioGate.reset()
             return true
         }
 
+        let realtimeSessionID = UUID()
+        activeRealtimeSessionID = realtimeSessionID
         let session = serviceRegistry.createSession(
             for: transcriptionConfiguration,
             onPartialTranscript: { [weak self] partial in
                 guard let self,
-                    self.activeRecordingStartID == startID,
-                    self.recordingState == .recording
+                    self.activeRealtimeSessionID == realtimeSessionID,
+                    self.recordingState == .recording || self.recordingState == .transcribing
                 else {
                     return
                 }
@@ -666,6 +671,9 @@ class VoiceInkEngine: NSObject, ObservableObject {
             currentSession === session
         else {
             session.cancel()
+            if activeRealtimeSessionID == realtimeSessionID {
+                activeRealtimeSessionID = nil
+            }
             _ = realtimeAudioGate.reset()
             recorder.onAudioChunk = nil
             return true
@@ -1135,6 +1143,7 @@ class VoiceInkEngine: NSObject, ObservableObject {
         }
 
         let session = currentSession
+        let realtimeSessionID = activeRealtimeSessionID
         let transcriptionID = transcription.id
         activePipelineTranscriptionID = transcriptionID
         activePipelineTranscription = transcription
@@ -1234,6 +1243,9 @@ class VoiceInkEngine: NSObject, ObservableObject {
             activePipelineTask = nil
             currentSession = nil
             currentSessionTranscriptionConfiguration = nil
+            if activeRealtimeSessionID == realtimeSessionID {
+                activeRealtimeSessionID = nil
+            }
             recordedFile = nil
             shouldCancelRecording = false
             activePipelineUseCase = .newSession
@@ -1429,12 +1441,22 @@ class VoiceInkEngine: NSObject, ObservableObject {
 
         currentSession = nil
         currentSessionTranscriptionConfiguration = nil
+        activeRealtimeSessionID = nil
     }
 
     private func cancelCurrentSession() {
         currentSession?.cancel()
         currentSession = nil
         currentSessionTranscriptionConfiguration = nil
+        activeRealtimeSessionID = nil
+    }
+
+    private func cancelSupersededPipelineForNewRecording() {
+        if let activePipelineTranscriptionID {
+            canceledPipelineTranscriptionIDs.insert(activePipelineTranscriptionID)
+        }
+        activePipelineTask?.cancel()
+        cancelCurrentSession()
     }
 
     private func finishRecorderSession() async {
