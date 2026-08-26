@@ -18,6 +18,8 @@ struct CloudSpeechPreconnectionTests {
 
         #expect(doubao.key != aliyun.key)
         #expect(doubao.makeRequest().url?.host == "openspeech.bytedance.com")
+        #expect(doubao.openTimeout == 4)
+        #expect(doubao.makeRequest().timeoutInterval == 4)
         #expect(
             doubao.makeRequest().value(forHTTPHeaderField: "X-Api-Resource-Id")
                 == DoubaoSpeechProvider.defaultResourceID
@@ -28,6 +30,8 @@ struct CloudSpeechPreconnectionTests {
         #expect(doubao.key.diagnosticLabel.contains("resourceID=\(DoubaoSpeechProvider.defaultResourceID)"))
         #expect(!doubao.key.diagnosticLabel.contains("doubao-key"))
         #expect(aliyun.makeRequest().url?.host == "dashscope.aliyuncs.com")
+        #expect(aliyun.openTimeout == 10)
+        #expect(aliyun.makeRequest().timeoutInterval == 10)
         #expect(aliyun.makeRequest().value(forHTTPHeaderField: "X-Api-Resource-Id") == nil)
         #expect(aliyun.key.diagnosticLabel == "provider=AlibabaCloudQwen endpoint=dashscope.aliyuncs.com")
         #expect(!aliyun.key.diagnosticLabel.contains("aliyun-key"))

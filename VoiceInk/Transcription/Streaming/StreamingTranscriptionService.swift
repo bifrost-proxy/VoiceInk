@@ -15,7 +15,9 @@ private final class AudioChunkSource: @unchecked Sendable {
     private let lock = NSLock()
     private var packetizer: DoubaoAudioPacketizer?
     private var queuedBytes = 0
-    private var maximumQueuedBytes = StreamingAudioIntegrityPolicy.maximumBacklogBytes
+    private var queuedChunks = 0
+    private var maximumQueuedBytes: Int? = StreamingAudioIntegrityPolicy.maximumBacklogBytes
+    private var maximumQueuedChunks: Int?
     private var pendingMaximumQueuedBytes: Int?
     private var isFinished = false
 
@@ -32,11 +34,16 @@ private final class AudioChunkSource: @unchecked Sendable {
         continuation.finish()
     }
 
-    func configure(packetizeForDoubao: Bool, maximumBacklogBytes: Int) {
+    func configure(
+        packetizeForDoubao: Bool,
+        maximumBacklogBytes: Int?,
+        maximumBacklogChunks: Int?
+    ) {
         lock.withLock {
-            precondition(queuedBytes == 0 && !isFinished)
+            precondition(queuedBytes == 0 && queuedChunks == 0 && !isFinished)
             packetizer = packetizeForDoubao ? DoubaoAudioPacketizer() : nil
             maximumQueuedBytes = maximumBacklogBytes
+            maximumQueuedChunks = maximumBacklogChunks
             pendingMaximumQueuedBytes = nil
         }
     }
@@ -45,9 +52,12 @@ private final class AudioChunkSource: @unchecked Sendable {
         lock.withLock {
             guard !isFinished else { return (false, queuedBytes) }
             let bufferedPacketBytes = packetizer?.bufferedByteCount ?? 0
-            guard queuedBytes + bufferedPacketBytes + data.count
-                <= maximumQueuedBytes
-            else {
+            if let maximumQueuedBytes,
+                queuedBytes + bufferedPacketBytes + data.count > maximumQueuedBytes
+            {
+                return (false, queuedBytes + bufferedPacketBytes)
+            }
+            if let maximumQueuedChunks, queuedChunks + 1 > maximumQueuedChunks {
                 return (false, queuedBytes + bufferedPacketBytes)
             }
 
@@ -59,6 +69,7 @@ private final class AudioChunkSource: @unchecked Sendable {
             }
             for packet in packets {
                 queuedBytes += packet.count
+                queuedChunks += 1
                 continuation.yield(QueuedAudioChunk(data: packet, enqueuedAt: .now))
             }
             return (true, queuedBytes + (packetizer?.bufferedByteCount ?? 0))
@@ -86,6 +97,7 @@ private final class AudioChunkSource: @unchecked Sendable {
             isFinished = true
             if var packetizer, let remainder = packetizer.flush() {
                 queuedBytes += remainder.count
+                queuedChunks += 1
                 continuation.yield(QueuedAudioChunk(data: remainder, enqueuedAt: .now))
                 self.packetizer = packetizer
             }
@@ -96,6 +108,7 @@ private final class AudioChunkSource: @unchecked Sendable {
     func didSend(_ chunk: QueuedAudioChunk) -> (backlogBytes: Int, sendLatency: Duration) {
         lock.withLock {
             queuedBytes = max(0, queuedBytes - chunk.data.count)
+            queuedChunks = max(0, queuedChunks - 1)
             let bufferedBytes = queuedBytes + (packetizer?.bufferedByteCount ?? 0)
             if let pendingMaximumQueuedBytes, bufferedBytes <= pendingMaximumQueuedBytes {
                 maximumQueuedBytes = pendingMaximumQueuedBytes
@@ -143,6 +156,7 @@ private final class StreamingOperationFailureBox: @unchecked Sendable {
 }
 
 enum StreamingAudioIntegrityPolicy {
+    static let legacyBufferCapacity = 2_048
     static let bytesPerSecond = 16_000 * MemoryLayout<Int16>.size
     static let warningBacklogBytes = bytesPerSecond / 4
     static let maximumBacklogBytes = bytesPerSecond * 3 / 4
@@ -451,6 +465,7 @@ class StreamingTranscriptionService {
     private let providerFactory: ProviderFactory?
     private let configuredDeadlines: StreamingDeadlines?
     private var usesDoubaoDeadlines = false
+    private var startupAttemptCount = 1
     private var onPartialTranscript: (@MainActor (String) -> Void)?
     private let metrics = StreamingMetrics()
     private var stopStartedAt: Date?
@@ -561,7 +576,10 @@ class StreamingTranscriptionService {
         configuredDeadlines ?? (usesDoubaoDeadlines ? .production : .standardProduction)
     }
 
-    var startupDeadline: Duration { deadlines.startup }
+    var startupDeadline: Duration {
+        deadlines.startup * startupAttemptCount
+            + deadlines.disconnect * max(0, startupAttemptCount - 1)
+    }
 
     /// Resets session accounting before the recorder receives its audio
     /// callback. Local model loading is asynchronous, so doing this inside
@@ -569,13 +587,18 @@ class StreamingTranscriptionService {
     func prepareForStart(model: (any TranscriptionModel)? = nil) {
         state = .connecting
         usesDoubaoDeadlines = model?.provider == .doubaoSpeech
-        let connectionAttemptCount = model.map { shouldImmediatelyRetryConnection(for: $0) ? 2 : 1 } ?? 1
+        startupAttemptCount = model.map { shouldImmediatelyRetryConnection(for: $0) ? 2 : 1 } ?? 1
         chunkSource.configure(
             packetizeForDoubao: usesDoubaoDeadlines,
-            maximumBacklogBytes: StreamingAudioIntegrityPolicy.startupBacklogBytes(
-                deadline: deadlines.startup,
-                attemptCount: connectionAttemptCount
-            )
+            maximumBacklogBytes: usesDoubaoDeadlines
+                ? StreamingAudioIntegrityPolicy.startupBacklogBytes(
+                    deadline: deadlines.startup,
+                    attemptCount: startupAttemptCount
+                )
+                : nil,
+            maximumBacklogChunks: usesDoubaoDeadlines
+                ? nil
+                : StreamingAudioIntegrityPolicy.legacyBufferCapacity
         )
         committedSegments = []
         metrics.reset()
@@ -674,7 +697,9 @@ class StreamingTranscriptionService {
 
             state = .streaming
             concurrentAttemptCount = await provider.observedConcurrentAttemptCount()
-            chunkSource.reduceMaximumBacklog(to: StreamingAudioIntegrityPolicy.maximumBacklogBytes)
+            if usesDoubaoDeadlines {
+                chunkSource.reduceMaximumBacklog(to: StreamingAudioIntegrityPolicy.maximumBacklogBytes)
+            }
             startSendLoop()
             await startEventConsumer(attemptID: currentAttemptID)
 

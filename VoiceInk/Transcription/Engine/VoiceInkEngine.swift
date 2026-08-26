@@ -374,6 +374,13 @@ class VoiceInkEngine: NSObject, ObservableObject {
                             return
                         }
 
+                        // Once preflight succeeds, disown the prior pipeline
+                        // before assigning any state to the new capture. An old
+                        // pipeline that finishes while startRecording suspends
+                        // must not clear the new recording URL or shared state.
+                        self.cancelSupersededPipelineForNewRecording()
+                        self.activePipelineTranscriptionID = nil
+
                         let startID = UUID()
                         self.activeRecordingStartID = startID
                         let lockedTarget = RecordingContextTarget.captureIdentity()
@@ -421,12 +428,6 @@ class VoiceInkEngine: NSObject, ObservableObject {
                                 }
                                 return
                             }
-
-                            // The new capture is now real. Preserve any in-flight
-                            // transcript if permissions or preflight rejected the
-                            // attempted replacement before reaching this point.
-                            self.cancelSupersededPipelineForNewRecording()
-                            self.activePipelineTranscriptionID = nil
 
                             // Capture is deliberately started before panel creation, mode matching,
                             // context capture, or cloud session setup. The realtime gate preserves

@@ -272,7 +272,31 @@ struct StreamingIntegrityTests {
 
         let doubaoService = try makeService(provider: IntegrityProbeProvider())
         doubaoService.prepareForStart(model: IntegrityTestModel(provider: .doubaoSpeech))
-        #expect(doubaoService.startupDeadline == .seconds(4))
+        #expect(doubaoService.startupDeadline == .milliseconds(8_500))
+    }
+
+    @MainActor
+    @Test func standardProvidersRetainTheLegacySteadyStateQueueCapacity() async throws {
+        let provider = IntegrityProbeProvider(sendDelay: .milliseconds(10))
+        let service = try makeService(provider: provider)
+        let model = IntegrityTestModel(provider: .deepgram)
+
+        service.prepareForStart(model: model)
+        try await service.startStreaming(
+            model: model,
+            context: TranscriptionRequestContext(language: "auto", prompt: nil)
+        )
+        for _ in 0..<100 {
+            service.sendAudioChunk(Data(repeating: 0x45, count: 320))
+        }
+
+        let result = try await service.stopAndFinalize()
+        guard case .finalized = result else {
+            Issue.record("A healthy standard provider must not inherit Doubao's 750 ms queue cap")
+            return
+        }
+        #expect(service.performanceSnapshot.droppedChunks == 0)
+        #expect(service.performanceSnapshot.sentBytes == 32_000)
     }
 
     @MainActor
