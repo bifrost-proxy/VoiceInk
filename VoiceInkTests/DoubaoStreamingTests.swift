@@ -1403,6 +1403,15 @@ private final class DoubaoReplayTestConnection: CloudSpeechWebSocketConnection, 
                 storedAudioPayload.append(contentsOf: data.dropFirst(8))
             }
         } else if messageTypeAndFlags == 0x22 {
+            if emitPartialBeforeFinalFrame {
+                // The production replay is paced, which gives the concurrently
+                // created receive task time to start before commit. This test
+                // disables pacing, so wait briefly for that task instead of
+                // making the assertion depend on executor scheduling.
+                for _ in 0..<100 where receiveCount == 0 {
+                    try await Task.sleep(for: .milliseconds(1))
+                }
+            }
             lock.withLock {
                 storedDidSendFinalFrame = true
             }
