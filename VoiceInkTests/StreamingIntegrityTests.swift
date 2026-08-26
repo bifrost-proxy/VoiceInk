@@ -154,6 +154,10 @@ struct StreamingIntegrityTests {
         #expect(secondProvider.snapshot().connectCount == 1)
         #expect(secondProvider.snapshot().disconnectCount == 1)
         #expect(providerSequence.requestCount == 2)
+        #expect(
+            service.performanceSnapshot.terminationReason
+                == StreamingTerminationReason.connectFailure.rawValue
+        )
     }
 
     @MainActor

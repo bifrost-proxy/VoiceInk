@@ -728,6 +728,7 @@ actor DoubaoWebSocketSession {
         onSnapshot: (@Sendable (DoubaoServerResponse) -> Void)? = nil
     ) async throws -> String {
         guard let connection else { throw StreamingTranscriptionError.notConnected }
+        var latestFullyStableTranscript: String?
         if let timeout {
             finalResultTimedOut = false
             finalResultCancelled = false
@@ -756,12 +757,22 @@ actor DoubaoWebSocketSession {
                         return response.text
                     }
                     if !response.text.isEmpty {
+                        let preview = response.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let stable = response.stableText.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !stable.isEmpty, stable == preview {
+                            latestFullyStableTranscript = stable
+                        }
                         onSnapshot?(response)
                     }
                 }
             } catch {
                 if finalResultCancelled { throw CancellationError() }
-                if finalResultTimedOut { throw StreamingTranscriptionError.timeout }
+                if finalResultTimedOut {
+                    if let latestFullyStableTranscript {
+                        return latestFullyStableTranscript
+                    }
+                    throw StreamingTranscriptionError.timeout
+                }
                 if error is CancellationError { throw CancellationError() }
                 throw error
             }

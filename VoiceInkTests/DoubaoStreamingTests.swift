@@ -772,6 +772,38 @@ struct DoubaoStreamingTests {
         await session.disconnect()
     }
 
+    @Test func replayFinalTimeoutReturnsTheLatestFullyStableSnapshot() async throws {
+        let connection = DoubaoStableThenBlockingConnection(stableText: "完整稳定结果")
+        let connector = SingleDoubaoConnectionConnector(connection: connection)
+        let session = DoubaoWebSocketSession(
+            eventsContinuation: nil,
+            connectionPool: CloudSpeechConnectionPool(connector: connector),
+            connector: connector,
+            attemptCoordinator: DoubaoAttemptCoordinator()
+        )
+        try await session.connect(
+            apiKey: "doubao-key",
+            resourceID: DoubaoSpeechProvider.defaultResourceID,
+            customVocabulary: [],
+            settings: .defaults,
+            endpoint: .optimizedStreaming,
+            startReceiving: false,
+            allowPreconnectedConnection: false
+        )
+
+        let finalTask = Task {
+            try await session.receiveFinalTranscript(timeout: nil)
+        }
+        for _ in 0..<100 where connection.receiveCount < 2 {
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        await session.armFinalResultTimeout(after: .milliseconds(20))
+
+        #expect(try await finalTask.value == "完整稳定结果")
+        #expect(connection.isClosed)
+        await session.disconnect()
+    }
+
     @Test func cancellingRecoveryClosesReceiveImmediately() async throws {
         let connection = DoubaoBlockingFinalConnection()
         let connector = SingleDoubaoConnectionConnector(connection: connection)
@@ -1661,5 +1693,71 @@ private final class DoubaoBlockingFinalConnection: CloudSpeechWebSocketConnectio
             return receiveContinuation
         }
         continuation?.resume(throwing: CancellationError())
+    }
+}
+
+private final class DoubaoStableThenBlockingConnection: CloudSpeechWebSocketConnection, @unchecked Sendable {
+    private let lock = NSLock()
+    private let stableText: String
+    private var receiveContinuation: CheckedContinuation<URLSessionWebSocketTask.Message, Error>?
+    private var storedReceiveCount = 0
+    private var storedIsClosed = false
+
+    init(stableText: String) {
+        self.stableText = stableText
+    }
+
+    var receiveCount: Int { lock.withLock { storedReceiveCount } }
+    var isClosed: Bool { lock.withLock { storedIsClosed } }
+
+    func send(_: URLSessionWebSocketTask.Message) async throws {}
+
+    func receive() async throws -> URLSessionWebSocketTask.Message {
+        let count = lock.withLock {
+            storedReceiveCount += 1
+            return storedReceiveCount
+        }
+        if count == 1 {
+            let payload = try JSONSerialization.data(withJSONObject: [
+                "result": [
+                    "text": stableText,
+                    "utterances": [["text": stableText, "definite": true]],
+                ] as [String: Any]
+            ])
+            var frame = Data([0x11, 0x91, 0x10, 0x00])
+            appendUInt32(1, to: &frame)
+            appendUInt32(UInt32(payload.count), to: &frame)
+            frame.append(payload)
+            return .data(frame)
+        }
+
+        return try await withCheckedThrowingContinuation { continuation in
+            let shouldCancel = lock.withLock {
+                if storedIsClosed { return true }
+                receiveContinuation = continuation
+                return false
+            }
+            if shouldCancel {
+                continuation.resume(throwing: CancellationError())
+            }
+        }
+    }
+
+    func ping(timeout _: Duration) async throws {}
+
+    func close() {
+        let continuation = lock.withLock {
+            storedIsClosed = true
+            defer { receiveContinuation = nil }
+            return receiveContinuation
+        }
+        continuation?.resume(throwing: CancellationError())
+    }
+
+    private func appendUInt32(_ value: UInt32, to data: inout Data) {
+        data.append(UInt8((value >> 24) & 0xFF))
+        data.append(UInt8((value >> 16) & 0xFF))
+        data.append(UInt8((value >> 8) & 0xFF))
+        data.append(UInt8(value & 0xFF))
     }
 }

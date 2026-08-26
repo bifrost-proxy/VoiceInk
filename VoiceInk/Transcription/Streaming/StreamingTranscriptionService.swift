@@ -426,6 +426,7 @@ enum StreamingTerminationReason: String, Sendable {
     case stableSnapshot
     case committedSegments
     case connectTimeout
+    case connectFailure
     case sendBacklog
     case drainTimeout
     case commitTimeout
@@ -674,6 +675,7 @@ class StreamingTranscriptionService {
                     if !connectedInTime {
                         throw StreamingTranscriptionError.timeout
                     }
+                    terminationReason = .connectFailure
                     throw connectFailure.error ?? StreamingTranscriptionError.notConnected
                 }
 

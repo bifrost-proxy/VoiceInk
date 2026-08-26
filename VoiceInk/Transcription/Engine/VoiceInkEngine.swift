@@ -168,6 +168,8 @@ class VoiceInkEngine: NSObject, ObservableObject {
     private var currentSessionTranscriptionConfiguration: TranscriptionRuntimeConfiguration?
     private var activeRealtimeSessionID: UUID?
     private var activeRecordingStartID: UUID?
+    private var pendingRecordingFile: URL?
+    private var pendingRecordingPreviousState: RecordingState?
     private var activePipelineTranscriptionID: UUID?
     private var activePipelineTranscription: Transcription?
     private var activePipelineTask: Task<Void, Never>?
@@ -381,6 +383,8 @@ class VoiceInkEngine: NSObject, ObservableObject {
                         let permanentURL = self.recordingsDirectory.appendingPathComponent(
                             "\(UUID().uuidString).wav"
                         )
+                        self.pendingRecordingFile = permanentURL
+                        self.pendingRecordingPreviousState = stateBeforeRecorderStart
 
                         do {
                             let captureRequestedAt = DispatchTime.now().uptimeNanoseconds
@@ -410,10 +414,13 @@ class VoiceInkEngine: NSObject, ObservableObject {
                                 activeModeTask?.cancel()
                                 if self.activeRecordingStartID == startID {
                                     await self.recorder.stopRecording()
+                                    try? FileManager.default.removeItem(at: permanentURL)
                                     if self.recordingState == .starting {
                                         self.recordingState = stateBeforeRecorderStart
                                     }
                                     self.activeRecordingStartID = nil
+                                    self.pendingRecordingFile = nil
+                                    self.pendingRecordingPreviousState = nil
                                 }
                                 return
                             }
@@ -422,6 +429,8 @@ class VoiceInkEngine: NSObject, ObservableObject {
                             // succeeds. Disown the old pipeline before publishing
                             // the new URL, so its late cleanup cannot clear this
                             // capture and a failed startup cannot discard old work.
+                            self.pendingRecordingFile = nil
+                            self.pendingRecordingPreviousState = nil
                             self.cancelSupersededPipelineForNewRecording()
                             self.activePipelineTranscriptionID = nil
                             self.recordedFile = permanentURL
@@ -542,15 +551,16 @@ class VoiceInkEngine: NSObject, ObservableObject {
 
                         } catch {
                             activeModeTask?.cancel()
+                            try? FileManager.default.removeItem(at: permanentURL)
+                            guard self.activeRecordingStartID == startID else {
+                                return
+                            }
                             self.logger.error("Recording failed to start: \(error, privacy: .public)")
                             await self.recorder.stopRecording()
-                            try? FileManager.default.removeItem(at: permanentURL)
-                            if self.activeRecordingStartID == startID {
-                                self.activeRecordingStartID = nil
-                            }
-                            if self.recordingState == .starting {
-                                self.recordingState = stateBeforeRecorderStart
-                            }
+                            self.activeRecordingStartID = nil
+                            self.pendingRecordingFile = nil
+                            self.pendingRecordingPreviousState = nil
+                            if self.recordingState == .starting { self.recordingState = stateBeforeRecorderStart }
                             self.clearActiveRecordingContext()
                             self.activeRecordingUseCase = .newSession
                             self.activeRecordingInputTarget = nil
@@ -702,6 +712,10 @@ class VoiceInkEngine: NSObject, ObservableObject {
         await recorder.stopRecording()
         cancelCurrentSession()
         try? FileManager.default.removeItem(at: permanentURL)
+        if pendingRecordingFile == permanentURL {
+            pendingRecordingFile = nil
+            pendingRecordingPreviousState = nil
+        }
         recordedFile = nil
         recordingState = .idle
         activeRecordingStartID = nil
@@ -1289,7 +1303,10 @@ class VoiceInkEngine: NSObject, ObservableObject {
     func cancelRecording() async {
         let shouldFinishSessionImmediately: Bool
         switch recordingState {
-        case .starting, .recording:
+        case .starting:
+            await cancelPendingRecordingStartup()
+            shouldFinishSessionImmediately = false
+        case .recording:
             requestRecordingCancellation()
             await finishActiveRecorderCancellation()
             shouldFinishSessionImmediately = true
@@ -1340,6 +1357,9 @@ class VoiceInkEngine: NSObject, ObservableObject {
         cancelCurrentSession()
         cancelActiveRecordingModeTask()
         activeRecordingStartID = nil
+        let pendingFile = pendingRecordingFile
+        self.pendingRecordingFile = nil
+        pendingRecordingPreviousState = nil
         activePipelineTranscriptionID = nil
         activePipelineTranscription = nil
         activePipelineTask?.cancel()
@@ -1355,6 +1375,9 @@ class VoiceInkEngine: NSObject, ObservableObject {
         activePipelineInputTarget = nil
         clearActiveRecordingContext()
         await recorder.stopRecording()
+        if let pendingFile {
+            try? FileManager.default.removeItem(at: pendingFile)
+        }
         recordedFile = nil
         recordingState = .idle
         await cleanupResources()
@@ -1372,6 +1395,29 @@ class VoiceInkEngine: NSObject, ObservableObject {
         }
 
         cancelCurrentSession()
+    }
+
+    private func cancelPendingRecordingStartup() async {
+        shouldCancelRecording = true
+        cancelActiveRecordingModeTask()
+
+        let pendingFile = pendingRecordingFile
+        let previousState = pendingRecordingPreviousState ?? .idle
+        activeRecordingStartID = nil
+        pendingRecordingFile = nil
+        pendingRecordingPreviousState = nil
+        activeRecordingInputTarget = nil
+        clearActiveRecordingContext()
+
+        await recorder.stopRecording()
+        if let pendingFile {
+            try? FileManager.default.removeItem(at: pendingFile)
+        }
+
+        if recordingState == .starting {
+            recordingState = previousState
+        }
+        shouldCancelRecording = false
     }
 
     private func finishActiveRecorderCancellation() async {
