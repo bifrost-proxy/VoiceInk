@@ -12287,18 +12287,18 @@
         }
       }
     },
-    "Original input is no longer available. Transcription copied to clipboard." : {
+    "Automatic paste was unavailable. Transcription copied—press Command+V to paste." : {
       "localizations" : {
         "de" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Das ursprüngliche Eingabefeld ist nicht mehr verfügbar. Die Transkription wurde in die Zwischenablage kopiert."
+            "value" : "Automatisches Einfügen war nicht verfügbar. Die Transkription wurde kopiert – drücken Sie zum Einfügen Command+V."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "原输入位置已不可用，转录文本已复制到剪贴板。"
+            "value" : "自动粘贴不可用，转录文本已复制到剪贴板，请按 Command+V 粘贴。"
           }
         }
       }

@@ -1,4 +1,3 @@
-import ApplicationServices
 import Foundation
 import Testing
 @testable import VoiceInk
@@ -35,9 +34,13 @@ private final class PasteCommandGate {
 
 @MainActor
 struct TranscriptionDeliveryTests {
-    @Test func autoSendRequiresExactInputRestoration() {
-        #expect(TranscriptionDelivery.canAutoSend(after: .restored))
-        #expect(!TranscriptionDelivery.canAutoSend(after: .focusedWindow))
+    @Test func failedPasteCommandSkipsClipboardRestoration() {
+        #expect(CursorPaster.shouldRestoreClipboard(after: .commandPosted))
+        #expect(!CursorPaster.shouldRestoreClipboard(after: .commandNotPosted))
+    }
+
+    @Test func autoSendRequiresAnActiveInputTarget() {
+        #expect(TranscriptionDelivery.canAutoSend(after: .active))
         #expect(!TranscriptionDelivery.canAutoSend(after: .unavailable))
     }
 
@@ -52,7 +55,8 @@ struct TranscriptionDeliveryTests {
         var pastedText: String?
         var dismissCount = 0
         let delivery = TranscriptionDelivery(
-            pasteAtCursor: { text in
+            pasteAtCursor: { text, canPostPaste in
+                #expect(canPostPaste())
                 pastedText = text
                 return .commandPosted
             }
@@ -84,10 +88,13 @@ struct TranscriptionDeliveryTests {
         let gate = PasteCommandGate()
         var events: [String] = []
         let delivery = TranscriptionDelivery(
-            pasteAtCursor: { text in
+            pasteAtCursor: { text, canPostPaste in
+                #expect(canPostPaste())
                 events.append("paste-started:\(text)")
                 return await gate.performPaste()
-            }
+            },
+            copyToClipboard: { _ in true },
+            notifyUnavailableTarget: {}
         )
 
         let deliveryTask = Task { @MainActor in
@@ -126,7 +133,7 @@ struct TranscriptionDeliveryTests {
         #expect(events == ["dismissed", "paste-started:enhanced", "delivery-returned"])
     }
 
-    @Test func restoresCapturedInputBeforePasting() async {
+    @Test func checksCapturedWindowWithoutChangingFocusBeforePasting() async {
         let defaults = UserDefaults.standard
         let previousAppendSpace = defaults.object(forKey: "AppendTrailingSpace")
         defer {
@@ -136,13 +143,14 @@ struct TranscriptionDeliveryTests {
 
         var events: [String] = []
         let delivery = TranscriptionDelivery(
-            pasteAtCursor: { text in
+            pasteAtCursor: { text, canPostPaste in
                 events.append("pasted:\(text)")
+                #expect(canPostPaste())
                 return .commandPosted
             },
-            restoreInputTarget: { _ in
-                events.append("restored")
-                return .restored
+            checkInputTarget: { _ in
+                events.append("checked")
+                return .active
             }
         )
 
@@ -150,44 +158,10 @@ struct TranscriptionDeliveryTests {
             events.append("dismissed")
         }
 
-        #expect(events == ["dismissed", "restored", "pasted:targeted"])
+        #expect(events == ["dismissed", "checked", "pasted:targeted", "checked"])
     }
 
-    @Test func pastesWhenTheWindowIsFocusedButTheCapturedInputWasReplaced() async {
-        let defaults = UserDefaults.standard
-        let previousAppendSpace = defaults.object(forKey: "AppendTrailingSpace")
-        defer {
-            restore(previousAppendSpace, forKey: "AppendTrailingSpace", in: defaults)
-        }
-        defaults.set(false, forKey: "AppendTrailingSpace")
-
-        var events: [String] = []
-        let delivery = TranscriptionDelivery(
-            pasteAtCursor: { text in
-                events.append("pasted:\(text)")
-                return .commandPosted
-            },
-            restoreInputTarget: { _ in
-                events.append("focused-window")
-                return .focusedWindow
-            },
-            copyToClipboard: { _ in
-                events.append("copied")
-                return true
-            },
-            notifyUnavailableTarget: {
-                events.append("notified")
-            }
-        )
-
-        await delivery.pasteOriginalImmediately("dynamic editor", inputTarget: makeInputTarget()) {
-            events.append("dismissed")
-        }
-
-        #expect(events == ["dismissed", "focused-window", "pasted:dynamic editor"])
-    }
-
-    @Test func unavailableCapturedInputCopiesWithoutPasting() async {
+    @Test func unavailableCapturedWindowCopiesWithoutPasting() async {
         let defaults = UserDefaults.standard
         let previousAppendSpace = defaults.object(forKey: "AppendTrailingSpace")
         defer {
@@ -199,11 +173,11 @@ struct TranscriptionDeliveryTests {
         var copiedText: String?
         var pasteCount = 0
         let delivery = TranscriptionDelivery(
-            pasteAtCursor: { _ in
+            pasteAtCursor: { _, _ in
                 pasteCount += 1
                 return .commandPosted
             },
-            restoreInputTarget: { _ in
+            checkInputTarget: { _ in
                 events.append("unavailable")
                 return .unavailable
             },
@@ -226,13 +200,54 @@ struct TranscriptionDeliveryTests {
         #expect(events == ["dismissed", "unavailable", "copied", "notified"])
     }
 
+    @Test func targetChangedBeforePasteCommandKeepsTextOnClipboardAndNotifies() async {
+        let defaults = UserDefaults.standard
+        let previousAppendSpace = defaults.object(forKey: "AppendTrailingSpace")
+        defer {
+            restore(previousAppendSpace, forKey: "AppendTrailingSpace", in: defaults)
+        }
+        defaults.set(false, forKey: "AppendTrailingSpace")
+
+        var events: [String] = []
+        var copiedText: String?
+        var checkCount = 0
+        let delivery = TranscriptionDelivery(
+            pasteAtCursor: { text, canPostPaste in
+                events.append("paste-prepared:\(text)")
+                return canPostPaste() ? .commandPosted : .commandNotPosted
+            },
+            checkInputTarget: { _ in
+                checkCount += 1
+                events.append("check-\(checkCount)")
+                return checkCount == 1 ? .active : .unavailable
+            },
+            copyToClipboard: { text in
+                copiedText = text
+                events.append("copied")
+                return true
+            },
+            notifyUnavailableTarget: {
+                events.append("notified")
+            }
+        )
+
+        await delivery.pasteOriginalImmediately("manual fallback", inputTarget: makeInputTarget()) {
+            events.append("dismissed")
+        }
+
+        #expect(copiedText == "manual fallback")
+        #expect(
+            events == [
+                "dismissed", "check-1", "paste-prepared:manual fallback", "check-2", "copied",
+                "notified",
+            ])
+    }
+
     private func makeInputTarget() -> RecordingInputTarget {
         RecordingInputTarget(
             processID: ProcessInfo.processInfo.processIdentifier,
             bundleIdentifier: Bundle.main.bundleIdentifier,
-            window: nil,
-            element: AXUIElementCreateSystemWide(),
-            selectedTextRange: nil
+            window: nil
         )
     }
 
