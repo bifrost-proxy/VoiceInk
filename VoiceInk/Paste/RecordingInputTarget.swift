@@ -36,7 +36,7 @@ enum RecordingInputTargetService {
         }
 
         let processID = application.processIdentifier
-        let window = if AXIsProcessTrusted() {
+        let window: AXUIElement? = if AXIsProcessTrusted() {
             copyElementAttribute(
                 kAXFocusedWindowAttribute,
                 from: AXUIElementCreateApplication(processID)
