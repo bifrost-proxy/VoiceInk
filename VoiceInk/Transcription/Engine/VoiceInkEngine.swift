@@ -1238,23 +1238,32 @@ class VoiceInkEngine: NSObject, ObservableObject {
             )
         )
 
-        let didFinishActivePipeline = activePipelineTranscriptionID == transcriptionID
+        var didFinishActivePipeline = activePipelineTranscriptionID == transcriptionID
         if didFinishActivePipeline {
+            let shouldPreserveActiveRecording = activeRecordingStartID != nil
             await finishRecorderSession()
-            await cleanupResources()
-            activePipelineTranscriptionID = nil
-            activePipelineTranscription = nil
-            activePipelineTask = nil
-            currentSession = nil
-            currentSessionTranscriptionConfiguration = nil
-            if activeRealtimeSessionID == realtimeSessionID {
-                activeRealtimeSessionID = nil
+            await cleanupResources(preservingActiveRecording: shouldPreserveActiveRecording)
+
+            // Main-actor awaits are reentrant. A new recording may have
+            // superseded this pipeline while resource release was suspended;
+            // never let the stale completion clear its URL or session state.
+            if activePipelineTranscriptionID == transcriptionID {
+                activePipelineTranscriptionID = nil
+                activePipelineTranscription = nil
+                activePipelineTask = nil
+                currentSession = nil
+                currentSessionTranscriptionConfiguration = nil
+                if activeRealtimeSessionID == realtimeSessionID {
+                    activeRealtimeSessionID = nil
+                }
+                recordedFile = nil
+                shouldCancelRecording = false
+                activePipelineUseCase = .newSession
+                activePipelineInputTarget = nil
+                clearActiveRecordingContext()
+            } else {
+                didFinishActivePipeline = false
             }
-            recordedFile = nil
-            shouldCancelRecording = false
-            activePipelineUseCase = .newSession
-            activePipelineInputTarget = nil
-            clearActiveRecordingContext()
         }
         canceledPipelineTranscriptionIDs.remove(transcriptionID)
         enhancementBypassTranscriptionIDs.remove(transcriptionID)
@@ -1500,14 +1509,16 @@ class VoiceInkEngine: NSObject, ObservableObject {
         )
     }
 
-    func cleanupResources() async {
+    func cleanupResources(preservingActiveRecording: Bool = false) async {
         logger.notice("cleanupResources: releasing model resources")
-        recordingDurationLimiter.cancel()
-        cancelActiveRecordingModeTask()
-        activeRecordingStartID = nil
-        activeRecordingUseCase = .newSession
-        activeRecordingInputTarget = nil
-        activePipelineInputTarget = nil
+        if !preservingActiveRecording {
+            recordingDurationLimiter.cancel()
+            cancelActiveRecordingModeTask()
+            activeRecordingStartID = nil
+            activeRecordingUseCase = .newSession
+            activeRecordingInputTarget = nil
+            activePipelineInputTarget = nil
+        }
         await serviceRegistry.releaseUnboundLocalModelResources()
         logger.notice("cleanupResources: completed")
     }
