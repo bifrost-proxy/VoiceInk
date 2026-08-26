@@ -3,15 +3,16 @@ import ApplicationServices
 import Foundation
 import os
 
-/// The application window that was active when a recording began.
+/// The application window and focused control that were active when a recording began.
 ///
-/// The window reference is intentionally kept in memory for one recording only. It is never
+/// These references are intentionally kept in memory for one recording only. They are never
 /// persisted with the transcription or included in recognition context.
 @MainActor
 struct RecordingInputTarget {
     let processID: pid_t
     let bundleIdentifier: String?
     let window: AXUIElement?
+    let focusedElement: AXUIElement?
 }
 
 enum RecordingInputTargetAvailability: Equatable {
@@ -36,19 +37,28 @@ enum RecordingInputTargetService {
         }
 
         let processID = application.processIdentifier
-        let window: AXUIElement? = if AXIsProcessTrusted() {
-            copyElementAttribute(
+        let accessibilityApplication = AXUIElementCreateApplication(processID)
+        let window: AXUIElement?
+        let focusedElement: AXUIElement?
+        if AXIsProcessTrusted() {
+            window = copyElementAttribute(
                 kAXFocusedWindowAttribute,
-                from: AXUIElementCreateApplication(processID)
+                from: accessibilityApplication
+            )
+            focusedElement = copyElementAttribute(
+                kAXFocusedUIElementAttribute,
+                from: accessibilityApplication
             )
         } else {
-            nil
+            window = nil
+            focusedElement = nil
         }
 
         return RecordingInputTarget(
             processID: processID,
             bundleIdentifier: application.bundleIdentifier,
-            window: window
+            window: window,
+            focusedElement: focusedElement
         )
     }
 
@@ -68,23 +78,36 @@ enum RecordingInputTargetService {
             return .unavailable
         }
 
-        guard let targetWindow = target.window else {
-            // Some applications do not expose a focused accessibility window. The application
-            // identity still prevents delivery to a different process, and Cmd+V follows the
-            // application's current focus without VoiceInk changing it.
-            return .active
+        let accessibilityApplication = AXUIElementCreateApplication(target.processID)
+        if let targetWindow = target.window {
+            guard AXIsProcessTrusted(),
+                let focusedWindow = copyElementAttribute(
+                    kAXFocusedWindowAttribute,
+                    from: accessibilityApplication
+                ),
+                CFEqual(focusedWindow, targetWindow)
+            else {
+                logger.notice("The original recording window is no longer active")
+                return .unavailable
+            }
         }
 
-        guard AXIsProcessTrusted(),
-            let focusedWindow = copyElementAttribute(
-                kAXFocusedWindowAttribute,
-                from: AXUIElementCreateApplication(target.processID)
-            ),
-            CFEqual(focusedWindow, targetWindow)
-        else {
-            logger.notice("The original recording window is no longer active")
-            return .unavailable
+        if let targetElement = target.focusedElement {
+            guard AXIsProcessTrusted(),
+                let focusedElement = copyElementAttribute(
+                    kAXFocusedUIElementAttribute,
+                    from: accessibilityApplication
+                ),
+                CFEqual(focusedElement, targetElement)
+            else {
+                logger.notice("The original recording control is no longer focused")
+                return .unavailable
+            }
         }
+
+        // Some applications do not expose accessibility window or control references. The
+        // application identity still prevents delivery to a different process, and Cmd+V follows
+        // the application's current focus without VoiceInk changing it.
         return .active
     }
 

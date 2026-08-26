@@ -247,7 +247,8 @@ struct TranscriptionDeliveryTests {
         RecordingInputTarget(
             processID: ProcessInfo.processInfo.processIdentifier,
             bundleIdentifier: Bundle.main.bundleIdentifier,
-            window: nil
+            window: nil,
+            focusedElement: nil
         )
     }
 
