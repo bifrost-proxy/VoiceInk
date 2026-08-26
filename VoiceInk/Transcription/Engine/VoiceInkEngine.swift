@@ -346,8 +346,6 @@ class VoiceInkEngine: NSObject, ObservableObject {
             let canContinueAssistantSession = isAssistantFollowUp && assistantSession.canSendFollowUp
             let recordingUseCase: RecordingUseCase = canContinueAssistantSession ? .assistantFollowUp : .newSession
 
-            cancelSupersededPipelineForNewRecording()
-            activePipelineTranscriptionID = nil
             recordingDurationLimiter.cancel()
             shouldCancelRecording = false
             partialTranscript = ""
@@ -423,6 +421,12 @@ class VoiceInkEngine: NSObject, ObservableObject {
                                 }
                                 return
                             }
+
+                            // The new capture is now real. Preserve any in-flight
+                            // transcript if permissions or preflight rejected the
+                            // attempted replacement before reaching this point.
+                            self.cancelSupersededPipelineForNewRecording()
+                            self.activePipelineTranscriptionID = nil
 
                             // Capture is deliberately started before panel creation, mode matching,
                             // context capture, or cloud session setup. The realtime gate preserves

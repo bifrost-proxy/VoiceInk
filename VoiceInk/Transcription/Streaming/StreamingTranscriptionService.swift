@@ -15,6 +15,8 @@ private final class AudioChunkSource: @unchecked Sendable {
     private let lock = NSLock()
     private var packetizer: DoubaoAudioPacketizer?
     private var queuedBytes = 0
+    private var maximumQueuedBytes = StreamingAudioIntegrityPolicy.maximumBacklogBytes
+    private var pendingMaximumQueuedBytes: Int?
     private var isFinished = false
 
     init() {
@@ -30,10 +32,12 @@ private final class AudioChunkSource: @unchecked Sendable {
         continuation.finish()
     }
 
-    func configure(packetizeForDoubao: Bool) {
+    func configure(packetizeForDoubao: Bool, maximumBacklogBytes: Int) {
         lock.withLock {
             precondition(queuedBytes == 0 && !isFinished)
             packetizer = packetizeForDoubao ? DoubaoAudioPacketizer() : nil
+            maximumQueuedBytes = maximumBacklogBytes
+            pendingMaximumQueuedBytes = nil
         }
     }
 
@@ -42,7 +46,7 @@ private final class AudioChunkSource: @unchecked Sendable {
             guard !isFinished else { return (false, queuedBytes) }
             let bufferedPacketBytes = packetizer?.bufferedByteCount ?? 0
             guard queuedBytes + bufferedPacketBytes + data.count
-                <= StreamingAudioIntegrityPolicy.maximumBacklogBytes
+                <= maximumQueuedBytes
             else {
                 return (false, queuedBytes + bufferedPacketBytes)
             }
@@ -58,6 +62,21 @@ private final class AudioChunkSource: @unchecked Sendable {
                 continuation.yield(QueuedAudioChunk(data: packet, enqueuedAt: .now))
             }
             return (true, queuedBytes + (packetizer?.bufferedByteCount ?? 0))
+        }
+    }
+
+    /// Keep the larger startup allowance until the connection backlog drains
+    /// below the steady-state cap. Reducing it immediately would drop newly
+    /// recorded chunks while the send loop catches up after a valid handshake.
+    func reduceMaximumBacklog(to maximumBacklogBytes: Int) {
+        lock.withLock {
+            let bufferedBytes = queuedBytes + (packetizer?.bufferedByteCount ?? 0)
+            if bufferedBytes <= maximumBacklogBytes {
+                maximumQueuedBytes = maximumBacklogBytes
+                pendingMaximumQueuedBytes = nil
+            } else {
+                pendingMaximumQueuedBytes = maximumBacklogBytes
+            }
         }
     }
 
@@ -77,6 +96,11 @@ private final class AudioChunkSource: @unchecked Sendable {
     func didSend(_ chunk: QueuedAudioChunk) -> (backlogBytes: Int, sendLatency: Duration) {
         lock.withLock {
             queuedBytes = max(0, queuedBytes - chunk.data.count)
+            let bufferedBytes = queuedBytes + (packetizer?.bufferedByteCount ?? 0)
+            if let pendingMaximumQueuedBytes, bufferedBytes <= pendingMaximumQueuedBytes {
+                maximumQueuedBytes = pendingMaximumQueuedBytes
+                self.pendingMaximumQueuedBytes = nil
+            }
             return (queuedBytes, chunk.enqueuedAt.duration(to: .now))
         }
     }
@@ -127,6 +151,16 @@ enum StreamingAudioIntegrityPolicy {
     static let commitTimeout: Duration = .seconds(4)
     static let finalTimeout: Duration = .seconds(4)
     static let disconnectTimeout: Duration = .milliseconds(500)
+
+    static func startupBacklogBytes(deadline: Duration, attemptCount: Int) -> Int {
+        let components = deadline.components
+        let deadlineSeconds = max(
+            0,
+            Double(components.seconds) + Double(components.attoseconds) / 1_000_000_000_000_000_000
+        )
+        let connectionAllowance = Int(ceil(deadlineSeconds * Double(max(1, attemptCount)) * Double(bytesPerSecond)))
+        return max(maximumBacklogBytes, connectionAllowance + maximumBacklogBytes)
+    }
 
     static func requiresBatchFallback(
         droppedChunks: Int,
@@ -179,6 +213,13 @@ struct StreamingDeadlines: Sendable {
     var disconnect: Duration = StreamingAudioIntegrityPolicy.disconnectTimeout
 
     static let production = StreamingDeadlines()
+    static let standardProduction = StreamingDeadlines(
+        startup: .seconds(12),
+        drain: .seconds(10),
+        commit: .seconds(10),
+        final: .seconds(10),
+        disconnect: .seconds(3)
+    )
 }
 
 private final class StreamingMetrics: @unchecked Sendable {
@@ -345,6 +386,10 @@ actor StreamingProviderTransport {
     func disconnect() async {
         await provider.disconnect()
     }
+
+    func observedConcurrentAttemptCount() async -> Int? {
+        await provider.observedConcurrentAttemptCount()
+    }
 }
 
 /// Lifecycle states for a streaming transcription session.
@@ -370,6 +415,7 @@ enum StreamingTerminationReason: String, Sendable {
     case sendBacklog
     case drainTimeout
     case commitTimeout
+    case commitFailure
     case missingFinal
     case sendFailure
     case receiveFailure
@@ -403,7 +449,8 @@ class StreamingTranscriptionService {
     private let fluidAudioService: FluidAudioTranscriptionService?
     private let sherpaOnnxService: SherpaOnnxTranscriptionService?
     private let providerFactory: ProviderFactory?
-    private let deadlines: StreamingDeadlines
+    private let configuredDeadlines: StreamingDeadlines?
+    private var usesDoubaoDeadlines = false
     private var onPartialTranscript: (@MainActor (String) -> Void)?
     private let metrics = StreamingMetrics()
     private var stopStartedAt: Date?
@@ -424,6 +471,7 @@ class StreamingTranscriptionService {
     private var terminationReason: StreamingTerminationReason?
     private var recoveryStrategy: String?
     private var cancelToSocketCloseDuration: TimeInterval?
+    private var concurrentAttemptCount: Int?
     private var latestPreviewText = ""
     private var latestStableText = ""
 
@@ -433,14 +481,14 @@ class StreamingTranscriptionService {
         onPartialTranscript: (@MainActor (String) -> Void)? = nil,
         providerFactory: ProviderFactory? = nil,
         customVocabulary: [String]? = nil,
-        deadlines: StreamingDeadlines = .production
+        deadlines: StreamingDeadlines? = nil
     ) {
         self.customVocabulary = customVocabulary ?? TranscriptionVocabularyContext.uniqueTerms(from: modelContext)
         self.fluidAudioService = fluidAudioService
         self.sherpaOnnxService = sherpaOnnxService
         self.onPartialTranscript = onPartialTranscript
         self.providerFactory = providerFactory
-        self.deadlines = deadlines
+        self.configuredDeadlines = deadlines
     }
 
     deinit {
@@ -505,15 +553,30 @@ class StreamingTranscriptionService {
         result.terminationReason = terminationReason?.rawValue
         result.recoveryStrategy = recoveryStrategy
         result.cancelToSocketCloseDuration = cancelToSocketCloseDuration
+        result.concurrentAttemptCount = concurrentAttemptCount
         return result
     }
+
+    private var deadlines: StreamingDeadlines {
+        configuredDeadlines ?? (usesDoubaoDeadlines ? .production : .standardProduction)
+    }
+
+    var startupDeadline: Duration { deadlines.startup }
 
     /// Resets session accounting before the recorder receives its audio
     /// callback. Local model loading is asynchronous, so doing this inside
     /// `startStreaming` could erase chunks already queued during cold start.
     func prepareForStart(model: (any TranscriptionModel)? = nil) {
         state = .connecting
-        chunkSource.configure(packetizeForDoubao: model?.provider == .doubaoSpeech)
+        usesDoubaoDeadlines = model?.provider == .doubaoSpeech
+        let connectionAttemptCount = model.map { shouldImmediatelyRetryConnection(for: $0) ? 2 : 1 } ?? 1
+        chunkSource.configure(
+            packetizeForDoubao: usesDoubaoDeadlines,
+            maximumBacklogBytes: StreamingAudioIntegrityPolicy.startupBacklogBytes(
+                deadline: deadlines.startup,
+                attemptCount: connectionAttemptCount
+            )
+        )
         committedSegments = []
         metrics.reset()
         firstPartialLogged = false
@@ -533,6 +596,7 @@ class StreamingTranscriptionService {
         terminationReason = nil
         recoveryStrategy = nil
         cancelToSocketCloseDuration = nil
+        concurrentAttemptCount = nil
         latestPreviewText = ""
         latestStableText = ""
     }
@@ -542,6 +606,8 @@ class StreamingTranscriptionService {
         let start = Date()
         if state != .connecting {
             prepareForStart(model: model)
+        } else if configuredDeadlines == nil {
+            usesDoubaoDeadlines = model.provider == .doubaoSpeech
         }
 
         let selectedLanguage = context.language ?? "auto"
@@ -607,6 +673,8 @@ class StreamingTranscriptionService {
             }
 
             state = .streaming
+            concurrentAttemptCount = await provider.observedConcurrentAttemptCount()
+            chunkSource.reduceMaximumBacklog(to: StreamingAudioIntegrityPolicy.maximumBacklogBytes)
             startSendLoop()
             await startEventConsumer(attemptID: currentAttemptID)
 
@@ -726,7 +794,7 @@ class StreamingTranscriptionService {
             } else {
                 logger.warning("Streaming commit exceeded the reliability deadline")
             }
-            terminationReason = .commitTimeout
+            terminationReason = committedInTime ? .commitFailure : .commitTimeout
             recoveryStrategy = "completeFile"
             state = .failed
             await cleanupStreaming()
@@ -785,16 +853,37 @@ class StreamingTranscriptionService {
         provider = nil
 
         let cancelStartedAt = Date()
-        Task { @MainActor [weak self] in
+        Task { @MainActor [self] in
             if let providerToDisconnect {
-                _ = await self?.disconnectWithinDeadline(providerToDisconnect)
+                let disconnected = await disconnectWithinDeadline(providerToDisconnect)
+                if disconnected {
+                    cancelToSocketCloseDuration = Date().timeIntervalSince(cancelStartedAt)
+                }
             }
-            self?.cancelToSocketCloseDuration = Date().timeIntervalSince(cancelStartedAt)
-            self?.state = .cancelled
+            state = .cancelled
         }
 
         committedSegments = []
         logger.notice("Streaming cancellation requested")
+    }
+
+    /// Stops a failed transport before complete-file recovery without clearing
+    /// the presentation callback used by Doubao's streaming replay.
+    func stopTransportForCompleteFileRecovery() async {
+        guard state != .cancelling && state != .cancelled else { return }
+        eventConsumerTask?.cancel()
+        eventConsumerTask = nil
+        sendTask?.cancel()
+        sendTask = nil
+        chunkSource.finish()
+        commitSignal?.finish()
+        commitSignal = nil
+        let providerToDisconnect = provider
+        provider = nil
+        if let providerToDisconnect {
+            _ = await disconnectWithinDeadline(providerToDisconnect)
+        }
+        state = .failed
     }
 
     // MARK: - Private
@@ -1020,8 +1109,6 @@ class StreamingTranscriptionService {
                     break
                 case .error(let error):
                     await MainActor.run {
-                        self.firstServerEventAt = self.firstServerEventAt ?? Date()
-                        self.lastServerEventAt = Date()
                         self.logger.error("Streaming event error: \(error, privacy: .public)")
                         if self.terminalReceiveErrorDescription == nil {
                             self.terminalReceiveErrorDescription = error.localizedDescription

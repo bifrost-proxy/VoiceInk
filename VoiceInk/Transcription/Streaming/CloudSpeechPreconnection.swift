@@ -91,12 +91,17 @@ struct URLSessionCloudSpeechWebSocketConnector: CloudSpeechWebSocketConnecting {
         let connection = URLSessionCloudSpeechWebSocketConnection(session: session, task: task)
         task.resume()
 
-        do {
-            try await delegate.waitUntilOpen(timeout: 4)
-            return connection
-        } catch {
+        return try await withTaskCancellationHandler {
+            do {
+                try await delegate.waitUntilOpen(timeout: 4)
+                try Task.checkCancellation()
+                return connection
+            } catch {
+                connection.close()
+                throw error
+            }
+        } onCancel: {
             connection.close()
-            throw error
         }
     }
 }

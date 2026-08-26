@@ -342,6 +342,10 @@ final class DoubaoStreamingProvider: StreamingTranscriptionProvider {
         eventsContinuation?.finish()
     }
 
+    func observedConcurrentAttemptCount() async -> Int? {
+        await session.observedConcurrentAttemptCount
+    }
+
     /// Builds the inline hotword context accepted by Doubao. Vocabulary
     /// entries are sent as `hotwords[].word`.
     func customHotwordTerms() -> [String] {
@@ -410,10 +414,12 @@ actor DoubaoWebSocketSession {
     private let attemptID = UUID()
     private var connection: (any CloudSpeechWebSocketConnection)?
     private var ownsAttempt = false
+    private(set) var observedConcurrentAttemptCount: Int?
     private var receiveTask: Task<Void, Never>?
     private var verificationTimedOut = false
     private var finalResultTimedOut = false
     private var finalResultCancelled = false
+    private var finalResultTimeoutTask: Task<Void, Never>?
     private var audioPacketizer = DoubaoAudioPacketizer()
     private var preconnectionTarget: CloudSpeechConnectionTarget?
     private var sessionGeneration = UUID()
@@ -454,7 +460,8 @@ actor DoubaoWebSocketSession {
             settings: settings,
             recognitionContext: recognitionContext,
             endpoint: .verification,
-            startReceiving: false
+            startReceiving: false,
+            coordinateAttempt: false
         )
 
         do {
@@ -485,7 +492,8 @@ actor DoubaoWebSocketSession {
             settings: settings,
             recognitionContext: recognitionContext,
             endpoint: .optimizedStreaming,
-            startReceiving: false
+            startReceiving: false,
+            coordinateAttempt: false
         )
         do {
             try await session.commit()
@@ -505,11 +513,17 @@ actor DoubaoWebSocketSession {
         recognitionContext: RecognitionContextEnvelope? = nil,
         endpoint: Endpoint,
         startReceiving: Bool,
-        allowPreconnectedConnection: Bool = true
+        allowPreconnectedConnection: Bool = true,
+        coordinateAttempt: Bool = true
     ) async throws {
         guard connection == nil else { return }
-        try await attemptCoordinator.acquire(attemptID)
-        ownsAttempt = true
+        if coordinateAttempt {
+            try await attemptCoordinator.acquire(attemptID)
+            ownsAttempt = true
+            observedConcurrentAttemptCount = await attemptCoordinator.activeCount
+        } else {
+            observedConcurrentAttemptCount = nil
+        }
         do {
             try Task.checkCancellation()
         } catch {
@@ -534,6 +548,7 @@ actor DoubaoWebSocketSession {
             if endpoint == .optimizedStreaming, allowPreconnectedConnection {
                 connectionStage = "lease"
                 standbyConnection = await connectionPool.lease(for: target)
+                try Task.checkCancellation()
                 connection = standbyConnection
                 if standbyConnection != nil {
                     connectionSource = "preconnected"
@@ -548,15 +563,23 @@ actor DoubaoWebSocketSession {
                 Self.logger.notice(
                     "Doubao connection opening source=fresh \(target.key.diagnosticLabel, privacy: .public)"
                 )
-                connection = try await connector.open(
+                let freshConnection = try await connector.open(
                     target: target,
                     onClosed: nil
                 )
+                do {
+                    try Task.checkCancellation()
+                } catch {
+                    freshConnection.close()
+                    throw error
+                }
+                connection = freshConnection
                 Self.logger.notice(
                     "Doubao connection opened source=fresh elapsed=\(Date().timeIntervalSince(connectStartedAt), format: .fixed(precision: 3), privacy: .public)s \(target.key.diagnosticLabel, privacy: .public)"
                 )
             }
             guard let connection else { throw StreamingTranscriptionError.notConnected }
+            try Task.checkCancellation()
             if let logID = connection.responseHeader(named: "X-Tt-Logid"), !logID.isEmpty {
                 Self.logger.notice(
                     "Doubao recognition session opened source=\(connectionSource, privacy: .public) logID=\(logID, privacy: .public)"
@@ -579,13 +602,17 @@ actor DoubaoWebSocketSession {
                 connection.close()
                 connectionStage = "openFreshRetry"
                 let freshRetryStartedAt = Date()
-                self.connection = try await connector.open(
+                let freshConnection = try await connector.open(
                     target: target,
                     onClosed: nil
                 )
-                guard let freshConnection = self.connection else {
-                    throw StreamingTranscriptionError.notConnected
+                do {
+                    try Task.checkCancellation()
+                } catch {
+                    freshConnection.close()
+                    throw error
                 }
+                self.connection = freshConnection
                 connectionSource = "freshRetry"
                 Self.logger.notice(
                     "Doubao fresh retry connection opened elapsed=\(Date().timeIntervalSince(freshRetryStartedAt), format: .fixed(precision: 3), privacy: .public)s \(target.key.diagnosticLabel, privacy: .public)"
@@ -681,6 +708,8 @@ actor DoubaoWebSocketSession {
         sessionGeneration = UUID()
         receiveTask?.cancel()
         receiveTask = nil
+        finalResultTimeoutTask?.cancel()
+        finalResultTimeoutTask = nil
         closeSocket()
         resetEarlyRecoveryState()
         if let completedTarget {
@@ -690,22 +719,21 @@ actor DoubaoWebSocketSession {
     }
 
     func receiveFinalTranscript(
-        timeout: Duration = .seconds(10),
+        timeout: Duration? = .seconds(10),
         onSnapshot: (@Sendable (DoubaoServerResponse) -> Void)? = nil
     ) async throws -> String {
         guard let connection else { throw StreamingTranscriptionError.notConnected }
         finalResultTimedOut = false
         finalResultCancelled = false
-        let timeoutTask = Task<Void, Never> { [weak self] in
-            do {
-                try await Task.sleep(for: timeout)
-            } catch {
-                return
-            }
-            guard !Task.isCancelled else { return }
-            await self?.cancelForFinalResultTimeout()
+        finalResultTimeoutTask?.cancel()
+        finalResultTimeoutTask = nil
+        if let timeout {
+            armFinalResultTimeout(after: timeout)
         }
-        defer { timeoutTask.cancel() }
+        defer {
+            finalResultTimeoutTask?.cancel()
+            finalResultTimeoutTask = nil
+        }
 
         return try await withTaskCancellationHandler {
             do {
@@ -721,14 +749,28 @@ actor DoubaoWebSocketSession {
                     }
                 }
             } catch {
-                if finalResultCancelled || error is CancellationError { throw CancellationError() }
+                if finalResultCancelled { throw CancellationError() }
                 if finalResultTimedOut { throw StreamingTranscriptionError.timeout }
+                if error is CancellationError { throw CancellationError() }
                 throw error
             }
         } onCancel: { [weak self] in
             Task {
                 await self?.cancelForFinalResultCancellation()
             }
+        }
+    }
+
+    func armFinalResultTimeout(after timeout: Duration) {
+        finalResultTimeoutTask?.cancel()
+        finalResultTimeoutTask = Task<Void, Never> { [weak self] in
+            do {
+                try await Task.sleep(for: timeout)
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
+            await self?.cancelForFinalResultTimeout()
         }
     }
 

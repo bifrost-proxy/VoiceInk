@@ -179,19 +179,17 @@ struct DoubaoWebSocketReplayTranscriber: DoubaoReplayTranscribing {
 
             // Receive while paced replay is still sending so partial snapshots
             // keep the retry visible instead of arriving only after the whole
-            // file has been uploaded. The bound includes audio duration plus
-            // the four-second final-response allowance.
-            let receiveTimeoutMilliseconds = Int64(
-                ceil((paceAudioInRealtime ? estimatedDuration : 0) * 1_000)
-            ) + 4_000
+            // file has been uploaded. The final-response deadline is armed only
+            // after commit, so upload and scheduling overhead cannot consume it.
             let finalTask = Task {
                 try await replaySession.receiveFinalTranscript(
-                    timeout: .milliseconds(receiveTimeoutMilliseconds),
+                    timeout: nil,
                     onSnapshot: { [onPartialTranscript] response in
                         onPartialTranscript?(response.text)
                     }
                 )
             }
+            defer { finalTask.cancel() }
 
             stage = "send"
             var offset = 0
@@ -216,6 +214,7 @@ struct DoubaoWebSocketReplayTranscriber: DoubaoReplayTranscribing {
             stage = "commit"
             try await replaySession.commit()
             stage = "finalResponse"
+            await replaySession.armFinalResultTimeout(after: .seconds(4))
             let transcript = try await finalTask.value
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             await replaySession.disconnect()

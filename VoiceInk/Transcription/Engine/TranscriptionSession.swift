@@ -224,14 +224,13 @@ final class StreamingTranscriptionSession: TranscriptionSession {
         if let startupTask {
             let startedInTime = await StreamingAudioIntegrityPolicy.waitForCompletion(
                 of: startupTask,
-                timeout: StreamingAudioIntegrityPolicy.startupTimeout
+                timeout: streamingService.startupDeadline
             )
             if !startedInTime {
                 logger.warning("Streaming startup exceeded the reliability deadline; retrying the complete audio file")
                 streamingFailed = true
                 startupTaskID = nil
                 self.startupTask = nil
-                streamingService.cancel()
             }
         }
 
@@ -266,16 +265,15 @@ final class StreamingTranscriptionSession: TranscriptionSession {
                 startupTask?.cancel()
                 startupTask = nil
                 startupTaskID = nil
-                streamingService.cancel()
             }
         } else {
             lastResolution = .batchFallbackAfterStartupFailure
             startupTask?.cancel()
             startupTask = nil
             startupTaskID = nil
-            streamingService.cancel()
         }
 
+        await streamingService.stopTransportForCompleteFileRecovery()
         let fallbackStart = Date()
         logger.notice(
             "Complete-file recovery started model=\(model.displayName, privacy: .public) strategy=\(model.provider == .doubaoSpeech ? "freshStreamingReplay" : "providerFallback", privacy: .public) resolution=\(self.lastResolution?.rawValue ?? "unknown", privacy: .public) file=\(audioURL.lastPathComponent, privacy: .public)"
