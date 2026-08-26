@@ -648,6 +648,55 @@ struct DoubaoStreamingTests {
         #expect(await coordinator.activeCount == 0)
     }
 
+    @Test func cancellationDuringPreconnectionLeaseClosesTheLeasedSocket() async throws {
+        let leasedConnection = DoubaoBlockingLeaseConnection()
+        let connector = DoubaoLeaseCancellationConnector(leasedConnection: leasedConnection)
+        let pool = CloudSpeechConnectionPool(connector: connector)
+        let coordinator = DoubaoAttemptCoordinator()
+        let target = CloudSpeechConnectionTarget.doubao(
+            apiKey: "doubao-key",
+            resourceID: DoubaoSpeechProvider.defaultResourceID,
+            endpoint: DoubaoWebSocketSession.Endpoint.optimizedStreaming.url
+        )
+        await pool.reconcile(targets: [target])
+        for _ in 0..<100 {
+            if await pool.snapshot().readyKeys.contains(target.key) { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(await pool.snapshot().readyKeys.contains(target.key))
+
+        let session = DoubaoWebSocketSession(
+            eventsContinuation: nil,
+            connectionPool: pool,
+            connector: connector,
+            attemptCoordinator: coordinator
+        )
+        let connectTask = Task {
+            try await session.connect(
+                apiKey: "doubao-key",
+                resourceID: DoubaoSpeechProvider.defaultResourceID,
+                customVocabulary: [],
+                settings: .defaults,
+                endpoint: .optimizedStreaming,
+                startReceiving: false
+            )
+        }
+
+        try await leasedConnection.waitUntilPingStarted()
+        connectTask.cancel()
+        leasedConnection.releasePing()
+        do {
+            try await connectTask.value
+            Issue.record("A cancelled lease must not leave its socket unowned")
+        } catch {
+            // Expected cancellation from the post-lease ownership check.
+        }
+
+        #expect(leasedConnection.isClosed)
+        #expect(await coordinator.activeCount == 0)
+        await pool.shutdown()
+    }
+
     @Test func replayFinalTimeoutStartsOnlyAfterItIsArmed() async throws {
         let connection = DoubaoBlockingFinalConnection()
         let connector = SingleDoubaoConnectionConnector(connection: connection)
@@ -680,6 +729,39 @@ struct DoubaoStreamingTests {
         do {
             _ = try await finalTask.value
             Issue.record("An armed final-response deadline must close a silent socket")
+        } catch let error as StreamingTranscriptionError {
+            guard case .timeout = error else {
+                Issue.record("Expected a final-response timeout")
+                return
+            }
+        }
+        #expect(connection.isClosed)
+        await session.disconnect()
+    }
+
+    @Test func replayFinalTimeoutSurvivesArmingBeforeReceiverStartup() async throws {
+        let connection = DoubaoBlockingFinalConnection()
+        let connector = SingleDoubaoConnectionConnector(connection: connection)
+        let session = DoubaoWebSocketSession(
+            eventsContinuation: nil,
+            connectionPool: CloudSpeechConnectionPool(connector: connector),
+            connector: connector,
+            attemptCoordinator: DoubaoAttemptCoordinator()
+        )
+        try await session.connect(
+            apiKey: "doubao-key",
+            resourceID: DoubaoSpeechProvider.defaultResourceID,
+            customVocabulary: [],
+            settings: .defaults,
+            endpoint: .optimizedStreaming,
+            startReceiving: false,
+            allowPreconnectedConnection: false
+        )
+
+        await session.armFinalResultTimeout(after: .milliseconds(20))
+        do {
+            _ = try await session.receiveFinalTranscript(timeout: nil)
+            Issue.record("Receiver startup must preserve an already armed deadline")
         } catch let error as StreamingTranscriptionError {
             guard case .timeout = error else {
                 Issue.record("Expected a final-response timeout")
@@ -1478,6 +1560,70 @@ private final class SingleDoubaoConnectionConnector: CloudSpeechWebSocketConnect
         onClosed _: (@Sendable (Error?) -> Void)?
     ) async throws -> any CloudSpeechWebSocketConnection {
         connection
+    }
+}
+
+private actor DoubaoLeaseCancellationConnector: CloudSpeechWebSocketConnecting {
+    private let leasedConnection: DoubaoBlockingLeaseConnection
+    private var openCount = 0
+
+    init(leasedConnection: DoubaoBlockingLeaseConnection) {
+        self.leasedConnection = leasedConnection
+    }
+
+    func open(
+        target _: CloudSpeechConnectionTarget,
+        onClosed _: (@Sendable (Error?) -> Void)?
+    ) async throws -> any CloudSpeechWebSocketConnection {
+        openCount += 1
+        if openCount == 1 {
+            return leasedConnection
+        }
+        return DoubaoReplayTestConnection(finalText: "replacement")
+    }
+}
+
+private final class DoubaoBlockingLeaseConnection: CloudSpeechWebSocketConnection, @unchecked Sendable {
+    private let lock = NSLock()
+    private var pingContinuation: CheckedContinuation<Void, Never>?
+    private var storedPingStarted = false
+    private var storedIsClosed = false
+
+    var isClosed: Bool { lock.withLock { storedIsClosed } }
+
+    func send(_: URLSessionWebSocketTask.Message) async throws {}
+
+    func receive() async throws -> URLSessionWebSocketTask.Message {
+        throw StreamingTranscriptionError.notConnected
+    }
+
+    func ping(timeout _: Duration) async throws {
+        await withCheckedContinuation { continuation in
+            lock.withLock {
+                storedPingStarted = true
+                pingContinuation = continuation
+            }
+        }
+    }
+
+    func waitUntilPingStarted() async throws {
+        for _ in 0..<100 {
+            if lock.withLock({ storedPingStarted }) { return }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        throw StreamingTranscriptionError.timeout
+    }
+
+    func releasePing() {
+        let continuation = lock.withLock {
+            defer { pingContinuation = nil }
+            return pingContinuation
+        }
+        continuation?.resume()
+    }
+
+    func close() {
+        lock.withLock { storedIsClosed = true }
     }
 }
 

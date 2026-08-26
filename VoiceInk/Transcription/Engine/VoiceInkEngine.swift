@@ -348,7 +348,6 @@ class VoiceInkEngine: NSObject, ObservableObject {
 
             recordingDurationLimiter.cancel()
             shouldCancelRecording = false
-            partialTranscript = ""
             activeRecordingUseCase = recordingUseCase
             clearActiveRecordingContext()
             cancelActiveRecordingModeTask()
@@ -374,23 +373,16 @@ class VoiceInkEngine: NSObject, ObservableObject {
                             return
                         }
 
-                        // Once preflight succeeds, disown the prior pipeline
-                        // before assigning any state to the new capture. An old
-                        // pipeline that finishes while startRecording suspends
-                        // must not clear the new recording URL or shared state.
-                        self.cancelSupersededPipelineForNewRecording()
-                        self.activePipelineTranscriptionID = nil
-
                         let startID = UUID()
                         self.activeRecordingStartID = startID
                         let lockedTarget = RecordingContextTarget.captureIdentity()
                         var activeModeTask: Task<VocabularyUsageContext, Never>?
+                        let stateBeforeRecorderStart = self.recordingState
+                        let permanentURL = self.recordingsDirectory.appendingPathComponent(
+                            "\(UUID().uuidString).wav"
+                        )
 
                         do {
-                            let fileName = "\(UUID().uuidString).wav"
-                            let permanentURL = self.recordingsDirectory.appendingPathComponent(fileName)
-                            self.recordedFile = permanentURL
-
                             let captureRequestedAt = DispatchTime.now().uptimeNanoseconds
                             let diagnosticsLogger = self.logger
                             let realtimeAudioGate = RealtimeAudioChunkGate {
@@ -416,18 +408,24 @@ class VoiceInkEngine: NSObject, ObservableObject {
                                 !self.shouldCancelRecording
                             else {
                                 activeModeTask?.cancel()
-                                self.cancelCurrentSession()
-                                let shouldKeepRecordingFile = self.shouldCancelRecording
                                 if self.activeRecordingStartID == startID {
                                     await self.recorder.stopRecording()
-                                    if !shouldKeepRecordingFile {
-                                        self.recordedFile = nil
+                                    if self.recordingState == .starting {
+                                        self.recordingState = stateBeforeRecorderStart
                                     }
-                                    self.recordingState = .idle
                                     self.activeRecordingStartID = nil
                                 }
                                 return
                             }
+
+                            // The replacement is real only after recorder startup
+                            // succeeds. Disown the old pipeline before publishing
+                            // the new URL, so its late cleanup cannot clear this
+                            // capture and a failed startup cannot discard old work.
+                            self.cancelSupersededPipelineForNewRecording()
+                            self.activePipelineTranscriptionID = nil
+                            self.recordedFile = permanentURL
+                            self.partialTranscript = ""
 
                             // Capture is deliberately started before panel creation, mode matching,
                             // context capture, or cloud session setup. The realtime gate preserves
@@ -546,15 +544,16 @@ class VoiceInkEngine: NSObject, ObservableObject {
                             activeModeTask?.cancel()
                             self.logger.error("Recording failed to start: \(error, privacy: .public)")
                             await self.recorder.stopRecording()
-                            self.cancelCurrentSession()
-                            if let recordedFile = self.recordedFile {
-                                try? FileManager.default.removeItem(at: recordedFile)
+                            try? FileManager.default.removeItem(at: permanentURL)
+                            if self.activeRecordingStartID == startID {
+                                self.activeRecordingStartID = nil
                             }
-                            self.recordingState = .idle
-                            self.recordedFile = nil
-                            self.activeRecordingStartID = nil
+                            if self.recordingState == .starting {
+                                self.recordingState = stateBeforeRecorderStart
+                            }
                             self.clearActiveRecordingContext()
-                            await self.cleanupResources()
+                            self.activeRecordingUseCase = .newSession
+                            self.activeRecordingInputTarget = nil
                             NotificationManager.shared.showNotification(
                                 title: String(localized: "Recording failed to start"), type: .error)
                             await self.recorderUIManager?.dismissRecorderPanel()

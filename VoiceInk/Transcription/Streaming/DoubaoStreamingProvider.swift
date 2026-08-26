@@ -548,7 +548,12 @@ actor DoubaoWebSocketSession {
             if endpoint == .optimizedStreaming, allowPreconnectedConnection {
                 connectionStage = "lease"
                 standbyConnection = await connectionPool.lease(for: target)
-                try Task.checkCancellation()
+                do {
+                    try Task.checkCancellation()
+                } catch {
+                    standbyConnection?.close()
+                    throw error
+                }
                 connection = standbyConnection
                 if standbyConnection != nil {
                     connectionSource = "preconnected"
@@ -723,12 +728,18 @@ actor DoubaoWebSocketSession {
         onSnapshot: (@Sendable (DoubaoServerResponse) -> Void)? = nil
     ) async throws -> String {
         guard let connection else { throw StreamingTranscriptionError.notConnected }
-        finalResultTimedOut = false
-        finalResultCancelled = false
-        finalResultTimeoutTask?.cancel()
-        finalResultTimeoutTask = nil
         if let timeout {
+            finalResultTimedOut = false
+            finalResultCancelled = false
+            finalResultTimeoutTask?.cancel()
+            finalResultTimeoutTask = nil
             armFinalResultTimeout(after: timeout)
+        } else if finalResultTimeoutTask == nil {
+            // Replay starts its receiver before commit and arms the deadline
+            // afterwards. If executor scheduling lets arming win, preserve that
+            // task instead of cancelling it when the receiver first runs.
+            finalResultTimedOut = false
+            finalResultCancelled = false
         }
         defer {
             finalResultTimeoutTask?.cancel()
