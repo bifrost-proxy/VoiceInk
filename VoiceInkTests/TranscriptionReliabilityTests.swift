@@ -165,6 +165,14 @@ struct TranscriptionReliabilityTests {
                 provider: .doubaoSpeech
             )
         )
+        #expect(
+            !ModelPrewarmPolicy.shouldRun(
+                isEnabled: true,
+                isRecordingActive: false,
+                isUnderRuntimePressure: true,
+                provider: .qwenMlx
+            )
+        )
     }
 
     @Test func qwenAudioBatcherCoalescesChunksAndFlushesTail() {

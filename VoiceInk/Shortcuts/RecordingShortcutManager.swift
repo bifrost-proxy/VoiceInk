@@ -155,6 +155,7 @@ class RecordingShortcutManager: ObservableObject {
     private var appDidBecomeActiveObserver: NSObjectProtocol?
     private let shortcutModeHandler: RecordingShortcutModeHandler
     private let primaryRecordingShortcutModeSource: RecordingShortcutModeSource
+    private var preservesShortcutPressStateDuringRecovery = false
 
     // MARK: - Helper Properties
     private var canHandleShortcutAction: Bool {
@@ -544,7 +545,9 @@ class RecordingShortcutManager: ObservableObject {
         middleClickMonitors = []
         middleClickTask?.cancel()
 
-        shortcutModeHandler.reset()
+        if !preservesShortcutPressStateDuringRecovery {
+            shortcutModeHandler.reset()
+        }
     }
 
     private func removeAllMonitoring() {
@@ -574,6 +577,11 @@ class RecordingShortcutManager: ObservableObject {
     /// tap is not sufficient when its Mach port or run-loop source is stale.
     @discardableResult
     func recoverRuntimeMonitoring() -> Bool {
+        // A push-to-talk key may still be held while the monitor is rebuilt.
+        // Preserve that press so the replacement monitor can consume key-up
+        // and stop the recording normally.
+        preservesShortcutPressStateDuringRecovery = true
+        defer { preservesShortcutPressStateDuringRecovery = false }
         let succeeded: Bool
         if AXIsProcessTrusted() {
             succeeded = refreshShortcutMonitoringAfterAccessibilityAuthorization()
@@ -658,6 +666,10 @@ final class RecordingShortcutModeHandler {
         interruptedRecordingActions.removeAll()
         activeShortcutCanCancelAccidentalStart = false
         isBypassingEnhancementForCurrentShortcut = false
+    }
+
+    var hasActivePress: Bool {
+        isShortcutPressed
     }
 
     func handleKeyDown(

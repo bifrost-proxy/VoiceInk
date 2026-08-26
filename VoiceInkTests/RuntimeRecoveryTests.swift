@@ -15,7 +15,10 @@ struct RuntimeRecoveryTests {
             clock: { 1_000_000_000 },
             onClockDiscontinuity: { probe.recordClockGap($0) },
             onSoftStall: { duration, critical in probe.recordSoftStall(duration, critical: critical) },
-            onHardStall: { probe.recordHardStall($0) }
+            onHardStall: {
+                probe.recordHardStall($0)
+                return true
+            }
         )
         monitor.start(interval: 1_000)
         defer { monitor.stop() }
@@ -43,7 +46,10 @@ struct RuntimeRecoveryTests {
             clock: { 1_000_000_000 },
             onClockDiscontinuity: { probe.recordClockGap($0) },
             onSoftStall: { duration, critical in probe.recordSoftStall(duration, critical: critical) },
-            onHardStall: { probe.recordHardStall($0) }
+            onHardStall: {
+                probe.recordHardStall($0)
+                return true
+            }
         )
         monitor.start(interval: 1_000)
         defer { monitor.stop() }
@@ -62,7 +68,10 @@ struct RuntimeRecoveryTests {
             clock: { 1_000_000_000 },
             onClockDiscontinuity: { probe.recordClockGap($0) },
             onSoftStall: { duration, critical in probe.recordSoftStall(duration, critical: critical) },
-            onHardStall: { probe.recordHardStall($0) }
+            onHardStall: {
+                probe.recordHardStall($0)
+                return true
+            }
         )
         monitor.start(interval: 1_000)
         defer { monitor.stop() }
@@ -131,6 +140,30 @@ struct RuntimeRecoveryTests {
                 isCriticalWorkActive: false
             )
         )
+    }
+
+    @Test func unavailableHardRecoveryIsRetriedOnLaterWatchdogTicks() {
+        let probe = RuntimeRecoveryProbe()
+        let monitor = MainThreadLivenessMonitor(
+            softStallThreshold: 5,
+            hardStallThreshold: 30,
+            clockDiscontinuityThreshold: 1_000,
+            clock: { 1_000_000_000 },
+            onClockDiscontinuity: { probe.recordClockGap($0) },
+            onSoftStall: { duration, critical in probe.recordSoftStall(duration, critical: critical) },
+            onHardStall: { duration in
+                probe.recordHardStall(duration)
+                return probe.hardStalls.count > 1
+            }
+        )
+        monitor.start(interval: 1_000)
+        defer { monitor.stop() }
+
+        monitor.simulateTick(now: 31_000_000_000)
+        monitor.simulateTick(now: 32_000_000_000)
+        monitor.simulateTick(now: 33_000_000_000)
+
+        #expect(probe.hardStalls.count == 2)
     }
 
     @Test func memoryPressureSimulationSuspendsWorkThenRecoversOnNormal() {

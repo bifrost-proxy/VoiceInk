@@ -5,6 +5,31 @@ import Testing
 
 @MainActor
 struct RecordingShortcutModeHandlerTests {
+    @Test func activeShortcutPressRemainsVisibleUntilKeyUp() async {
+        let handler = RecordingShortcutModeHandler(
+            canHandleShortcutAction: { true },
+            isRecorderVisible: { true },
+            recordingState: { .recording },
+            toggleRecorderPanel: { _ in },
+            cancelRecording: {},
+            cancelEnhancementAndPasteOriginal: {}
+        )
+
+        await handler.handleKeyDown(
+            action: .primaryRecording,
+            eventTime: 5,
+            mode: .pushToTalk
+        )
+        #expect(handler.hasActivePress)
+
+        await handler.handleKeyUp(
+            action: .primaryRecording,
+            eventTime: 5.2,
+            mode: .pushToTalk
+        )
+        #expect(!handler.hasActivePress)
+    }
+
     @Test func enhancementShortcutBypassesPolishWithoutStartingAnotherRecording() async {
         var recordingState: RecordingState = .enhancing
         var toggleCount = 0

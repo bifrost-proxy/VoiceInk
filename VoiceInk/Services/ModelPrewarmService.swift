@@ -16,9 +16,10 @@ enum ModelPrewarmPolicy {
     static func shouldRun(
         isEnabled: Bool,
         isRecordingActive: Bool,
+        isUnderRuntimePressure: Bool = false,
         provider: ModelProvider
     ) -> Bool {
-        isEnabled && !isRecordingActive && isLocalProvider(provider)
+        isEnabled && !isRecordingActive && !isUnderRuntimePressure && isLocalProvider(provider)
     }
 }
 
@@ -31,6 +32,7 @@ final class ModelPrewarmService: ObservableObject {
     private let prewarmEnabledKey = "PrewarmModelOnWake"
     private var prewarmTask: Task<Void, Never>?
     private var recordingObserver: NSObjectProtocol?
+    private var isSuspendedForRuntimePressure = false
 
     init(
         transcriptionModelManager: TranscriptionModelManager,
@@ -83,6 +85,10 @@ final class ModelPrewarmService: ObservableObject {
     }
 
     private func schedulePrewarmTask() {
+        guard !isSuspendedForRuntimePressure else {
+            logger.notice("Skipping model prewarm scheduling while runtime pressure is active")
+            return
+        }
         prewarmTask?.cancel()
         prewarmTask = Task { [weak self] in
             do {
@@ -106,13 +112,23 @@ final class ModelPrewarmService: ObservableObject {
     }
 
     func suspendForRuntimePressure() {
-        guard let prewarmTask else { return }
-        prewarmTask.cancel()
+        isSuspendedForRuntimePressure = true
+        prewarmTask?.cancel()
         self.prewarmTask = nil
         logger.notice("Cancelled model prewarm because runtime pressure increased")
     }
 
+    func resumeAfterRuntimePressure() {
+        guard isSuspendedForRuntimePressure else { return }
+        isSuspendedForRuntimePressure = false
+        logger.notice("Model prewarm runtime-pressure suspension cleared")
+    }
+
     func recoverAfterRuntimeInterruption() {
+        guard !isSuspendedForRuntimePressure else {
+            logger.notice("Deferring model prewarm recovery while runtime pressure is active")
+            return
+        }
         logger.notice("Scheduling model prewarm after runtime recovery")
         schedulePrewarmTask()
     }
@@ -190,6 +206,7 @@ final class ModelPrewarmService: ObservableObject {
             ModelPrewarmPolicy.shouldRun(
                 isEnabled: isEnabled,
                 isRecordingActive: AudioDeviceManager.shared.isRecordingActive,
+                isUnderRuntimePressure: isSuspendedForRuntimePressure,
                 provider: model.provider
             )
         else {

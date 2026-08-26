@@ -79,14 +79,17 @@ final class RuntimeRecoveryCoordinator {
         let initialCriticalWork = engine.recordingState != .idle
             || AudioTranscriptionManager.shared.isProcessingQueue
             || UpdateManager.shared.isBusy
+            || engine.assistantSession.isBusy
         setupLivenessMonitoring(isCriticalWorkActive: initialCriticalWork)
-        criticalWorkObserver = Publishers.CombineLatest3(
+        criticalWorkObserver = Publishers.CombineLatest4(
             engine.$recordingState,
             AudioTranscriptionManager.shared.$isProcessingQueue,
-            UpdateManager.shared.$activity
-        ).sink { [weak self] recordingState, isProcessingAudioFiles, updateActivity in
+            UpdateManager.shared.$activity,
+            engine.assistantSession.$phase
+        ).sink { [weak self] recordingState, isProcessingAudioFiles, updateActivity, assistantPhase in
             self?.livenessMonitor?.setCriticalWorkActive(
                 recordingState != .idle || isProcessingAudioFiles || updateActivity.isBusy
+                    || assistantPhase == .responding || assistantPhase == .sendingFollowUp
             )
         }
     }
@@ -170,6 +173,7 @@ final class RuntimeRecoveryCoordinator {
 
         if plan.performRecovery {
             logger.notice("Runtime memory pressure returned to normal")
+            prewarmService.resumeAfterRuntimePressure()
             cloudSpeechPreconnectionService.setMemoryPressure(false)
             requestRecovery(.memoryPressureRecovered)
         }
@@ -212,8 +216,9 @@ final class RuntimeRecoveryCoordinator {
                     isCriticalWorkActive: false
                 )
                 if canRelaunch {
-                    relaunchPlan?.launchAndExit()
+                    return relaunchPlan?.launchAndExit() ?? false
                 }
+                return false
             }
         )
         eventProbe.onAcknowledged = { [weak monitor] in
@@ -268,7 +273,7 @@ final class MainThreadLivenessMonitor: @unchecked Sendable {
     private let onProbeRequested: @Sendable () -> Void
     private let onClockDiscontinuity: @Sendable (TimeInterval) -> Void
     private let onSoftStall: @Sendable (TimeInterval, Bool) -> Void
-    private let onHardStall: @Sendable (TimeInterval) -> Void
+    private let onHardStall: @Sendable (TimeInterval) -> Bool
     private let lastMainAcknowledgement = ManagedAtomic<UInt64>(0)
     private let lastTimerTick = ManagedAtomic<UInt64>(0)
     private let isCriticalWorkActive = ManagedAtomic(false)
@@ -285,7 +290,7 @@ final class MainThreadLivenessMonitor: @unchecked Sendable {
         onProbeRequested: @escaping @Sendable () -> Void = {},
         onClockDiscontinuity: @escaping @Sendable (TimeInterval) -> Void,
         onSoftStall: @escaping @Sendable (TimeInterval, Bool) -> Void,
-        onHardStall: @escaping @Sendable (TimeInterval) -> Void
+        onHardStall: @escaping @Sendable (TimeInterval) -> Bool
     ) {
         self.softStallNanoseconds = Self.nanoseconds(softStallThreshold)
         self.hardStallNanoseconds = Self.nanoseconds(hardStallThreshold)
@@ -375,14 +380,11 @@ final class MainThreadLivenessMonitor: @unchecked Sendable {
         if RuntimeRecoveryPolicy.shouldRelaunch(
             stallDuration: Self.seconds(stall),
             isCriticalWorkActive: criticalWork
-        ),
-            didHandleHardStall.compareExchange(
-                expected: false,
-                desired: true,
-                ordering: .acquiringAndReleasing
-            ).exchanged
+        ), !didHandleHardStall.load(ordering: .acquiring)
         {
-            onHardStall(Self.seconds(stall))
+            if onHardStall(Self.seconds(stall)) {
+                didHandleHardStall.store(true, ordering: .releasing)
+            }
         }
     }
 
@@ -519,8 +521,8 @@ struct RuntimeRecoveryRelaunchPlan: Sendable {
         return now.timeIntervalSince(modified) >= cooldown
     }
 
-    func launchAndExit() {
-        guard canRelaunch() else { return }
+    func launchAndExit() -> Bool {
+        guard canRelaunch() else { return false }
         do {
             try Data(Date().ISO8601Format().utf8).write(to: markerURL, options: .atomic)
             let process = Process()
@@ -537,6 +539,7 @@ struct RuntimeRecoveryRelaunchPlan: Sendable {
             Logger(subsystem: "com.prakashjoshipax.voiceink", category: "RuntimeRecovery").fault(
                 "Failed to launch runtime recovery helper: \(error.localizedDescription, privacy: .public)"
             )
+            return false
         }
     }
 }

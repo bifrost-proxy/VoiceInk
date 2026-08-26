@@ -320,6 +320,7 @@ actor CloudSpeechConnectionPool {
         let readyKeys: Set<CloudSpeechConnectionKey>
         let connectingKeys: Set<CloudSpeechConnectionKey>
         let dormantKeys: Set<CloudSpeechConnectionKey>
+        let retryingKeys: Set<CloudSpeechConnectionKey>
         let failureCounts: [CloudSpeechConnectionKey: Int]
     }
 
@@ -445,6 +446,7 @@ actor CloudSpeechConnectionPool {
     func recordUseCompleted(for target: CloudSpeechConnectionTarget) {
         guard targets[target.key] == target else { return }
         failureCounts[target.key] = 0
+        retryTasks.removeValue(forKey: target.key)?.cancel()
         recordActivity(for: target.key)
     }
 
@@ -497,6 +499,7 @@ actor CloudSpeechConnectionPool {
             readyKeys: Set(readyConnections.keys),
             connectingKeys: Set(connectTasks.keys),
             dormantKeys: dormantKeys,
+            retryingKeys: Set(retryTasks.keys),
             failureCounts: failureCounts
         )
     }
@@ -747,6 +750,7 @@ final class CloudSpeechPreconnectionService: ObservableObject {
     private var observers: [NSObjectProtocol] = []
     private var workspaceObservers: [NSObjectProtocol] = []
     private var refreshTask: Task<Void, Never>?
+    private var suspensionUpdateTask: Task<Void, Never>?
     private var isSleeping = false
     private var isNetworkAvailable = true
     private var isUnderMemoryPressure = false
@@ -765,6 +769,7 @@ final class CloudSpeechPreconnectionService: ObservableObject {
 
     deinit {
         refreshTask?.cancel()
+        suspensionUpdateTask?.cancel()
         pathMonitor.cancel()
         observers.forEach(NotificationCenter.default.removeObserver)
         workspaceObservers.forEach(NSWorkspace.shared.notificationCenter.removeObserver)
@@ -862,7 +867,10 @@ final class CloudSpeechPreconnectionService: ObservableObject {
         logger.notice(
             "Cloud speech keep-alive runtime state suspended=\(suspended, privacy: .public) sleeping=\(self.isSleeping, privacy: .public) pathAvailable=\(self.isNetworkAvailable, privacy: .public) memoryPressure=\(self.isUnderMemoryPressure, privacy: .public)"
         )
-        Task { [pool] in
+        let previousUpdate = suspensionUpdateTask
+        suspensionUpdateTask = Task { [pool] in
+            await previousUpdate?.value
+            guard !Task.isCancelled else { return }
             await pool.setSuspended(suspended)
         }
     }

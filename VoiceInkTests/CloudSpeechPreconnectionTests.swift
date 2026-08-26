@@ -236,6 +236,36 @@ struct CloudSpeechPreconnectionTests {
         )
     }
 
+    @Test func successfulUseCancelsAnOpenCircuitAndRestoresStandby() async throws {
+        let connector = FakeCloudSpeechConnector()
+        let pool = CloudSpeechConnectionPool(
+            connector: connector,
+            circuitBreakerFailureCount: 1,
+            circuitBreakerDelay: .seconds(5 * 60)
+        )
+        let target = CloudSpeechConnectionTarget.aliyun(
+            apiKey: "test-key",
+            endpoint: URL(string: "wss://example.com/api-ws/v1/inference")!
+        )
+
+        await pool.reconcile(targets: [target])
+        try await waitUntilReady(pool, key: target.key)
+        await connector.closeLatestConnection()
+
+        for _ in 0..<100 {
+            if await pool.snapshot().retryingKeys.contains(target.key) { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(await pool.snapshot().retryingKeys.contains(target.key))
+
+        await pool.recordUseCompleted(for: target)
+        try await waitUntilReady(pool, key: target.key)
+        let recoveredSnapshot = await pool.snapshot()
+        #expect(await connector.openCount == 2)
+        #expect(!recoveredSnapshot.retryingKeys.contains(target.key))
+        await pool.shutdown()
+    }
+
     @Test func idleStandbyPausesAndTheNextUseReactivatesIt() async throws {
         let connector = FakeCloudSpeechConnector()
         let pool = CloudSpeechConnectionPool(
