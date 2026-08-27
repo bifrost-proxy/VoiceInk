@@ -391,6 +391,35 @@ struct StreamingIntegrityTests {
     }
 
     @MainActor
+    @Test func normalCleanupPreservesTimedOutDisconnectBarrier() async throws {
+        let gate = StreamingDisconnectGate()
+        let provider = GatedDisconnectProvider(gate: gate)
+        let service = try makeService(
+            provider: provider,
+            deadlines: StreamingDeadlines(disconnect: .milliseconds(1))
+        )
+
+        service.prepareForStart()
+        try await service.startStreaming(
+            model: IntegrityTestModel(),
+            context: TranscriptionRequestContext(language: "auto", prompt: nil)
+        )
+        _ = try await service.stopAndFinalize()
+        #expect(await gate.didStart)
+        #expect(!(await gate.didFinish))
+
+        let cleanupWaiter = Task { @MainActor in
+            await service.waitForCancellation()
+        }
+        await Task.yield()
+        #expect(!(await gate.didFinish))
+
+        await gate.release()
+        await cleanupWaiter.value
+        #expect(await gate.didFinish)
+    }
+
+    @MainActor
     private func makeService(
         provider: any StreamingTranscriptionProvider,
         deadlines: StreamingDeadlines? = nil,
@@ -452,7 +481,9 @@ private final class GatedDisconnectProvider: StreamingTranscriptionProvider {
 
     func connect(model _: any TranscriptionModel, language _: String?) async throws {}
     func sendAudioChunk(_: Data) async throws {}
-    func commit() async throws {}
+    func commit() async throws {
+        continuation.yield(.committed(text: "complete"))
+    }
 
     func disconnect() async {
         await gate.wait()

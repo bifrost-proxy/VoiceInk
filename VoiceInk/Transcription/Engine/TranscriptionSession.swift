@@ -118,9 +118,7 @@ final class ResourceManagedTranscriptionSession: TranscriptionSession {
     }
 
     private func finishTranscription() async {
-        if isCancelled {
-            await session.waitForCancellation()
-        }
+        await session.waitForCancellation()
         isTranscribing = false
         finish()
     }

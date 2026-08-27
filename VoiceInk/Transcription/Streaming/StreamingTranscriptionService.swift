@@ -458,6 +458,7 @@ class StreamingTranscriptionService {
     private var sendTask: Task<Void, Never>?
     private var eventConsumerTask: Task<Void, Never>?
     private var cancellationTask: Task<Void, Never>?
+    private var disconnectCleanupTasks: [UUID: Task<Void, Never>] = [:]
     private let chunkSource = AudioChunkSource()
     private var state: StreamingState = .idle
     private var committedSegments: [String] = []
@@ -898,6 +899,11 @@ class StreamingTranscriptionService {
     func waitForCancellation() async {
         await cancellationTask?.value
         cancellationTask = nil
+        let cleanupTasks = Array(disconnectCleanupTasks.values)
+        for cleanupTask in cleanupTasks {
+            await cleanupTask.value
+        }
+        disconnectCleanupTasks.removeAll()
     }
 
     /// Stops a failed transport before complete-file recovery without clearing
@@ -1212,14 +1218,18 @@ class StreamingTranscriptionService {
     }
 
     private func disconnectWithinDeadline(_ provider: StreamingProviderTransport) async -> Bool {
+        let cleanupID = UUID()
         let disconnectTask = Task.detached(priority: .utility) {
             await provider.disconnect()
         }
+        disconnectCleanupTasks[cleanupID] = disconnectTask
         let disconnected = await StreamingAudioIntegrityPolicy.waitForCompletion(
             of: disconnectTask,
             timeout: deadlines.disconnect
         )
-        if !disconnected {
+        if disconnected {
+            disconnectCleanupTasks[cleanupID] = nil
+        } else {
             logger.warning("Streaming disconnect exceeded the reliability deadline")
         }
         return disconnected

@@ -104,6 +104,26 @@ struct LocalModelResourceRetentionTests {
     }
 
     @MainActor
+    @Test func managedSessionWaitsForNormalCleanupAfterInferenceReturns() async throws {
+        let cleanupGate = ResourceRetentionTaskGate()
+        let baseSession = ResourceRetentionTestSession(result: "done", cancellationGate: cleanupGate)
+        var finishCount = 0
+        let session = ResourceManagedTranscriptionSession(session: baseSession) {
+            finishCount += 1
+        }
+
+        let transcriptionTask = Task { @MainActor in
+            try await session.transcribe(audioURL: URL(fileURLWithPath: "/tmp/test.wav"))
+        }
+        await Task.yield()
+        #expect(finishCount == 0)
+
+        await cleanupGate.release()
+        #expect(try await transcriptionTask.value == "done")
+        #expect(finishCount == 1)
+    }
+
+    @MainActor
     @Test func managedSessionRetainsItsLeaseUntilStreamingCancellationFinishes() async {
         let gate = ResourceRetentionTaskGate()
         let baseSession = ResourceRetentionTestSession(result: "unused", cancellationGate: gate)

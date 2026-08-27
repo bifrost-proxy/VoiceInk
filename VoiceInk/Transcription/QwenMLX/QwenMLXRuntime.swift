@@ -80,9 +80,13 @@ actor QwenMLXRuntime {
         return try Self.snapshot(from: response)
     }
 
-    func cancelStreaming() {
+    func cancelStreaming(gracePeriod: Duration = shutdownGracePeriod) async {
         guard process?.isRunning == true else { return }
-        _ = try? request(["command": "cancel"])
+        // Cancellation is deliberately write-only. A wedged bridge may never
+        // answer on stdout, so request cancellation and then reuse the bounded
+        // shutdown path to guarantee that the actor becomes usable again.
+        _ = try? writeRequest(["command": "cancel"])
+        await stop(gracePeriod: gracePeriod)
     }
 
     func transcribe(audioURL: URL, language: String?, context: String?) throws -> String {

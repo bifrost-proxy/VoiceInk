@@ -43,6 +43,7 @@ struct FillerWordsSettingsSection: View {
     @State private var newWord = ""
     @State private var isShowingAddWord = false
     @State private var errorMessage: String?
+    @State private var draftWorkID: UUID?
 
     var body: some View {
         Section {
@@ -77,6 +78,12 @@ struct FillerWordsSettingsSection: View {
                     addWordPopover
                 }
             }
+        }
+        .onChange(of: newWord) { _, value in
+            updateDraftProtection(value)
+        }
+        .onDisappear {
+            endDraftProtection()
         }
     }
 
@@ -134,5 +141,21 @@ struct FillerWordsSettingsSection: View {
         withAnimation(.easeInOut(duration: 0.2)) {
             closeAddWordPopover()
         }
+    }
+
+    private func updateDraftProtection(_ value: String) {
+        let shouldProtect = RuntimeCriticalWorkPolicy.textDraftIsProtected(value, savedValue: nil)
+        if shouldProtect, draftWorkID == nil {
+            draftWorkID = RuntimeProtectedWorkActivity.shared.begin()
+        } else if !shouldProtect {
+            endDraftProtection()
+        }
+    }
+
+    private func endDraftProtection() {
+        if let draftWorkID {
+            RuntimeProtectedWorkActivity.shared.end(draftWorkID)
+        }
+        draftWorkID = nil
     }
 }
