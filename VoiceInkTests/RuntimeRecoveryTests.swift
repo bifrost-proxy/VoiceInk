@@ -781,6 +781,15 @@ struct RuntimeRecoveryTests {
         #expect(plan?.helperURL == nil)
     }
 
+    @Test func inMemoryStorageNeverPreparesAnAutomaticRelaunch() {
+        let plan = RuntimeRecoveryRelauncher.prepareIfAllowed(
+            allowsAutomaticRelaunch: false,
+            environment: [:],
+            appURL: URL(fileURLWithPath: "/Applications/VoiceInk.app")
+        )
+        #expect(plan?.helperURL == nil)
+    }
+
     @Test func missingHelperPreventsExitAndClearsTheCooldownMarker() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("VoiceInk-RuntimeRecoveryFailureTests-\(UUID().uuidString)", isDirectory: true)

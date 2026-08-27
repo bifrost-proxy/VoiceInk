@@ -64,6 +64,7 @@ struct VoiceInkApp: App {
             SessionMetric.self,
         ])
         let resolvedContainer: ModelContainer
+        var hasPersistentStorage = true
 
         // Attempt 1: Try persistent storage
         do {
@@ -72,6 +73,7 @@ struct VoiceInkApp: App {
             // Attempt 2: Try in-memory storage
             do {
                 resolvedContainer = try Self.createInMemoryContainer(schema: schema, logger: logger)
+                hasPersistentStorage = false
                 logger.warning("Using in-memory storage as fallback. Data will not persist between sessions.")
 
                 DispatchQueue.main.async {
@@ -180,7 +182,8 @@ struct VoiceInkApp: App {
             engine: engine,
             recordingShortcutManager: recordingShortcutManager,
             cloudSpeechPreconnectionService: cloudSpeechPreconnectionService,
-            prewarmService: prewarmService
+            prewarmService: prewarmService,
+            allowsAutomaticRelaunch: hasPersistentStorage
         )
 
         appDelegate.menuBarManager = menuBarManager

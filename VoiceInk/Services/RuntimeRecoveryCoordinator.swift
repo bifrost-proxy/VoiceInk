@@ -206,7 +206,8 @@ final class RuntimeRecoveryCoordinator {
         engine: VoiceInkEngine,
         recordingShortcutManager: RecordingShortcutManager,
         cloudSpeechPreconnectionService: CloudSpeechPreconnectionService,
-        prewarmService: ModelPrewarmService
+        prewarmService: ModelPrewarmService,
+        allowsAutomaticRelaunch: Bool = true
     ) {
         self.recordingShortcutManager = recordingShortcutManager
         self.cloudSpeechPreconnectionService = cloudSpeechPreconnectionService
@@ -219,7 +220,10 @@ final class RuntimeRecoveryCoordinator {
             || UpdateManager.shared.isBusy
             || RuntimeCriticalWorkPolicy.assistantSessionIsProtected(engine.assistantSession.phase)
             || RuntimeProtectedWorkActivity.shared.isBusy
-        setupLivenessMonitoring(isCriticalWorkActive: initialCriticalWork)
+        setupLivenessMonitoring(
+            isCriticalWorkActive: initialCriticalWork,
+            allowsAutomaticRelaunch: allowsAutomaticRelaunch
+        )
         let appWork = Publishers.CombineLatest4(
             engine.$recordingState,
             AudioTranscriptionManager.shared.$hasQueuedWork,
@@ -319,8 +323,13 @@ final class RuntimeRecoveryCoordinator {
         }
     }
 
-    private func setupLivenessMonitoring(isCriticalWorkActive: Bool) {
-        let relaunchPlan = RuntimeRecoveryRelauncher.prepareIfAllowed()
+    private func setupLivenessMonitoring(
+        isCriticalWorkActive: Bool,
+        allowsAutomaticRelaunch: Bool
+    ) {
+        let relaunchPlan = RuntimeRecoveryRelauncher.prepareIfAllowed(
+            allowsAutomaticRelaunch: allowsAutomaticRelaunch
+        )
         let eventProbe = AppKitEventProbe()
         let monitor = MainThreadLivenessMonitor(
             softStallThreshold: RuntimeRecoveryPolicy.softStallThreshold,
@@ -766,12 +775,14 @@ enum RuntimeRecoveryRelauncher {
     static let cooldown: TimeInterval = 10 * 60
 
     static func prepareIfAllowed(
+        allowsAutomaticRelaunch: Bool = true,
         environment: [String: String] = ProcessInfo.processInfo.environment,
         appURL: URL = Bundle.main.bundleURL,
         cachesDirectory: URL? = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first,
         libraryDirectory: URL? = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first
     ) -> RuntimeRecoveryRelaunchPlan? {
-        guard environment["XCTestConfigurationFilePath"] == nil,
+        guard allowsAutomaticRelaunch,
+            environment["XCTestConfigurationFilePath"] == nil,
             environment["VOICEINK_DISABLE_HANG_RECOVERY"] != "1",
             appURL.pathExtension == "app",
             let cachesDirectory,
