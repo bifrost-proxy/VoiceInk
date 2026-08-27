@@ -145,6 +145,7 @@ final class ModelPrewarmService: ObservableObject {
     func suspendForRuntimePressure() async {
         isSuspendedForRuntimePressure = true
         let tasksToStop = prewarmTasks.cancelAll()
+        await WhisperModelWarmupCoordinator.shared.suspendForRuntimePressure()
         // Some local runtimes perform synchronous inference and cannot observe
         // Swift task cancellation immediately. Retain and await every task,
         // including cancelled tasks superseded by a later wake/recovery, so
@@ -164,6 +165,7 @@ final class ModelPrewarmService: ObservableObject {
     func resumeAfterRuntimePressure() {
         guard isSuspendedForRuntimePressure else { return }
         isSuspendedForRuntimePressure = false
+        WhisperModelWarmupCoordinator.shared.resumeAfterRuntimePressure()
         serviceRegistry.cancelPressureResourceRelease()
         logger.notice("Model prewarm runtime-pressure suspension cleared")
     }

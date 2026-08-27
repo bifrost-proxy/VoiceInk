@@ -6,6 +6,8 @@ final class WhisperModelWarmupCoordinator: ObservableObject {
     static let shared = WhisperModelWarmupCoordinator()
 
     @Published private(set) var warmingModels: Set<String> = []
+    private let warmupTasks = ModelPrewarmTaskRegistry()
+    private var isSuspendedForRuntimePressure = false
 
     private init() {}
 
@@ -14,7 +16,8 @@ final class WhisperModelWarmupCoordinator: ObservableObject {
     }
 
     func scheduleWarmup(for model: WhisperModel, whisperModelManager: WhisperModelManager) {
-        guard shouldWarmup(modelName: model.name),
+        guard !isSuspendedForRuntimePressure,
+            shouldWarmup(modelName: model.name),
             !warmingModels.contains(model.name)
         else {
             return
@@ -22,7 +25,12 @@ final class WhisperModelWarmupCoordinator: ObservableObject {
 
         warmingModels.insert(model.name)
 
-        Task {
+        let taskID = UUID()
+        let task = Task { [weak self] in
+            guard let self else { return }
+            defer { self.finishWarmup(taskID: taskID, modelName: model.name) }
+            guard await RuntimePressureOperationCoordinator.shared.beginOperation() else { return }
+            defer { RuntimePressureOperationCoordinator.shared.endOperation() }
             let operationID = RuntimeProtectedWorkActivity.shared.begin()
             defer { RuntimeProtectedWorkActivity.shared.end(operationID) }
             do {
@@ -33,11 +41,25 @@ final class WhisperModelWarmupCoordinator: ObservableObject {
                         "❌ Warmup failed for \(model.name, privacy: .public): \(error, privacy: .public)")
                 }
             }
-
-            await MainActor.run {
-                self.warmingModels.remove(model.name)
-            }
         }
+        warmupTasks.insert(task, id: taskID)
+    }
+
+    func suspendForRuntimePressure() async {
+        isSuspendedForRuntimePressure = true
+        let tasksToStop = warmupTasks.cancelAll()
+        for task in tasksToStop {
+            await task.value
+        }
+    }
+
+    func resumeAfterRuntimePressure() {
+        isSuspendedForRuntimePressure = false
+    }
+
+    private func finishWarmup(taskID: UUID, modelName: String) {
+        warmupTasks.remove(id: taskID)
+        warmingModels.remove(modelName)
     }
 
     private func runWarmup(for model: WhisperModel, whisperModelManager: WhisperModelManager) async throws {

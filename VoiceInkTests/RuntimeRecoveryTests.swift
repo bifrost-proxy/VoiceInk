@@ -318,6 +318,68 @@ struct RuntimeRecoveryTests {
         #expect(probe.values == ["warning-start", "warning-finished", "normal"])
     }
 
+    @Test @MainActor func pressureReleaseWaitsForOperationsFromEveryRegistry() async {
+        let coordinator = RuntimePressureOperationCoordinator()
+        let probe = OrderedTransitionProbe()
+
+        #expect(await coordinator.beginOperation())
+        #expect(await coordinator.beginOperation())
+        let releaseTask = Task { @MainActor in
+            await coordinator.requestRelease(
+                recordingIsActive: { false },
+                operation: {
+                    probe.append("released")
+                    return true
+                }
+            )
+        }
+        await Task.yield()
+        #expect(!(await releaseTask.value))
+        #expect(probe.values.isEmpty)
+
+        coordinator.endOperation()
+        await Task.yield()
+        #expect(probe.values.isEmpty)
+
+        coordinator.endOperation()
+        _ = await coordinator.retryPendingRelease()
+        #expect(probe.values == ["released"])
+    }
+
+    @Test @MainActor func pressureReleaseBlocksNewOperationsForItsFullAsyncWindow() async {
+        let coordinator = RuntimePressureOperationCoordinator()
+        let gate = NonCooperativeTaskGate()
+        let probe = OrderedTransitionProbe()
+
+        let releaseTask = Task { @MainActor in
+            await coordinator.requestRelease(
+                recordingIsActive: { false },
+                operation: {
+                    probe.append("release-started")
+                    await gate.wait()
+                    probe.append("release-finished")
+                    return true
+                }
+            )
+        }
+        await Task.yield()
+        let operationTask = Task { @MainActor in
+            let started = await coordinator.beginOperation()
+            if started {
+                probe.append("operation-started")
+            }
+            return started
+        }
+        await Task.yield()
+        #expect(probe.values == ["release-started"])
+
+        await gate.release()
+        #expect(await releaseTask.value)
+        #expect(await operationTask.value)
+        coordinator.endOperation()
+        #expect(probe.values == ["release-started", "release-finished", "operation-started"])
+    }
+
     @Test func watchdogKeepsOnlyOneAppKitProbeOutstanding() {
         let probe = RuntimeRecoveryProbe()
         let monitor = MainThreadLivenessMonitor(
