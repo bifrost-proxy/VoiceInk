@@ -123,6 +123,12 @@ final class RuntimeProtectedWorkActivity: ObservableObject {
     }
 }
 
+enum RuntimeCriticalWorkPolicy {
+    static func assistantSessionIsProtected(_ phase: AssistantPhase) -> Bool {
+        phase != .inactive
+    }
+}
+
 /// Coordinates recovery of process-local resources that can become stale when
 /// macOS resumes the process or restarts services under system pressure.
 @MainActor
@@ -158,7 +164,7 @@ final class RuntimeRecoveryCoordinator {
         let initialCriticalWork = engine.recordingState != .idle
             || AudioTranscriptionManager.shared.hasQueuedWork
             || UpdateManager.shared.isBusy
-            || engine.assistantSession.isBusy
+            || RuntimeCriticalWorkPolicy.assistantSessionIsProtected(engine.assistantSession.phase)
             || RuntimeProtectedWorkActivity.shared.isBusy
         setupLivenessMonitoring(isCriticalWorkActive: initialCriticalWork)
         let appWork = Publishers.CombineLatest4(
@@ -168,7 +174,7 @@ final class RuntimeRecoveryCoordinator {
             engine.assistantSession.$phase
         ).map { recordingState, hasQueuedAudioFiles, updateActivity, assistantPhase in
             recordingState != .idle || hasQueuedAudioFiles || updateActivity.isBusy
-                    || assistantPhase == .responding || assistantPhase == .sendingFollowUp
+                || RuntimeCriticalWorkPolicy.assistantSessionIsProtected(assistantPhase)
         }
         criticalWorkObserver = appWork.combineLatest(RuntimeProtectedWorkActivity.shared.$activeOperationCount)
             .sink { [weak self] isAppWorkActive, modelOperationCount in

@@ -864,7 +864,7 @@ class StreamingTranscriptionService {
 
     /// Cancels the streaming session without waiting for results.
     func cancel() {
-        guard state != .cancelled && state != .closed else { return }
+        guard state != .cancelling && state != .cancelled && state != .closed else { return }
         state = .cancelling
         terminationReason = .cancelled
         onPartialTranscript = nil

@@ -10,7 +10,8 @@ final class AccessibilityAuthorizationMonitor {
     private let maximumRetryIntervalNanoseconds: UInt64
     private let requiredConsecutiveSuccesses: Int
     private let isAuthorized: @MainActor () -> Bool
-    private let onRecoveryAttempt: @MainActor () -> Bool
+    private let onRecoveryAttempt: @MainActor () async -> Bool
+    private let onRecoveryCompleted: @MainActor () -> Void
     private var pollingTask: Task<Void, Never>?
 
     init(
@@ -18,7 +19,8 @@ final class AccessibilityAuthorizationMonitor {
         maximumRetryIntervalNanoseconds: UInt64 = 30_000_000_000,
         requiredConsecutiveSuccesses: Int = 2,
         isAuthorized: @escaping @MainActor () -> Bool,
-        onRecoveryAttempt: @escaping @MainActor () -> Bool
+        onRecoveryAttempt: @escaping @MainActor () async -> Bool,
+        onRecoveryCompleted: @escaping @MainActor () -> Void = {}
     ) {
         self.pollingIntervalNanoseconds = pollingIntervalNanoseconds
         self.maximumRetryIntervalNanoseconds = max(
@@ -28,6 +30,7 @@ final class AccessibilityAuthorizationMonitor {
         self.requiredConsecutiveSuccesses = max(1, requiredConsecutiveSuccesses)
         self.isAuthorized = isAuthorized
         self.onRecoveryAttempt = onRecoveryAttempt
+        self.onRecoveryCompleted = onRecoveryCompleted
     }
 
     func start() {
@@ -44,10 +47,11 @@ final class AccessibilityAuthorizationMonitor {
                 guard let self else { return }
 
                 if self.isAuthorized() {
-                    if self.onRecoveryAttempt() {
+                    if await self.onRecoveryAttempt() {
                         consecutiveSuccesses += 1
                         retryIntervalNanoseconds = pollingIntervalNanoseconds
                         if consecutiveSuccesses >= requiredConsecutiveSuccesses {
+                            self.onRecoveryCompleted()
                             self.pollingTask = nil
                             return
                         }
@@ -144,11 +148,15 @@ class RecordingShortcutManager: ObservableObject {
         isAuthorized: { AXIsProcessTrusted() },
         onRecoveryAttempt: { [weak self] in
             guard let self else { return true }
+            await self.releasePreservedPressIfNoLongerPhysical()
             let succeeded = self.refreshShortcutMonitoringAfterAccessibilityAuthorization()
             self.logger.notice(
                 "Accessibility shortcut recovery attempt completed. succeeded=\(succeeded, privacy: .public)"
             )
             return succeeded
+        },
+        onRecoveryCompleted: { [weak self] in
+            self?.preservesShortcutPressStateDuringRecovery = false
         }
     )
     private var shortcutChangeObserver: NSObjectProtocol?
@@ -306,6 +314,7 @@ class RecordingShortcutManager: ObservableObject {
             hasCompletedOnboarding: UserDefaults.standard.bool(forKey: "hasCompletedOnboardingV2")
         ) else {
             accessibilityAuthorizationMonitor.stop()
+            preservesShortcutPressStateDuringRecovery = false
             return false
         }
 
@@ -566,6 +575,7 @@ class RecordingShortcutManager: ObservableObject {
     private func removeAllMonitoring() {
         removeActiveShortcutMonitoring()
         accessibilityAuthorizationMonitor.stop()
+        preservesShortcutPressStateDuringRecovery = false
     }
 
     var isShortcutConfigured: Bool {
@@ -598,7 +608,6 @@ class RecordingShortcutManager: ObservableObject {
         preservesShortcutPressStateDuringRecovery = activeShortcut.map {
             Self.isPhysicallyPressed($0)
         } ?? false
-        defer { preservesShortcutPressStateDuringRecovery = false }
         if activePress != nil, !preservesShortcutPressStateDuringRecovery {
             await shortcutModeHandler.handleMonitoringLoss(eventTime: ProcessInfo.processInfo.systemUptime)
         }
@@ -609,10 +618,24 @@ class RecordingShortcutManager: ObservableObject {
             succeeded = refreshShortcutMonitoring()
             await shortcutModeHandler.handleMonitoringLoss(eventTime: ProcessInfo.processInfo.systemUptime)
         }
+        if (succeeded && !accessibilityAuthorizationMonitor.isRunning) || !AXIsProcessTrusted() {
+            preservesShortcutPressStateDuringRecovery = false
+        }
         logger.notice(
             "Runtime shortcut monitoring rebuild completed. succeeded=\(succeeded, privacy: .public) accessibilityTrusted=\(AXIsProcessTrusted(), privacy: .public)"
         )
         return succeeded
+    }
+
+    private func releasePreservedPressIfNoLongerPhysical() async {
+        guard preservesShortcutPressStateDuringRecovery,
+            let activePress = shortcutModeHandler.activePressSnapshot,
+            let shortcut = ShortcutStore.shortcut(for: activePress.action),
+            !Self.isPhysicallyPressed(shortcut)
+        else { return }
+
+        await shortcutModeHandler.handleMonitoringLoss(eventTime: ProcessInfo.processInfo.systemUptime)
+        preservesShortcutPressStateDuringRecovery = false
     }
 
     static func isPhysicallyPressed(

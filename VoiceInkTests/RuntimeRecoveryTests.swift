@@ -6,6 +6,27 @@ import Testing
 
 @Suite(.serialized)
 struct RuntimeRecoveryTests {
+    @Test func visibleAssistantSessionsRemainProtectedAfterResponseCompletes() {
+        #expect(!RuntimeCriticalWorkPolicy.assistantSessionIsProtected(.inactive))
+        #expect(RuntimeCriticalWorkPolicy.assistantSessionIsProtected(.responding))
+        #expect(RuntimeCriticalWorkPolicy.assistantSessionIsProtected(.ready))
+        #expect(RuntimeCriticalWorkPolicy.assistantSessionIsProtected(.sendingFollowUp))
+        #expect(RuntimeCriticalWorkPolicy.assistantSessionIsProtected(.failed("retry available")))
+    }
+
+    @Test @MainActor func asyncRestorationRemainsProtectedUntilItCompletes() async {
+        let activity = RuntimeProtectedWorkActivity.shared
+        let gate = NonCooperativeTaskGate()
+        let task = Recorder.makeProtectedRestorationTask {
+            await gate.wait()
+        }
+
+        #expect(activity.isBusy)
+        await gate.release()
+        await task.value
+        #expect(!activity.isBusy)
+    }
+
     @Test func livenessMonitorReportsSoftStallOnceAndRelaunchesOnlyWhenIdle() {
         let probe = RuntimeRecoveryProbe()
         let monitor = MainThreadLivenessMonitor(

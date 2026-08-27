@@ -40,6 +40,16 @@ class Recorder: NSObject, ObservableObject {
         case couldNotStartRecording
     }
 
+    static func makeProtectedRestorationTask(
+        operation: @escaping @MainActor () async -> Void
+    ) -> Task<Void, Never> {
+        let restorationWorkID = RuntimeProtectedWorkActivity.shared.begin()
+        return Task { @MainActor in
+            defer { RuntimeProtectedWorkActivity.shared.end(restorationWorkID) }
+            await operation()
+        }
+    }
+
     override init() {
         super.init()
         setupDeviceSwitchObserver()
@@ -202,7 +212,7 @@ class Recorder: NSObject, ObservableObject {
         audioMeter = AudioMeter(averagePower: 0, peakPower: 0)
 
         audioRestorationTask?.cancel()
-        audioRestorationTask = Task {
+        audioRestorationTask = Self.makeProtectedRestorationTask { [self] in
             await mediaController.unmuteSystemAudio()
             await playbackController.resumeMedia()
         }
