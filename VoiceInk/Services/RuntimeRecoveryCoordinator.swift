@@ -46,6 +46,33 @@ enum RuntimeMemoryPressurePolicy {
     }
 }
 
+/// Tracks model downloads, installation, deletion, imports, and warm-up work
+/// that must never be interrupted by the hard-stall relaunch path.
+@MainActor
+final class ModelManagementActivity: ObservableObject {
+    static let shared = ModelManagementActivity()
+
+    @Published private(set) var activeOperationCount = 0
+    private var activeOperations: Set<UUID> = []
+
+    var isBusy: Bool { !activeOperations.isEmpty }
+
+    private init() {}
+
+    @discardableResult
+    func begin() -> UUID {
+        let operationID = UUID()
+        activeOperations.insert(operationID)
+        activeOperationCount = activeOperations.count
+        return operationID
+    }
+
+    func end(_ operationID: UUID) {
+        activeOperations.remove(operationID)
+        activeOperationCount = activeOperations.count
+    }
+}
+
 /// Coordinates recovery of process-local resources that can become stale when
 /// macOS resumes the process or restarts services under system pressure.
 @MainActor
@@ -80,17 +107,20 @@ final class RuntimeRecoveryCoordinator {
             || AudioTranscriptionManager.shared.isProcessingQueue
             || UpdateManager.shared.isBusy
             || engine.assistantSession.isBusy
+            || ModelManagementActivity.shared.isBusy
         setupLivenessMonitoring(isCriticalWorkActive: initialCriticalWork)
-        criticalWorkObserver = Publishers.CombineLatest4(
+        let appWork = Publishers.CombineLatest4(
             engine.$recordingState,
             AudioTranscriptionManager.shared.$isProcessingQueue,
             UpdateManager.shared.$activity,
             engine.assistantSession.$phase
-        ).sink { [weak self] recordingState, isProcessingAudioFiles, updateActivity, assistantPhase in
-            self?.livenessMonitor?.setCriticalWorkActive(
-                recordingState != .idle || isProcessingAudioFiles || updateActivity.isBusy
+        ).map { recordingState, isProcessingAudioFiles, updateActivity, assistantPhase in
+            recordingState != .idle || isProcessingAudioFiles || updateActivity.isBusy
                     || assistantPhase == .responding || assistantPhase == .sendingFollowUp
-            )
+        }
+        criticalWorkObserver = appWork.combineLatest(ModelManagementActivity.shared.$activeOperationCount)
+            .sink { [weak self] isAppWorkActive, modelOperationCount in
+                self?.livenessMonitor?.setCriticalWorkActive(isAppWorkActive || modelOperationCount > 0)
         }
     }
 
@@ -145,14 +175,14 @@ final class RuntimeRecoveryCoordinator {
         source.setEventHandler { [weak self, weak source] in
             guard let data = source?.data else { return }
             Task { @MainActor [weak self] in
-                self?.handleMemoryPressure(data)
+                await self?.handleMemoryPressure(data)
             }
         }
         source.resume()
         memoryPressureSource = source
     }
 
-    private func handleMemoryPressure(_ event: DispatchSource.MemoryPressureEvent) {
+    private func handleMemoryPressure(_ event: DispatchSource.MemoryPressureEvent) async {
         let level: RuntimeMemoryPressureLevel
         if event.contains(.critical) {
             level = .critical
@@ -166,8 +196,8 @@ final class RuntimeRecoveryCoordinator {
             logger.warning(
                 "Runtime memory pressure increased critical=\(event.contains(.critical), privacy: .public)"
             )
-            prewarmService.suspendForRuntimePressure()
             cloudSpeechPreconnectionService.setMemoryPressure(true)
+            await prewarmService.suspendForRuntimePressure()
             return
         }
 
@@ -521,12 +551,14 @@ struct RuntimeRecoveryRelaunchPlan: Sendable {
         return now.timeIntervalSince(modified) >= cooldown
     }
 
-    func launchAndExit() -> Bool {
+    func launchAndExit(
+        processExecutableURL: URL = URL(fileURLWithPath: "/bin/zsh")
+    ) -> Bool {
         guard canRelaunch() else { return false }
         do {
             try Data(Date().ISO8601Format().utf8).write(to: markerURL, options: .atomic)
             let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+            process.executableURL = processExecutableURL
             process.arguments = [
                 helperURL.path,
                 String(ProcessInfo.processInfo.processIdentifier),
@@ -536,6 +568,9 @@ struct RuntimeRecoveryRelaunchPlan: Sendable {
             try process.run()
             Darwin._exit(70)
         } catch {
+            // A failed spawn did not relaunch anything. Remove the marker so
+            // the still-running watchdog can retry on its next tick.
+            try? FileManager.default.removeItem(at: markerURL)
             Logger(subsystem: "com.prakashjoshipax.voiceink", category: "RuntimeRecovery").fault(
                 "Failed to launch runtime recovery helper: \(error.localizedDescription, privacy: .public)"
             )

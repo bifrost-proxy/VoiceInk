@@ -207,6 +207,8 @@ class FluidAudioModelManager: ObservableObject {
         if isFluidAudioModelDownloaded(model) || isFluidAudioModelDownloading(model) {
             return
         }
+        let operationID = ModelManagementActivity.shared.begin()
+        defer { ModelManagementActivity.shared.end(operationID) }
 
         let modelName = model.name
         let downloadID = UUID()
@@ -347,6 +349,8 @@ class FluidAudioModelManager: ObservableObject {
     // MARK: - Delete
 
     func deleteFluidAudioModel(_ model: FluidAudioModel) {
+        let operationID = ModelManagementActivity.shared.begin()
+        defer { ModelManagementActivity.shared.end(operationID) }
         let cacheDirectory = cacheDirectory(for: model)
 
         do {

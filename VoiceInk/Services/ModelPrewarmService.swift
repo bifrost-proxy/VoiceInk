@@ -31,6 +31,7 @@ final class ModelPrewarmService: ObservableObject {
     private let prewarmAudioURL = Bundle.main.url(forResource: "sound7", withExtension: "wav")
     private let prewarmEnabledKey = "PrewarmModelOnWake"
     private var prewarmTask: Task<Void, Never>?
+    private var prewarmTaskID: UUID?
     private var recordingObserver: NSObjectProtocol?
     private var isSuspendedForRuntimePressure = false
 
@@ -90,32 +91,47 @@ final class ModelPrewarmService: ObservableObject {
             return
         }
         prewarmTask?.cancel()
+        let taskID = UUID()
+        prewarmTaskID = taskID
         prewarmTask = Task { [weak self] in
+            defer { self?.finishPrewarmTask(taskID) }
             do {
                 try await Task.sleep(for: .seconds(3))
             } catch {
                 return
             }
             guard let self, !Task.isCancelled else { return }
+            let operationID = ModelManagementActivity.shared.begin()
+            defer { ModelManagementActivity.shared.end(operationID) }
             await self.performPrewarm()
-            if !Task.isCancelled {
-                self.prewarmTask = nil
-            }
+        }
+    }
+
+    private func finishPrewarmTask(_ taskID: UUID) {
+        guard prewarmTaskID == taskID else { return }
+        prewarmTask = nil
+        prewarmTaskID = nil
+        if isSuspendedForRuntimePressure {
+            logger.notice("Model prewarm termination confirmed after runtime-pressure cancellation")
         }
     }
 
     private func cancelPrewarmForRecording() {
         guard let prewarmTask else { return }
         prewarmTask.cancel()
-        self.prewarmTask = nil
         logger.notice("Cancelled model prewarm because recording started")
     }
 
-    func suspendForRuntimePressure() {
+    func suspendForRuntimePressure() async {
         isSuspendedForRuntimePressure = true
-        prewarmTask?.cancel()
-        self.prewarmTask = nil
-        logger.notice("Cancelled model prewarm because runtime pressure increased")
+        let taskToStop = prewarmTask
+        taskToStop?.cancel()
+        // Some local runtimes perform synchronous inference and cannot observe
+        // Swift task cancellation immediately. Await the task so suspension is
+        // not reported as complete until inference has actually returned.
+        logger.notice("Requested model prewarm cancellation because runtime pressure increased")
+        await taskToStop?.value
+        logger.notice("Model prewarm is quiescent under runtime pressure")
     }
 
     func resumeAfterRuntimePressure() {

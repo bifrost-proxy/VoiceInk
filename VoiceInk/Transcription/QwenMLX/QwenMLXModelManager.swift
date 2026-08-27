@@ -119,6 +119,8 @@ final class QwenMLXModelManager: ObservableObject {
             return
         }
         guard !isReady(model), activeDownloads.isEmpty else { return }
+        let operationID = ModelManagementActivity.shared.begin()
+        defer { ModelManagementActivity.shared.end(operationID) }
 
         activeDownloads.insert(model.name)
         errors[model.name] = nil
@@ -158,6 +160,8 @@ final class QwenMLXModelManager: ObservableObject {
 
     func delete(_ model: QwenMLXModel) {
         Task {
+            let operationID = ModelManagementActivity.shared.begin()
+            defer { ModelManagementActivity.shared.end(operationID) }
             await QwenMLXRuntime.shared.stopIfLoaded(model: model)
             do {
                 let directory = modelDirectory(for: model)

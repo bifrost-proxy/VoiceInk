@@ -217,6 +217,40 @@ struct RuntimeRecoveryTests {
         )
         #expect(plan?.helperURL == nil)
     }
+
+    @Test func failedHelperLaunchClearsTheCooldownMarker() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("VoiceInk-RuntimeRecoveryFailureTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let plan = try #require(
+            RuntimeRecoveryRelauncher.prepareIfAllowed(
+                environment: [:],
+                appURL: root.appendingPathComponent("VoiceInk.app"),
+                cachesDirectory: root.appendingPathComponent("Caches"),
+                libraryDirectory: root.appendingPathComponent("Library")
+            )
+        )
+
+        #expect(!plan.launchAndExit(processExecutableURL: root.appendingPathComponent("missing-shell")))
+        #expect(!FileManager.default.fileExists(atPath: plan.markerURL.path))
+        #expect(plan.canRelaunch())
+    }
+
+    @Test @MainActor func overlappingModelOperationsRemainProtectedUntilAllFinish() {
+        let activity = ModelManagementActivity.shared
+        let first = activity.begin()
+        let second = activity.begin()
+        #expect(activity.isBusy)
+        #expect(activity.activeOperationCount == 2)
+
+        activity.end(first)
+        #expect(activity.isBusy)
+        #expect(activity.activeOperationCount == 1)
+
+        activity.end(second)
+        #expect(!activity.isBusy)
+        #expect(activity.activeOperationCount == 0)
+    }
 }
 
 private final class RuntimeRecoveryProbe: @unchecked Sendable {
