@@ -278,7 +278,7 @@ class TranscriptionServiceRegistry {
 
     private func performPressureResourceRelease() async -> Bool {
         await modelProvider?.releaseAllResources()
-        await fluidAudioTranscriptionService.cleanup()
+        await fluidAudioTranscriptionService.releaseAllResourcesForPressure()
         _ = await sherpaOnnxTranscriptionService.releaseAllResources()
         await QwenMLXRuntime.shared.stop()
         logger.notice("Released all idle local model resources under memory pressure")
