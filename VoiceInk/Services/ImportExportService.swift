@@ -324,6 +324,8 @@ class ImportExportService {
                 return
             }
 
+            let protectedWorkID = RuntimeProtectedWorkActivity.shared.begin()
+            defer { RuntimeProtectedWorkActivity.shared.end(protectedWorkID) }
             try BackupImporter.apply(
                 backup,
                 categories: selectedCategories,

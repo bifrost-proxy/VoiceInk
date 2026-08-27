@@ -253,6 +253,32 @@ struct RuntimeRecoveryTests {
         #expect(activity.activeOperationCount == 0)
     }
 
+    @Test @MainActor func supersededPrewarmTasksRemainTrackedUntilEachFinishes() async {
+        let registry = ModelPrewarmTaskRegistry()
+        let firstGate = NonCooperativeTaskGate()
+        let secondGate = NonCooperativeTaskGate()
+        let firstID = UUID()
+        let secondID = UUID()
+        let firstTask = Task { await firstGate.wait() }
+        registry.insert(firstTask, id: firstID)
+        registry.cancelAll()
+        let secondTask = Task { await secondGate.wait() }
+        registry.insert(secondTask, id: secondID)
+
+        let outstandingTasks = registry.cancelAll()
+        #expect(registry.count == 2)
+        #expect(outstandingTasks.count == 2)
+
+        await firstGate.release()
+        await secondGate.release()
+        for task in outstandingTasks {
+            await task.value
+        }
+        registry.remove(id: firstID)
+        registry.remove(id: secondID)
+        #expect(registry.isEmpty)
+    }
+
     @Test func clockDiscontinuityReportsProtectedWorkState() {
         let probe = RuntimeRecoveryProbe()
         let monitor = MainThreadLivenessMonitor(
@@ -316,5 +342,23 @@ private final class RuntimeRecoveryProbe: @unchecked Sendable {
 
     func recordHardStall(_ duration: TimeInterval) {
         lock.withLock { storedHardStalls.append(duration) }
+    }
+}
+
+private actor NonCooperativeTaskGate {
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var isReleased = false
+
+    func wait() async {
+        if isReleased { return }
+        await withCheckedContinuation { continuation in
+            self.continuation = continuation
+        }
+    }
+
+    func release() {
+        isReleased = true
+        continuation?.resume()
+        continuation = nil
     }
 }

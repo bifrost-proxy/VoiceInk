@@ -448,8 +448,12 @@ actor CloudSpeechConnectionPool {
         }
     }
 
-    func recordUseCompleted(for target: CloudSpeechConnectionTarget) {
+    func recordUseCompleted(for target: CloudSpeechConnectionTarget, successful: Bool) {
         guard targets[target.key] == target else { return }
+        guard successful else {
+            recordActivity(for: target.key)
+            return
+        }
         failureCounts[target.key] = 0
         retryTasks.removeValue(forKey: target.key)?.cancel()
         recordActivity(for: target.key)

@@ -193,7 +193,7 @@ struct CloudSpeechPreconnectionTests {
             let snapshot = await pool.snapshot()
             if snapshot.readyKeys.contains(target.key), await connector.openCount == 2 {
                 #expect(snapshot.failureCounts[target.key] == 1)
-                await pool.recordUseCompleted(for: target)
+                await pool.recordUseCompleted(for: target, successful: true)
                 #expect(await pool.snapshot().failureCounts[target.key] == 0)
                 await pool.shutdown()
                 return
@@ -259,11 +259,41 @@ struct CloudSpeechPreconnectionTests {
         }
         #expect(await pool.snapshot().retryingKeys.contains(target.key))
 
-        await pool.recordUseCompleted(for: target)
+        await pool.recordUseCompleted(for: target, successful: true)
         try await waitUntilReady(pool, key: target.key)
         let recoveredSnapshot = await pool.snapshot()
         #expect(await connector.openCount == 2)
         #expect(!recoveredSnapshot.retryingKeys.contains(target.key))
+        await pool.shutdown()
+    }
+
+    @Test func failedUsePreservesAnOpenCircuit() async throws {
+        let connector = FakeCloudSpeechConnector()
+        let pool = CloudSpeechConnectionPool(
+            connector: connector,
+            circuitBreakerFailureCount: 1,
+            circuitBreakerDelay: .seconds(5 * 60)
+        )
+        let target = CloudSpeechConnectionTarget.aliyun(
+            apiKey: "test-key",
+            endpoint: URL(string: "wss://example.com/api-ws/v1/inference")!
+        )
+
+        await pool.reconcile(targets: [target])
+        try await waitUntilReady(pool, key: target.key)
+        await connector.closeLatestConnection()
+
+        for _ in 0..<100 {
+            if await pool.snapshot().retryingKeys.contains(target.key) { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        await pool.recordUseCompleted(for: target, successful: false)
+        try await Task.sleep(for: .milliseconds(20))
+
+        let snapshot = await pool.snapshot()
+        #expect(snapshot.failureCounts[target.key] == 1)
+        #expect(snapshot.retryingKeys.contains(target.key))
+        #expect(await connector.openCount == 1)
         await pool.shutdown()
     }
 

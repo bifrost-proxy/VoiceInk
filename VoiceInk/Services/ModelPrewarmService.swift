@@ -24,14 +24,36 @@ enum ModelPrewarmPolicy {
 }
 
 @MainActor
+final class ModelPrewarmTaskRegistry {
+    private var tasks: [UUID: Task<Void, Never>] = [:]
+
+    var count: Int { tasks.count }
+    var isEmpty: Bool { tasks.isEmpty }
+
+    func insert(_ task: Task<Void, Never>, id: UUID) {
+        tasks[id] = task
+    }
+
+    func remove(id: UUID) {
+        tasks.removeValue(forKey: id)
+    }
+
+    @discardableResult
+    func cancelAll() -> [Task<Void, Never>] {
+        let outstandingTasks = Array(tasks.values)
+        outstandingTasks.forEach { $0.cancel() }
+        return outstandingTasks
+    }
+}
+
+@MainActor
 final class ModelPrewarmService: ObservableObject {
     private let transcriptionModelManager: TranscriptionModelManager
     private let serviceRegistry: TranscriptionServiceRegistry
     private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "ModelPrewarm")
     private let prewarmAudioURL = Bundle.main.url(forResource: "sound7", withExtension: "wav")
     private let prewarmEnabledKey = "PrewarmModelOnWake"
-    private var prewarmTask: Task<Void, Never>?
-    private var prewarmTaskID: UUID?
+    private let prewarmTasks = ModelPrewarmTaskRegistry()
     private var recordingObserver: NSObjectProtocol?
     private var isSuspendedForRuntimePressure = false
 
@@ -90,10 +112,9 @@ final class ModelPrewarmService: ObservableObject {
             logger.notice("Skipping model prewarm scheduling while runtime pressure is active")
             return
         }
-        prewarmTask?.cancel()
+        prewarmTasks.cancelAll()
         let taskID = UUID()
-        prewarmTaskID = taskID
-        prewarmTask = Task { [weak self] in
+        let task = Task { [weak self] in
             defer { self?.finishPrewarmTask(taskID) }
             do {
                 try await Task.sleep(for: .seconds(3))
@@ -105,32 +126,33 @@ final class ModelPrewarmService: ObservableObject {
             defer { RuntimeProtectedWorkActivity.shared.end(operationID) }
             await self.performPrewarm()
         }
+        prewarmTasks.insert(task, id: taskID)
     }
 
     private func finishPrewarmTask(_ taskID: UUID) {
-        guard prewarmTaskID == taskID else { return }
-        prewarmTask = nil
-        prewarmTaskID = nil
-        if isSuspendedForRuntimePressure {
+        prewarmTasks.remove(id: taskID)
+        if isSuspendedForRuntimePressure, prewarmTasks.isEmpty {
             logger.notice("Model prewarm termination confirmed after runtime-pressure cancellation")
         }
     }
 
     private func cancelPrewarmForRecording() {
-        guard let prewarmTask else { return }
-        prewarmTask.cancel()
+        guard !prewarmTasks.isEmpty else { return }
+        prewarmTasks.cancelAll()
         logger.notice("Cancelled model prewarm because recording started")
     }
 
     func suspendForRuntimePressure() async {
         isSuspendedForRuntimePressure = true
-        let taskToStop = prewarmTask
-        taskToStop?.cancel()
+        let tasksToStop = prewarmTasks.cancelAll()
         // Some local runtimes perform synchronous inference and cannot observe
-        // Swift task cancellation immediately. Await the task so suspension is
-        // not reported as complete until inference has actually returned.
+        // Swift task cancellation immediately. Retain and await every task,
+        // including cancelled tasks superseded by a later wake/recovery, so
+        // suspension is not reported until all inference has actually returned.
         logger.notice("Requested model prewarm cancellation because runtime pressure increased")
-        await taskToStop?.value
+        for task in tasksToStop {
+            await task.value
+        }
         logger.notice("Model prewarm is quiescent under runtime pressure")
     }
 
@@ -233,7 +255,9 @@ final class ModelPrewarmService: ObservableObject {
     }
 
     deinit {
-        prewarmTask?.cancel()
+        MainActor.assumeIsolated {
+            prewarmTasks.cancelAll()
+        }
         if let recordingObserver {
             NotificationCenter.default.removeObserver(recordingObserver)
         }

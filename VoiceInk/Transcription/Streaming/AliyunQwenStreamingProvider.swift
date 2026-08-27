@@ -268,6 +268,7 @@ actor AliyunQwenWebSocketSession {
     private var startTimedOut = false
     private var finishTimeoutTask: Task<Void, Never>?
     private var preconnectionTarget: CloudSpeechConnectionTarget?
+    private var sessionCompletedSuccessfully = false
 
     init(
         eventsContinuation: AsyncStream<StreamingTranscriptionEvent>.Continuation?,
@@ -290,6 +291,7 @@ actor AliyunQwenWebSocketSession {
                 settings: settings,
                 format: "pcm"
             )
+            await session.markSessionSuccessful()
             await session.disconnect()
         } catch {
             await session.disconnect()
@@ -307,6 +309,7 @@ actor AliyunQwenWebSocketSession {
         recognitionContext: RecognitionContextEnvelope? = nil
     ) async throws {
         guard connection == nil else { return }
+        sessionCompletedSuccessfully = false
 
         let endpoint = try settings.webSocketURL()
         let target = CloudSpeechConnectionTarget.aliyun(apiKey: apiKey, endpoint: endpoint)
@@ -384,6 +387,7 @@ actor AliyunQwenWebSocketSession {
         let finishTask = try AliyunQwenStreamingProtocol.makeFinishTask(taskID: taskID)
         try await connection.send(.string(finishTask))
         try await waitForTaskFinished()
+        sessionCompletedSuccessfully = true
         eventsContinuation?.yield(.committed(text: ""))
     }
 
@@ -406,8 +410,16 @@ actor AliyunQwenWebSocketSession {
         finishContinuation = nil
         closeSocket()
         if let completedTarget {
-            await connectionPool.recordUseCompleted(for: completedTarget)
+            await connectionPool.recordUseCompleted(
+                for: completedTarget,
+                successful: sessionCompletedSuccessfully
+            )
         }
+        sessionCompletedSuccessfully = false
+    }
+
+    private func markSessionSuccessful() {
+        sessionCompletedSuccessfully = true
     }
 
     private func receiveTaskStarted() async throws {
