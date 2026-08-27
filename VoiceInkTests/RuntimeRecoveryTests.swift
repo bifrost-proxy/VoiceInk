@@ -380,6 +380,36 @@ struct RuntimeRecoveryTests {
         #expect(probe.values == ["release-started", "release-finished", "operation-started"])
     }
 
+    @Test @MainActor func pressureRecoveryCancelsAnInFlightStaleRelease() async {
+        let coordinator = RuntimePressureOperationCoordinator()
+        let gate = NonCooperativeTaskGate()
+        let probe = OrderedTransitionProbe()
+
+        let releaseTask = Task { @MainActor in
+            await coordinator.requestRelease(
+                recordingIsActive: { false },
+                operation: {
+                    probe.append("release-started")
+                    await gate.wait()
+                    guard !Task.isCancelled else {
+                        probe.append("release-cancelled")
+                        return false
+                    }
+                    probe.append("release-finished")
+                    return true
+                }
+            )
+        }
+        await Task.yield()
+        coordinator.cancelPendingRelease()
+        await gate.release()
+
+        #expect(!(await releaseTask.value))
+        #expect(probe.values == ["release-started", "release-cancelled"])
+        #expect(!coordinator.hasPendingRelease)
+        #expect(!coordinator.isReleasingResources)
+    }
+
     @Test func watchdogKeepsOnlyOneAppKitProbeOutstanding() {
         let probe = RuntimeRecoveryProbe()
         let monitor = MainThreadLivenessMonitor(

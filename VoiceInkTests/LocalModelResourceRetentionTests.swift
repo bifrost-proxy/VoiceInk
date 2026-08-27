@@ -50,6 +50,27 @@ struct LocalModelResourceRetentionTests {
     }
 
     @MainActor
+    @Test func managedSessionRetainsItsLeaseUntilCancelledInferenceReturns() async throws {
+        let gate = ResourceRetentionTaskGate()
+        let baseSession = ResourceRetentionTestSession(result: "done", transcriptionGate: gate)
+        var finishCount = 0
+        let session = ResourceManagedTranscriptionSession(session: baseSession) {
+            finishCount += 1
+        }
+
+        let transcriptionTask = Task { @MainActor in
+            try await session.transcribe(audioURL: URL(fileURLWithPath: "/tmp/test.wav"))
+        }
+        await Task.yield()
+        session.cancel()
+        #expect(finishCount == 0)
+
+        await gate.release()
+        _ = try await transcriptionTask.value
+        #expect(finishCount == 1)
+    }
+
+    @MainActor
     @Test func managedSessionReleasesItsResourceLeaseWhenPreparationFails() async {
         let baseSession = ResourceRetentionTestSession(
             result: "unused",
@@ -91,10 +112,16 @@ private final class ResourceRetentionTestSession: TranscriptionSession {
     let result: String
     let preparationError: Error?
     private(set) var cancelCount = 0
+    let transcriptionGate: ResourceRetentionTaskGate?
 
-    init(result: String, preparationError: Error? = nil) {
+    init(
+        result: String,
+        preparationError: Error? = nil,
+        transcriptionGate: ResourceRetentionTaskGate? = nil
+    ) {
         self.result = result
         self.preparationError = preparationError
+        self.transcriptionGate = transcriptionGate
     }
 
     func prepare(configuration: TranscriptionRuntimeConfiguration) async throws -> ((Data) -> Void)? {
@@ -105,11 +132,30 @@ private final class ResourceRetentionTestSession: TranscriptionSession {
     }
 
     func transcribe(audioURL: URL) async throws -> String {
-        result
+        if let transcriptionGate {
+            await transcriptionGate.wait()
+        }
+        return result
     }
 
     func cancel() {
         cancelCount += 1
+    }
+}
+
+private actor ResourceRetentionTaskGate {
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var isReleased = false
+
+    func wait() async {
+        guard !isReleased else { return }
+        await withCheckedContinuation { continuation = $0 }
+    }
+
+    func release() {
+        isReleased = true
+        continuation?.resume()
+        continuation = nil
     }
 }
 

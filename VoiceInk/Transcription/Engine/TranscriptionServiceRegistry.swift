@@ -47,14 +47,18 @@ final class RuntimePressureOperationCoordinator {
         self.recordingIsActive = recordingIsActive
         pendingRelease = operation
         if let releaseTask {
-            return await releaseTask.value
+            let released = await releaseTask.value
+            if released { return true }
+            return await startPendingReleaseIfPossible()
         }
         return await startPendingReleaseIfPossible()
     }
 
     func retryPendingRelease() async -> Bool {
         if let releaseTask {
-            return await releaseTask.value
+            let released = await releaseTask.value
+            if released { return true }
+            return await startPendingReleaseIfPossible()
         }
         return await startPendingReleaseIfPossible()
     }
@@ -62,6 +66,7 @@ final class RuntimePressureOperationCoordinator {
     func cancelPendingRelease() {
         pendingRelease = nil
         recordingIsActive = nil
+        releaseTask?.cancel()
     }
 
     private func startPendingReleaseIfPossible() async -> Bool {
@@ -196,6 +201,14 @@ class TranscriptionServiceRegistry {
         return try await service.transcribe(audioURL: audioURL, model: model, context: context.scoped(to: model))
     }
 
+    func performPressureCoordinatedOperation(
+        _ operation: () async throws -> Void
+    ) async throws {
+        guard await pressureOperations.beginOperation() else { throw CancellationError() }
+        defer { operationDidFinish() }
+        try await operation()
+    }
+
     /// Creates a streaming or file-based session for the resolved transcription configuration.
     func createSession(
         for configuration: TranscriptionRuntimeConfiguration,
@@ -277,10 +290,15 @@ class TranscriptionServiceRegistry {
     }
 
     private func performPressureResourceRelease() async -> Bool {
+        guard !Task.isCancelled else { return false }
         await modelProvider?.releaseAllResources()
+        guard !Task.isCancelled else { return false }
         await fluidAudioTranscriptionService.releaseAllResourcesForPressure()
+        guard !Task.isCancelled else { return false }
         _ = await sherpaOnnxTranscriptionService.releaseAllResources()
+        guard !Task.isCancelled else { return false }
         await QwenMLXRuntime.shared.stop()
+        guard !Task.isCancelled else { return false }
         logger.notice("Released all idle local model resources under memory pressure")
         return true
     }

@@ -523,30 +523,28 @@ class VoiceInkEngine: NSObject, ObservableObject {
 
                             Task { @MainActor [weak self] in
                                 guard let self else { return }
+                                do {
+                                    try await self.serviceRegistry.performPressureCoordinatedOperation {
+                                        let currentModel = ModeRuntimeResolver.transcriptionConfiguration(
+                                            transcriptionModelManager: self.transcriptionModelManager
+                                        )?.model
 
-                                let currentModel = ModeRuntimeResolver.transcriptionConfiguration(
-                                    transcriptionModelManager: self.transcriptionModelManager
-                                )?.model
-
-                                if let model = currentModel,
-                                    model.provider == .whisper
-                                {
-                                    if let localWhisperModel = self.whisperModelManager.availableModels.first(where: {
-                                        $0.name == model.name
-                                    }),
-                                        self.whisperModelManager.whisperContext == nil
-                                    {
-                                        do {
+                                        if let model = currentModel,
+                                            model.provider == .whisper,
+                                            let localWhisperModel = self.whisperModelManager.availableModels.first(where: {
+                                                $0.name == model.name
+                                            }),
+                                            self.whisperModelManager.whisperContext == nil
+                                        {
                                             try await self.whisperModelManager.loadModel(localWhisperModel)
-                                        } catch {
-                                            self.logger.error("❌ Model loading failed: \(error, privacy: .public)")
+                                        } else if let fluidAudioModel = currentModel as? FluidAudioModel {
+                                            try await self.serviceRegistry.fluidAudioTranscriptionService.loadModel(
+                                                for: fluidAudioModel)
                                         }
                                     }
-                                } else if let fluidAudioModel = currentModel as? FluidAudioModel {
-                                    try? await self.serviceRegistry.fluidAudioTranscriptionService.loadModel(
-                                        for: fluidAudioModel)
+                                } catch {
+                                    self.logger.error("❌ Model loading failed: \(error, privacy: .public)")
                                 }
-
                             }
 
                         } catch {

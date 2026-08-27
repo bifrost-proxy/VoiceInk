@@ -33,6 +33,7 @@ final class ResourceManagedTranscriptionSession: TranscriptionSession {
     private var didPrepareResources = false
     private var isPreparingResources = false
     private var isCancelled = false
+    private var isTranscribing = false
 
     init(session: TranscriptionSession, onFinish: @escaping () -> Void) {
         self.session = session
@@ -71,7 +72,11 @@ final class ResourceManagedTranscriptionSession: TranscriptionSession {
     }
 
     func transcribe(audioURL: URL) async throws -> String {
-        defer { finish() }
+        isTranscribing = true
+        defer {
+            isTranscribing = false
+            finish()
+        }
         return try await session.transcribe(audioURL: audioURL)
     }
 
@@ -79,7 +84,9 @@ final class ResourceManagedTranscriptionSession: TranscriptionSession {
         isCancelled = true
         session.cancel()
         if didPrepareResources {
-            finish()
+            if !isTranscribing {
+                finish()
+            }
         } else if !isPreparingResources {
             onPrepare = nil
             onFinish = nil
