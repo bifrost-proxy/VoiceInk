@@ -12,6 +12,7 @@ struct ModeTriggerSection: View {
 
     @State private var isShowingTriggerPicker = false
     @State private var triggerSearchText = ""
+    @State private var protectedDraftWorkID: UUID?
 
     private var hasSelectedTriggers: Bool {
         !triggerGroups.isEmpty || !appConfigs.isEmpty || !websiteConfigs.isEmpty || !triggerWords.isEmpty
@@ -46,6 +47,9 @@ struct ModeTriggerSection: View {
         } header: {
             triggerHeader
         }
+        .onChange(of: triggerSearchText) { _, _ in updateDraftProtection() }
+        .onChange(of: isShowingTriggerPicker) { _, _ in updateDraftProtection() }
+        .onDisappear(perform: endDraftProtection)
     }
 
     private var triggerHeader: some View {
@@ -94,5 +98,22 @@ struct ModeTriggerSection: View {
             Spacer()
         }
         .padding(.vertical, 4)
+    }
+
+    private func updateDraftProtection() {
+        let isDirty = isShowingTriggerPicker
+            && RuntimeCriticalWorkPolicy.textDraftIsProtected(triggerSearchText, savedValue: nil)
+        if isDirty, protectedDraftWorkID == nil {
+            protectedDraftWorkID = RuntimeProtectedWorkActivity.shared.begin()
+        } else if !isDirty {
+            endDraftProtection()
+        }
+    }
+
+    private func endDraftProtection() {
+        if let protectedDraftWorkID {
+            RuntimeProtectedWorkActivity.shared.end(protectedDraftWorkID)
+        }
+        protectedDraftWorkID = nil
     }
 }

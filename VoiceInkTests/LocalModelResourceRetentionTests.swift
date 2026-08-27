@@ -28,6 +28,9 @@ struct LocalModelResourceRetentionTests {
 
         let result = try await session.transcribe(audioURL: URL(fileURLWithPath: "/tmp/test.wav"))
         session.cancel()
+        for _ in 0..<20 where finishCount == 0 {
+            await Task.yield()
+        }
 
         #expect(result == "done")
         #expect(baseSession.cancelCount == 1)
@@ -75,7 +78,7 @@ struct LocalModelResourceRetentionTests {
     }
 
     @MainActor
-    @Test func managedSessionWaitsForCancellationAfterInferenceReturns() async throws {
+    @Test func managedSessionReturnsResultWhileCancellationCleanupRetainsLease() async throws {
         let transcriptionGate = ResourceRetentionTaskGate()
         let cancellationGate = ResourceRetentionTaskGate()
         let baseSession = ResourceRetentionTestSession(
@@ -94,17 +97,19 @@ struct LocalModelResourceRetentionTests {
         await Task.yield()
         session.cancel()
         await transcriptionGate.release()
-        await Task.yield()
+        #expect(try await transcriptionTask.value == "done")
 
         #expect(finishCount == 0)
 
         await cancellationGate.release()
-        #expect(try await transcriptionTask.value == "done")
+        for _ in 0..<20 where finishCount == 0 {
+            await Task.yield()
+        }
         #expect(finishCount == 1)
     }
 
     @MainActor
-    @Test func managedSessionWaitsForNormalCleanupAfterInferenceReturns() async throws {
+    @Test func managedSessionReturnsResultWhileNormalCleanupRetainsLease() async throws {
         let cleanupGate = ResourceRetentionTaskGate()
         let baseSession = ResourceRetentionTestSession(result: "done", cancellationGate: cleanupGate)
         var finishCount = 0
@@ -115,11 +120,13 @@ struct LocalModelResourceRetentionTests {
         let transcriptionTask = Task { @MainActor in
             try await session.transcribe(audioURL: URL(fileURLWithPath: "/tmp/test.wav"))
         }
-        await Task.yield()
+        #expect(try await transcriptionTask.value == "done")
         #expect(finishCount == 0)
 
         await cleanupGate.release()
-        #expect(try await transcriptionTask.value == "done")
+        for _ in 0..<20 where finishCount == 0 {
+            await Task.yield()
+        }
         #expect(finishCount == 1)
     }
 

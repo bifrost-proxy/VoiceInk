@@ -746,7 +746,7 @@ struct RuntimeRecoveryTests {
         #expect(try await readTask.value == Data("{\"ok\":true}".utf8))
     }
 
-    @Test func qwenBlockingRequestWriteDoesNotOccupyTheCallingActor() async {
+    @Test func qwenBlockingRequestWriteDoesNotOccupyTheCallingActor() async throws {
         let writeStarted = QwenReadStartSignal()
         let writeGate = DispatchSemaphore(value: 0)
         let writer = QwenMLXBlockingRequestWriter(
@@ -754,14 +754,24 @@ struct RuntimeRecoveryTests {
             onWriteStart: { writeStarted.signal() }
         )
         let probe = QwenWriteIsolationProbe(writer: writer)
-        let writeTask = Task { await probe.writeRequest() }
+        let writeTask = Task { try await probe.writeRequest() }
 
         await writeStarted.wait()
         await probe.ping()
         #expect(await probe.pingCount == 1)
 
         writeGate.signal()
-        await writeTask.value
+        try await writeTask.value
+    }
+
+    @Test func qwenBlockingRequestWritePropagatesClosedPipeErrors() async {
+        let writer = QwenMLXBlockingRequestWriter(
+            writeOperation: { _ in throw QwenWriteTestError.closedPipe }
+        )
+
+        await #expect(throws: QwenWriteTestError.self) {
+            try await QwenMLXRuntime.writeRequestOffActor(writer, data: Data("request".utf8))
+        }
     }
 
     @Test func testProcessesNeverPrepareAnAutomaticRelaunch() {
@@ -1196,13 +1206,17 @@ private actor QwenWriteIsolationProbe {
         self.writer = writer
     }
 
-    func writeRequest() async {
-        await QwenMLXRuntime.writeRequestOffActor(writer, data: Data(repeating: 0, count: 1024))
+    func writeRequest() async throws {
+        try await QwenMLXRuntime.writeRequestOffActor(writer, data: Data(repeating: 0, count: 1024))
     }
 
     func ping() {
         pingCount += 1
     }
+}
+
+private enum QwenWriteTestError: Error {
+    case closedPipe
 }
 
 private actor QwenLateStopProbe {

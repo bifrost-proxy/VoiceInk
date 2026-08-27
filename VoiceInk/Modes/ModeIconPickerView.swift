@@ -29,6 +29,7 @@ struct ModeIconPickerView: View {
     @State private var isAddingCustomEmoji = false
     @FocusState private var isEmojiTextFieldFocused: Bool
     @State private var inputFeedbackMessage = ""
+    @State private var protectedDraftWorkID: UUID?
 
     private let columns = [GridItem(.adaptive(minimum: 44), spacing: 10)]
 
@@ -108,6 +109,8 @@ struct ModeIconPickerView: View {
         }
         .padding()
         .frame(minWidth: 280, idealWidth: 320, maxWidth: 340, minHeight: 170, idealHeight: 300, maxHeight: 380)
+        .onChange(of: newEmojiText) { _, _ in updateDraftProtection() }
+        .onDisappear(perform: endDraftProtection)
     }
 
     private var customEmojiEditor: some View {
@@ -196,6 +199,22 @@ struct ModeIconPickerView: View {
         {
             selectedIcon = .defaultIcon
         }
+    }
+
+    private func updateDraftProtection() {
+        let isDirty = RuntimeCriticalWorkPolicy.textDraftIsProtected(newEmojiText, savedValue: nil)
+        if isDirty, protectedDraftWorkID == nil {
+            protectedDraftWorkID = RuntimeProtectedWorkActivity.shared.begin()
+        } else if !isDirty {
+            endDraftProtection()
+        }
+    }
+
+    private func endDraftProtection() {
+        if let protectedDraftWorkID {
+            RuntimeProtectedWorkActivity.shared.end(protectedDraftWorkID)
+        }
+        protectedDraftWorkID = nil
     }
 }
 

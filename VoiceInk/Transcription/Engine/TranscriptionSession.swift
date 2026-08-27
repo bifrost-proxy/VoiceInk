@@ -82,10 +82,10 @@ final class ResourceManagedTranscriptionSession: TranscriptionSession {
         isTranscribing = true
         do {
             let result = try await session.transcribe(audioURL: audioURL)
-            await finishTranscription()
+            finishTranscription()
             return result
         } catch {
-            await finishTranscription()
+            finishTranscription()
             throw error
         }
     }
@@ -117,10 +117,14 @@ final class ResourceManagedTranscriptionSession: TranscriptionSession {
         session.performanceSnapshot
     }
 
-    private func finishTranscription() async {
-        await session.waitForCancellation()
+    private func finishTranscription() {
         isTranscribing = false
-        finish()
+        guard cancellationCleanupTask == nil else { return }
+        cancellationCleanupTask = Task { @MainActor [self, session] in
+            await session.waitForCancellation()
+            finish()
+            cancellationCleanupTask = nil
+        }
     }
 
     private func finish() {

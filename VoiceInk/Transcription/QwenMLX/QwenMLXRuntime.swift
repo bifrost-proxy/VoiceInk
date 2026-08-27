@@ -40,25 +40,25 @@ final class QwenMLXBlockingResponseReader: @unchecked Sendable {
 }
 
 final class QwenMLXBlockingRequestWriter: @unchecked Sendable {
-    private let writeOperation: @Sendable (Data) -> Void
+    private let writeOperation: @Sendable (Data) throws -> Void
     private let onWriteStart: (@Sendable () -> Void)?
 
     init(standardInput: FileHandle, onWriteStart: (@Sendable () -> Void)? = nil) {
-        writeOperation = { standardInput.write($0) }
+        writeOperation = { try standardInput.write(contentsOf: $0) }
         self.onWriteStart = onWriteStart
     }
 
     init(
-        writeOperation: @escaping @Sendable (Data) -> Void,
+        writeOperation: @escaping @Sendable (Data) throws -> Void,
         onWriteStart: (@Sendable () -> Void)? = nil
     ) {
         self.writeOperation = writeOperation
         self.onWriteStart = onWriteStart
     }
 
-    func write(_ data: Data) {
+    func write(_ data: Data) throws {
         onWriteStart?()
-        writeOperation(data)
+        try writeOperation(data)
     }
 }
 
@@ -400,9 +400,9 @@ actor QwenMLXRuntime {
         }.value
     }
 
-    static func writeRequestOffActor(_ writer: QwenMLXBlockingRequestWriter, data: Data) async {
-        await Task.detached(priority: .userInitiated) {
-            writer.write(data)
+    static func writeRequestOffActor(_ writer: QwenMLXBlockingRequestWriter, data: Data) async throws {
+        try await Task.detached(priority: .userInitiated) {
+            try writer.write(data)
         }.value
     }
 
@@ -416,7 +416,7 @@ actor QwenMLXRuntime {
         message["id"] = requestID
         var encoded = try JSONSerialization.data(withJSONObject: message)
         encoded.append(0x0A)
-        await Self.writeRequestOffActor(requestWriter, data: encoded)
+        try await Self.writeRequestOffActor(requestWriter, data: encoded)
         return requestID
     }
 
