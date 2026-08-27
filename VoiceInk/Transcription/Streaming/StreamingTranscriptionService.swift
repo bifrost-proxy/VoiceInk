@@ -457,6 +457,9 @@ class StreamingTranscriptionService {
     private var provider: StreamingProviderTransport?
     private var sendTask: Task<Void, Never>?
     private var eventConsumerTask: Task<Void, Never>?
+    private var cancellationTask: Task<Void, Never>?
+    private var disconnectCleanupTasks: [UUID: Task<Void, Never>] = [:]
+    private var commitCleanupTasks: [UUID: Task<Void, Never>] = [:]
     private let chunkSource = AudioChunkSource()
     private var state: StreamingState = .idle
     private var committedSegments: [String] = []
@@ -511,6 +514,7 @@ class StreamingTranscriptionService {
         onPartialTranscript = nil
         sendTask?.cancel()
         eventConsumerTask?.cancel()
+        cancellationTask?.cancel()
         chunkSource.finish()
         commitSignal?.finish()
     }
@@ -801,6 +805,7 @@ class StreamingTranscriptionService {
         // A provider is not allowed to keep the pipeline stuck forever while
         // committing. A timeout falls through to the session's full-file retry.
         let commitFailure = StreamingOperationFailureBox()
+        let commitID = UUID()
         let commitTask = Task.detached(priority: .userInitiated) {
             do {
                 try await provider.commit()
@@ -808,10 +813,14 @@ class StreamingTranscriptionService {
                 commitFailure.record(error)
             }
         }
+        commitCleanupTasks[commitID] = commitTask
         let committedInTime = await StreamingAudioIntegrityPolicy.waitForCompletion(
             of: commitTask,
             timeout: deadlines.commit
         )
+        if committedInTime {
+            commitCleanupTasks[commitID] = nil
+        }
         if !committedInTime || commitFailure.error != nil {
             commitSignal?.finish()
             commitSignal = nil
@@ -862,7 +871,7 @@ class StreamingTranscriptionService {
 
     /// Cancels the streaming session without waiting for results.
     func cancel() {
-        guard state != .cancelled && state != .closed else { return }
+        guard state != .cancelling && state != .cancelled && state != .closed else { return }
         state = .cancelling
         terminationReason = .cancelled
         onPartialTranscript = nil
@@ -880,18 +889,32 @@ class StreamingTranscriptionService {
         provider = nil
 
         let cancelStartedAt = Date()
-        Task { @MainActor [self] in
+        let cancellationTask = Task { @MainActor [self] in
             if let providerToDisconnect {
-                let disconnected = await disconnectWithinDeadline(providerToDisconnect)
-                if disconnected {
-                    cancelToSocketCloseDuration = Date().timeIntervalSince(cancelStartedAt)
-                }
+                await providerToDisconnect.disconnect()
+                cancelToSocketCloseDuration = Date().timeIntervalSince(cancelStartedAt)
             }
             state = .cancelled
         }
+        self.cancellationTask = cancellationTask
 
         committedSegments = []
         logger.notice("Streaming cancellation requested")
+    }
+
+    func waitForCancellation() async {
+        await cancellationTask?.value
+        cancellationTask = nil
+        let cleanupTasks = Array(disconnectCleanupTasks.values)
+        for cleanupTask in cleanupTasks {
+            await cleanupTask.value
+        }
+        disconnectCleanupTasks.removeAll()
+        let commitTasks = Array(commitCleanupTasks.values)
+        for commitTask in commitTasks {
+            await commitTask.value
+        }
+        commitCleanupTasks.removeAll()
     }
 
     /// Stops a failed transport before complete-file recovery without clearing
@@ -1206,14 +1229,18 @@ class StreamingTranscriptionService {
     }
 
     private func disconnectWithinDeadline(_ provider: StreamingProviderTransport) async -> Bool {
+        let cleanupID = UUID()
         let disconnectTask = Task.detached(priority: .utility) {
             await provider.disconnect()
         }
+        disconnectCleanupTasks[cleanupID] = disconnectTask
         let disconnected = await StreamingAudioIntegrityPolicy.waitForCompletion(
             of: disconnectTask,
             timeout: deadlines.disconnect
         )
-        if !disconnected {
+        if disconnected {
+            disconnectCleanupTasks[cleanupID] = nil
+        } else {
             logger.warning("Streaming disconnect exceeded the reliability deadline")
         }
         return disconnected

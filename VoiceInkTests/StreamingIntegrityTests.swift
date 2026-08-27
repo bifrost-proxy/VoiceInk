@@ -359,8 +359,149 @@ struct StreamingIntegrityTests {
     }
 
     @MainActor
+    @Test func repeatedCancellationKeepsTheOriginalDisconnectBarrier() async throws {
+        let gate = StreamingDisconnectGate()
+        let provider = GatedDisconnectProvider(gate: gate)
+        let service = try makeService(provider: provider)
+
+        service.prepareForStart()
+        try await service.startStreaming(
+            model: IntegrityTestModel(),
+            context: TranscriptionRequestContext(language: "auto", prompt: nil)
+        )
+        service.cancel()
+        service.cancel()
+
+        for _ in 0..<100 where !(await gate.didStart) {
+            await Task.yield()
+        }
+
+        let waiter = Task { @MainActor in
+            await service.waitForCancellation()
+            return true
+        }
+        await Task.yield()
+        #expect(!waiter.isCancelled)
+        #expect(await gate.didStart)
+        #expect(!(await gate.didFinish))
+
+        await gate.release()
+        #expect(await waiter.value)
+        #expect(await gate.didFinish)
+    }
+
+    @MainActor
+    @Test func sessionCancellationWaitsForNonCooperativeStreamingStartup() async throws {
+        let startupGate = StreamingStartupGate()
+        let provider = GatedStartupProvider(gate: startupGate)
+        let service = try makeService(provider: provider)
+        let session = StreamingTranscriptionSession(
+            streamingService: service,
+            fallbackService: IntegrityFallbackService()
+        )
+        let model = IntegrityTestModel(provider: .fluidAudio)
+        let mode = ModeConfig(
+            name: "Startup cancellation",
+            isAIEnhancementEnabled: false,
+            selectedTranscriptionModelName: model.name,
+            isRealtimeTranscriptionEnabled: true
+        )
+        _ = try await session.prepare(
+            configuration: TranscriptionRuntimeConfiguration(
+                mode: mode,
+                model: model,
+                language: "auto",
+                isRealtimeEnabled: true
+            )
+        )
+        for _ in 0..<100 where !(await startupGate.didStart) {
+            await Task.yield()
+        }
+
+        session.cancel()
+        let completion = StreamingCancellationCompletion()
+        let waiter = Task { @MainActor in
+            await session.waitForCancellation()
+            await completion.finish()
+        }
+        await Task.yield()
+
+        #expect(await startupGate.didStart)
+        #expect(!(await startupGate.didFinish))
+        #expect(!(await completion.didFinish))
+
+        await startupGate.release()
+        await waiter.value
+        #expect(await startupGate.didFinish)
+        #expect(await completion.didFinish)
+    }
+
+    @MainActor
+    @Test func normalCleanupPreservesTimedOutDisconnectBarrier() async throws {
+        let gate = StreamingDisconnectGate()
+        let provider = GatedDisconnectProvider(gate: gate)
+        let service = try makeService(
+            provider: provider,
+            deadlines: StreamingDeadlines(disconnect: .milliseconds(1))
+        )
+
+        service.prepareForStart()
+        try await service.startStreaming(
+            model: IntegrityTestModel(),
+            context: TranscriptionRequestContext(language: "auto", prompt: nil)
+        )
+        _ = try await service.stopAndFinalize()
+        #expect(await gate.didStart)
+        #expect(!(await gate.didFinish))
+
+        let cleanupWaiter = Task { @MainActor in
+            await service.waitForCancellation()
+        }
+        await Task.yield()
+        #expect(!(await gate.didFinish))
+
+        await gate.release()
+        await cleanupWaiter.value
+        #expect(await gate.didFinish)
+    }
+
+    @MainActor
+    @Test func cancellationCleanupPreservesTimedOutCommitBarrier() async throws {
+        let commitGate = StreamingStartupGate()
+        let provider = GatedCommitProvider(gate: commitGate)
+        let service = try makeService(
+            provider: provider,
+            deadlines: StreamingDeadlines(commit: .milliseconds(1))
+        )
+
+        service.prepareForStart()
+        try await service.startStreaming(
+            model: IntegrityTestModel(provider: .fluidAudio),
+            context: TranscriptionRequestContext(language: "auto", prompt: nil)
+        )
+        await #expect(throws: StreamingTranscriptionError.self) {
+            _ = try await service.stopAndFinalize()
+        }
+        #expect(await commitGate.didStart)
+        #expect(!(await commitGate.didFinish))
+
+        let completion = StreamingCancellationCompletion()
+        let waiter = Task { @MainActor in
+            await service.waitForCancellation()
+            await completion.finish()
+        }
+        await Task.yield()
+        #expect(!(await completion.didFinish))
+
+        await commitGate.release()
+        await waiter.value
+        #expect(await commitGate.didFinish)
+        #expect(await completion.didFinish)
+    }
+
+    @MainActor
     private func makeService(
-        provider: IntegrityProbeProvider,
+        provider: any StreamingTranscriptionProvider,
         deadlines: StreamingDeadlines? = nil,
         onPartialTranscript: (@MainActor (String) -> Void)? = nil
     ) throws -> StreamingTranscriptionService {
@@ -381,6 +522,141 @@ private enum IntegrityTestError: Error {
     case sendFailed
     case receiveFailed
     case commitFailed
+}
+
+private actor StreamingDisconnectGate {
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var isReleased = false
+    private(set) var didStart = false
+    private(set) var didFinish = false
+
+    func wait() async {
+        didStart = true
+        guard !isReleased else {
+            didFinish = true
+            return
+        }
+        await withCheckedContinuation { continuation = $0 }
+        didFinish = true
+    }
+
+    func release() {
+        isReleased = true
+        continuation?.resume()
+        continuation = nil
+    }
+}
+
+private final class GatedDisconnectProvider: StreamingTranscriptionProvider {
+    private let gate: StreamingDisconnectGate
+    private let continuation: AsyncStream<StreamingTranscriptionEvent>.Continuation
+    let transcriptionEvents: AsyncStream<StreamingTranscriptionEvent>
+
+    init(gate: StreamingDisconnectGate) {
+        self.gate = gate
+        let pair = AsyncStream.makeStream(of: StreamingTranscriptionEvent.self)
+        transcriptionEvents = pair.stream
+        continuation = pair.continuation
+    }
+
+    func connect(model _: any TranscriptionModel, language _: String?) async throws {}
+    func sendAudioChunk(_: Data) async throws {}
+    func commit() async throws {
+        continuation.yield(.committed(text: "complete"))
+    }
+
+    func disconnect() async {
+        await gate.wait()
+        continuation.finish()
+    }
+}
+
+private actor StreamingStartupGate {
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var isReleased = false
+    private(set) var didStart = false
+    private(set) var didFinish = false
+
+    func wait() async {
+        didStart = true
+        if !isReleased {
+            await withCheckedContinuation { continuation = $0 }
+        }
+        didFinish = true
+    }
+
+    func release() {
+        isReleased = true
+        continuation?.resume()
+        continuation = nil
+    }
+}
+
+private actor StreamingCancellationCompletion {
+    private(set) var didFinish = false
+
+    func finish() {
+        didFinish = true
+    }
+}
+
+private final class GatedStartupProvider: StreamingTranscriptionProvider {
+    private let gate: StreamingStartupGate
+    private let continuation: AsyncStream<StreamingTranscriptionEvent>.Continuation
+    let transcriptionEvents: AsyncStream<StreamingTranscriptionEvent>
+
+    init(gate: StreamingStartupGate) {
+        self.gate = gate
+        let pair = AsyncStream.makeStream(of: StreamingTranscriptionEvent.self)
+        transcriptionEvents = pair.stream
+        continuation = pair.continuation
+    }
+
+    func connect(model _: any TranscriptionModel, language _: String?) async throws {
+        await gate.wait()
+    }
+
+    func sendAudioChunk(_: Data) async throws {}
+    func commit() async throws {}
+
+    func disconnect() async {
+        continuation.finish()
+    }
+}
+
+private final class GatedCommitProvider: StreamingTranscriptionProvider {
+    private let gate: StreamingStartupGate
+    private let continuation: AsyncStream<StreamingTranscriptionEvent>.Continuation
+    let transcriptionEvents: AsyncStream<StreamingTranscriptionEvent>
+
+    init(gate: StreamingStartupGate) {
+        self.gate = gate
+        let pair = AsyncStream.makeStream(of: StreamingTranscriptionEvent.self)
+        transcriptionEvents = pair.stream
+        continuation = pair.continuation
+    }
+
+    func connect(model _: any TranscriptionModel, language _: String?) async throws {}
+    func sendAudioChunk(_: Data) async throws {}
+
+    func commit() async throws {
+        await gate.wait()
+        continuation.yield(.committed(text: "late"))
+    }
+
+    func disconnect() async {
+        continuation.finish()
+    }
+}
+
+private struct IntegrityFallbackService: TranscriptionService {
+    func transcribe(
+        audioURL _: URL,
+        model _: any TranscriptionModel,
+        context _: TranscriptionRequestContext
+    ) async throws -> String {
+        "fallback"
+    }
 }
 
 private struct IntegrityTestModel: TranscriptionModel {

@@ -9,6 +9,7 @@ struct CloudModelCardView: View {
     @EnvironmentObject private var transcriptionModelManager: TranscriptionModelManager
     @State private var isExpanded = false
     @State private var apiKey = ""
+    @State private var apiKeyDraftWorkID: UUID?
 
     init(model: CloudModel) {
         self.model = model
@@ -57,6 +58,12 @@ struct CloudModelCardView: View {
         .background(AppMaterialCardBackground())
         .onAppear {
             loadSavedAPIKey()
+        }
+        .onChange(of: apiKey) { _, newValue in
+            updateAPIKeyDraftProtection(newValue)
+        }
+        .onDisappear {
+            endAPIKeyDraftProtection()
         }
     }
 
@@ -266,7 +273,17 @@ struct CloudModelCardView: View {
                     verificationStatus = .success
                     verificationError = nil
                     verificationErrorDetail = nil
-                    APIKeyManager.shared.saveAPIKey(key, forProvider: providerKey)
+                    guard APIKeyManager.shared.saveAPIKey(key, forProvider: providerKey) else {
+                        verificationStatus = .failure
+                        verificationError = String(
+                            localized: "The API key is valid, but VoiceInk could not save it to macOS Keychain."
+                        )
+                        verificationErrorDetail = String(
+                            localized: "The key was not cleared. Check Keychain access and try again."
+                        )
+                        return
+                    }
+                    updateAPIKeyDraftProtection(key)
                     transcriptionModelManager.refreshAllAvailableModels()
                     withAnimation(.easeInOut(duration: 0.3)) {
                         isExpanded = false
@@ -291,6 +308,24 @@ struct CloudModelCardView: View {
 
         withAnimation(.easeInOut(duration: 0.3)) {
             isExpanded = false
+        }
+    }
+
+    private func updateAPIKeyDraftProtection(_ value: String) {
+        let savedKey = APIKeyManager.shared.getAPIKey(forProvider: providerKey)
+        if RuntimeCriticalWorkPolicy.apiKeyDraftIsProtected(value, savedKey: savedKey) {
+            if apiKeyDraftWorkID == nil {
+                apiKeyDraftWorkID = RuntimeProtectedWorkActivity.shared.begin()
+            }
+        } else {
+            endAPIKeyDraftProtection()
+        }
+    }
+
+    private func endAPIKeyDraftProtection() {
+        if let apiKeyDraftWorkID {
+            RuntimeProtectedWorkActivity.shared.end(apiKeyDraftWorkID)
+            self.apiKeyDraftWorkID = nil
         }
     }
 }

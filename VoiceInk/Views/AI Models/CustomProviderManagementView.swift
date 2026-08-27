@@ -171,6 +171,14 @@ private struct CustomEnhancementModelRow: View {
 }
 
 struct CustomTranscriptionModelEditorPanel: View {
+    private struct Draft: Equatable {
+        let displayName: String
+        let apiEndpoint: String
+        let apiKey: String
+        let modelName: String
+        let isMultilingual: Bool
+    }
+
     let editingModel: CustomCloudModel?
     @ObservedObject var customModelManager: CustomCloudModelManager
     let onClose: () -> Void
@@ -185,6 +193,8 @@ struct CustomTranscriptionModelEditorPanel: View {
     @State private var isSaving = false
     @State private var connectionTest: ConnectionTestState = .idle
     @State private var connectionTestTask: Task<Void, Never>?
+    @State private var protectedEditorWorkID: UUID?
+    @State private var savedDraft: Draft?
 
     private var isEditing: Bool {
         editingModel != nil
@@ -205,6 +215,7 @@ struct CustomTranscriptionModelEditorPanel: View {
     private func runConnectionTest() {
         connectionTestTask?.cancel()
         connectionTest = .testing
+        updateEditorProtection()
         let endpoint = apiEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)
         let key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         let model = modelName.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -218,6 +229,7 @@ struct CustomTranscriptionModelEditorPanel: View {
             guard !Task.isCancelled else { return }
             await MainActor.run {
                 connectionTest = ConnectionTestState(result: result)
+                updateEditorProtection()
             }
         }
     }
@@ -262,13 +274,24 @@ struct CustomTranscriptionModelEditorPanel: View {
                 primaryAction: saveModel
             )
         }
-        .onAppear(perform: loadModel)
+        .onAppear {
+            loadModel()
+            savedDraft = currentDraft
+            updateEditorProtection()
+        }
+        .onDisappear {
+            connectionTestTask?.cancel()
+            endEditorProtection()
+        }
         .onChange(of: editingModel?.id) { _, _ in
             loadModel()
+            savedDraft = currentDraft
+            updateEditorProtection()
         }
-        .onChange(of: apiEndpoint) { _, _ in resetConnectionTest() }
-        .onChange(of: apiKey) { _, _ in resetConnectionTest() }
-        .onChange(of: modelName) { _, _ in resetConnectionTest() }
+        .onChange(of: currentDraft) { _, _ in
+            resetConnectionTest()
+            updateEditorProtection()
+        }
     }
 
     private var canSave: Bool {
@@ -319,6 +342,7 @@ struct CustomTranscriptionModelEditorPanel: View {
 
         guard validationErrors.isEmpty else { return }
         isSaving = true
+        updateEditorProtection()
 
         if let editingModel {
             let updatedModel = CustomCloudModel(
@@ -334,6 +358,7 @@ struct CustomTranscriptionModelEditorPanel: View {
             guard customModelManager.updateCustomModel(updatedModel, apiKey: trimmedKey) else {
                 validationErrors = [String(localized: "Failed to save API key securely")]
                 isSaving = false
+                updateEditorProtection()
                 return
             }
         } else {
@@ -349,12 +374,44 @@ struct CustomTranscriptionModelEditorPanel: View {
             guard customModelManager.addCustomModel(customModel, apiKey: trimmedKey) else {
                 validationErrors = [String(localized: "Failed to save API key securely")]
                 isSaving = false
+                updateEditorProtection()
                 return
             }
         }
 
         isSaving = false
+        savedDraft = currentDraft
+        updateEditorProtection()
         onSave()
+    }
+
+    private var currentDraft: Draft {
+        Draft(
+            displayName: displayName,
+            apiEndpoint: apiEndpoint,
+            apiKey: apiKey,
+            modelName: modelName,
+            isMultilingual: isMultilingual
+        )
+    }
+
+    private func updateEditorProtection() {
+        let shouldProtect = RuntimeCriticalWorkPolicy.editorIsProtected(
+            isDirty: savedDraft.map { $0 != currentDraft } ?? false,
+            isOperationActive: isSaving || connectionTest == .testing
+        )
+        if shouldProtect, protectedEditorWorkID == nil {
+            protectedEditorWorkID = RuntimeProtectedWorkActivity.shared.begin()
+        } else if !shouldProtect {
+            endEditorProtection()
+        }
+    }
+
+    private func endEditorProtection() {
+        if let protectedEditorWorkID {
+            RuntimeProtectedWorkActivity.shared.end(protectedEditorWorkID)
+        }
+        protectedEditorWorkID = nil
     }
 
     private func editorHeader(title: LocalizedStringKey) -> some View {
@@ -374,6 +431,13 @@ struct CustomTranscriptionModelEditorPanel: View {
 }
 
 struct CustomEnhancementModelEditorPanel: View {
+    private struct Draft: Equatable {
+        let displayName: String
+        let baseURL: String
+        let apiKey: String
+        let modelName: String
+    }
+
     let editingProvider: CustomAIProviderConfig?
     @ObservedObject var manager: CustomAIProviderManager
     let onClose: () -> Void
@@ -387,6 +451,8 @@ struct CustomEnhancementModelEditorPanel: View {
     @State private var isSaving = false
     @State private var connectionTest: ConnectionTestState = .idle
     @State private var connectionTestTask: Task<Void, Never>?
+    @State private var protectedEditorWorkID: UUID?
+    @State private var savedDraft: Draft?
 
     private var isEditing: Bool {
         editingProvider != nil
@@ -407,6 +473,7 @@ struct CustomEnhancementModelEditorPanel: View {
     private func runConnectionTest() {
         connectionTestTask?.cancel()
         connectionTest = .testing
+        updateEditorProtection()
         let url = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         let key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         let model = modelName.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -420,6 +487,7 @@ struct CustomEnhancementModelEditorPanel: View {
             guard !Task.isCancelled else { return }
             await MainActor.run {
                 connectionTest = ConnectionTestState(result: result)
+                updateEditorProtection()
             }
         }
     }
@@ -466,13 +534,24 @@ struct CustomEnhancementModelEditorPanel: View {
                 onPrimary: saveProvider
             )
         }
-        .onAppear(perform: loadProvider)
+        .onAppear {
+            loadProvider()
+            savedDraft = currentDraft
+            updateEditorProtection()
+        }
+        .onDisappear {
+            connectionTestTask?.cancel()
+            endEditorProtection()
+        }
         .onChange(of: editingProvider?.id) { _, _ in
             loadProvider()
+            savedDraft = currentDraft
+            updateEditorProtection()
         }
-        .onChange(of: baseURL) { _, _ in resetConnectionTest() }
-        .onChange(of: apiKey) { _, _ in resetConnectionTest() }
-        .onChange(of: modelName) { _, _ in resetConnectionTest() }
+        .onChange(of: currentDraft) { _, _ in
+            resetConnectionTest()
+            updateEditorProtection()
+        }
     }
 
     private var canSave: Bool {
@@ -542,26 +621,57 @@ struct CustomEnhancementModelEditorPanel: View {
 
         if isEditing {
             isSaving = true
+            updateEditorProtection()
             let didSave = manager.updateProvider(provider, apiKey: trimmedKey)
             isSaving = false
 
             if didSave {
+                savedDraft = currentDraft
+                updateEditorProtection()
                 onSave()
             } else {
                 errorMessage = String(localized: "Failed to save custom enhancement model")
+                updateEditorProtection()
             }
             return
         }
 
         isSaving = true
+        updateEditorProtection()
         let didSave = manager.addProvider(provider, apiKey: trimmedKey)
         isSaving = false
 
         if didSave {
+            savedDraft = currentDraft
+            updateEditorProtection()
             onSave()
         } else {
             errorMessage = String(localized: "Failed to save API key securely")
+            updateEditorProtection()
         }
+    }
+
+    private var currentDraft: Draft {
+        Draft(displayName: displayName, baseURL: baseURL, apiKey: apiKey, modelName: modelName)
+    }
+
+    private func updateEditorProtection() {
+        let shouldProtect = RuntimeCriticalWorkPolicy.editorIsProtected(
+            isDirty: savedDraft.map { $0 != currentDraft } ?? false,
+            isOperationActive: isSaving || connectionTest == .testing
+        )
+        if shouldProtect, protectedEditorWorkID == nil {
+            protectedEditorWorkID = RuntimeProtectedWorkActivity.shared.begin()
+        } else if !shouldProtect {
+            endEditorProtection()
+        }
+    }
+
+    private func endEditorProtection() {
+        if let protectedEditorWorkID {
+            RuntimeProtectedWorkActivity.shared.end(protectedEditorWorkID)
+        }
+        protectedEditorWorkID = nil
     }
 }
 

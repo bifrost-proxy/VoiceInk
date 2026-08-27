@@ -659,7 +659,9 @@ struct AudioPlayerView: View {
         isReEnhancing = true
         operationFeedback = nil
 
+        let protectedWorkID = RuntimeProtectedWorkActivity.shared.begin()
         Task {
+            defer { RuntimeProtectedWorkActivity.shared.end(protectedWorkID) }
             do {
                 let (enhancedText, enhancementDuration, promptName) = try await enhancementService.enhance(
                     transcription.text,

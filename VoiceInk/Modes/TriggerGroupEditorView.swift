@@ -8,6 +8,7 @@ struct TriggerGroupEditorView: View {
     let cleanURL: (String) -> String
 
     @State private var searchText = ""
+    @State private var protectedDraftWorkID: UUID?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -18,6 +19,8 @@ struct TriggerGroupEditorView: View {
             addTriggerField
         }
         .frame(width: 340, height: 420)
+        .onChange(of: searchText) { _, _ in updateDraftProtection() }
+        .onDisappear(perform: endDraftProtection)
     }
 
     private var header: some View {
@@ -211,5 +214,21 @@ struct TriggerGroupEditorView: View {
         }
 
         return value.contains(".") || value.contains(":") || value == "localhost"
+    }
+
+    private func updateDraftProtection() {
+        let isDirty = RuntimeCriticalWorkPolicy.textDraftIsProtected(searchText, savedValue: nil)
+        if isDirty, protectedDraftWorkID == nil {
+            protectedDraftWorkID = RuntimeProtectedWorkActivity.shared.begin()
+        } else if !isDirty {
+            endDraftProtection()
+        }
+    }
+
+    private func endDraftProtection() {
+        if let protectedDraftWorkID {
+            RuntimeProtectedWorkActivity.shared.end(protectedDraftWorkID)
+        }
+        protectedDraftWorkID = nil
     }
 }

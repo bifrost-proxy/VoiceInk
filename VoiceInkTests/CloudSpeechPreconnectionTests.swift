@@ -5,6 +5,42 @@ import Testing
 
 @Suite(.serialized)
 struct CloudSpeechPreconnectionTests {
+    @Test @MainActor func duplicateModelNamesDoNotHideOrTrapDoubaoLookup() {
+        let duplicateName = "apple-speech"
+        let models: [any TranscriptionModel] = [
+            CloudSpeechLookupTestModel(name: duplicateName, provider: .nativeApple),
+            CloudSpeechLookupTestModel(name: duplicateName, provider: .doubaoSpeech),
+        ]
+
+        #expect(
+            CloudSpeechPreconnectionService.doubaoResourceID(
+                named: duplicateName,
+                models: models
+            ) == duplicateName
+        )
+    }
+
+    @Test @MainActor func targetReconciliationsPreserveEnqueueOrder() async {
+        let queue = CloudSpeechTargetReconciliationQueue()
+        let gate = CloudSpeechReconciliationGate()
+        let probe = CloudSpeechReconciliationProbe()
+
+        queue.enqueue {
+            probe.append("first-started")
+            await gate.wait()
+            probe.append("first-finished")
+        }
+        await gate.waitUntilStarted()
+        queue.enqueue {
+            probe.append("second")
+        }
+
+        #expect(probe.values == ["first-started"])
+        await gate.release()
+        await queue.waitForPending()
+        #expect(probe.values == ["first-started", "first-finished", "second"])
+    }
+
     @Test func providerTargetsKeepDoubaoAndAliyunConnectionsStrictlyIsolated() {
         let doubao = CloudSpeechConnectionTarget.doubao(
             apiKey: "doubao-key",
@@ -64,6 +100,29 @@ struct CloudSpeechPreconnectionTests {
         #expect(await connector.allConnectionsClosed)
     }
 
+    @Test func runtimeRecoveryInvalidatesALeaseStillAwaitingValidation() async throws {
+        let connector = BlockingLeaseValidationConnector()
+        let pool = CloudSpeechConnectionPool(connector: connector)
+        let target = CloudSpeechConnectionTarget.aliyun(
+            apiKey: "test-key",
+            endpoint: URL(string: "wss://example.com/api-ws/v1/inference")!
+        )
+
+        await pool.reconcile(targets: [target])
+        try await waitUntilReady(pool, key: target.key)
+        let leaseTask = Task { await pool.lease(for: target) }
+        await connector.validationGate.waitUntilStarted()
+
+        await pool.recoverRuntimeConnections()
+        await connector.validationGate.release()
+
+        #expect(await leaseTask.value == nil)
+        #expect(connector.firstConnection.isClosed)
+        try await waitUntilReady(pool, key: target.key)
+        #expect(await connector.openCount == 2)
+        await pool.shutdown()
+    }
+
     @Test func failedLeaseValidationRejectsTheStaleConnectionAndBuildsAReplacement() async throws {
         let connector = FakeCloudSpeechConnector()
         let pool = CloudSpeechConnectionPool(connector: connector)
@@ -80,6 +139,7 @@ struct CloudSpeechPreconnectionTests {
         #expect(leased == nil)
         try await waitUntilReady(pool, key: target.key)
         #expect(await connector.openCount == 2)
+        #expect(await pool.snapshot().failureCounts[target.key] == 1)
         #expect(await connector.connection(at: 0)?.isClosed == true)
 
         await pool.shutdown()
@@ -191,12 +251,187 @@ struct CloudSpeechPreconnectionTests {
         for _ in 0..<200 {
             let snapshot = await pool.snapshot()
             if snapshot.readyKeys.contains(target.key), await connector.openCount == 2 {
+                #expect(snapshot.failureCounts[target.key] == 1)
+                await pool.recordUseCompleted(for: target, successful: true)
+                #expect(await pool.snapshot().failureCounts[target.key] == 0)
                 await pool.shutdown()
                 return
             }
             try await Task.sleep(for: .milliseconds(10))
         }
         Issue.record("Timed out waiting for the replacement standby connection")
+        await pool.shutdown()
+    }
+
+    @Test func connectionClosedBeforeOpenCompletionIsNeverPublishedAsReady() async throws {
+        let connector = ImmediatelyClosingCloudSpeechConnector()
+        let pool = CloudSpeechConnectionPool(
+            connector: connector,
+            circuitBreakerFailureCount: 1,
+            circuitBreakerDelay: .seconds(5 * 60)
+        )
+        let target = CloudSpeechConnectionTarget.aliyun(
+            apiKey: "test-key",
+            endpoint: URL(string: "wss://example.com/api-ws/v1/inference")!
+        )
+
+        await pool.reconcile(targets: [target])
+        for _ in 0..<100 {
+            let snapshot = await pool.snapshot()
+            if snapshot.retryingKeys.contains(target.key) {
+                #expect(snapshot.readyKeys.isEmpty)
+                #expect(snapshot.failureCounts[target.key] == 1)
+                await pool.shutdown()
+                return
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        Issue.record("Timed out waiting for immediately closed connection retry")
+        await pool.shutdown()
+    }
+
+    @Test func runtimeRecoveryInvalidatesAndRebuildsActiveStandbyConnections() async throws {
+        let connector = FakeCloudSpeechConnector()
+        let pool = CloudSpeechConnectionPool(connector: connector)
+        let target = CloudSpeechConnectionTarget.aliyun(
+            apiKey: "test-key",
+            endpoint: URL(string: "wss://example.com/api-ws/v1/inference")!
+        )
+
+        await pool.reconcile(targets: [target])
+        try await waitUntilReady(pool, key: target.key)
+        await pool.recoverRuntimeConnections()
+        try await waitUntilReady(pool, key: target.key)
+
+        #expect(await connector.openCount == 2)
+        #expect(await connector.connection(at: 0)?.isClosed == true)
+        await pool.shutdown()
+    }
+
+    @Test func retryPolicyOpensACircuitAfterRepeatedUnstableConnections() {
+        #expect(
+            CloudSpeechConnectionPool.retryDelay(failureCount: 1, jitter: 0)
+                == .milliseconds(500)
+        )
+        #expect(
+            CloudSpeechConnectionPool.retryDelay(failureCount: 4, jitter: 0)
+                == .seconds(4)
+        )
+        #expect(
+            CloudSpeechConnectionPool.retryDelay(failureCount: 5, jitter: 0)
+                == .seconds(5 * 60)
+        )
+    }
+
+    @Test func successfulUseCancelsAnOpenCircuitAndRestoresStandby() async throws {
+        let connector = FakeCloudSpeechConnector()
+        let pool = CloudSpeechConnectionPool(
+            connector: connector,
+            circuitBreakerFailureCount: 1,
+            circuitBreakerDelay: .seconds(5 * 60)
+        )
+        let target = CloudSpeechConnectionTarget.aliyun(
+            apiKey: "test-key",
+            endpoint: URL(string: "wss://example.com/api-ws/v1/inference")!
+        )
+
+        await pool.reconcile(targets: [target])
+        try await waitUntilReady(pool, key: target.key)
+        await connector.closeLatestConnection()
+
+        for _ in 0..<100 {
+            if await pool.snapshot().retryingKeys.contains(target.key) { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(await pool.snapshot().retryingKeys.contains(target.key))
+
+        await pool.recordUseCompleted(for: target, successful: true)
+        try await waitUntilReady(pool, key: target.key)
+        let recoveredSnapshot = await pool.snapshot()
+        #expect(await connector.openCount == 2)
+        #expect(!recoveredSnapshot.retryingKeys.contains(target.key))
+        await pool.shutdown()
+    }
+
+    @Test func failedUsePreservesAnOpenCircuit() async throws {
+        let connector = FakeCloudSpeechConnector()
+        let pool = CloudSpeechConnectionPool(
+            connector: connector,
+            circuitBreakerFailureCount: 1,
+            circuitBreakerDelay: .seconds(5 * 60)
+        )
+        let target = CloudSpeechConnectionTarget.aliyun(
+            apiKey: "test-key",
+            endpoint: URL(string: "wss://example.com/api-ws/v1/inference")!
+        )
+
+        await pool.reconcile(targets: [target])
+        try await waitUntilReady(pool, key: target.key)
+        await connector.closeLatestConnection()
+
+        for _ in 0..<100 {
+            if await pool.snapshot().retryingKeys.contains(target.key) { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        await pool.recordUseCompleted(for: target, successful: false)
+        try await Task.sleep(for: .milliseconds(20))
+
+        let snapshot = await pool.snapshot()
+        #expect(snapshot.failureCounts[target.key] == 1)
+        #expect(snapshot.retryingKeys.contains(target.key))
+        #expect(await connector.openCount == 1)
+        await pool.shutdown()
+    }
+
+    @Test func runtimeRecoveryPreservesAnOpenCircuit() async throws {
+        let connector = FakeCloudSpeechConnector()
+        let pool = CloudSpeechConnectionPool(
+            connector: connector,
+            circuitBreakerFailureCount: 1,
+            circuitBreakerDelay: .seconds(5 * 60)
+        )
+        let target = CloudSpeechConnectionTarget.aliyun(
+            apiKey: "test-key",
+            endpoint: URL(string: "wss://example.com/api-ws/v1/inference")!
+        )
+
+        await pool.reconcile(targets: [target])
+        try await waitUntilReady(pool, key: target.key)
+        await connector.closeLatestConnection()
+        for _ in 0..<100 {
+            if await pool.snapshot().retryingKeys.contains(target.key) { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+
+        await pool.recoverRuntimeConnections()
+        let snapshot = await pool.snapshot()
+        #expect(snapshot.failureCounts[target.key] == 1)
+        #expect(snapshot.retryingKeys.contains(target.key))
+        #expect(await connector.openCount == 1)
+        await pool.shutdown()
+    }
+
+    @Test func failedLeaseValidationCanOpenTheCircuit() async throws {
+        let connector = FakeCloudSpeechConnector()
+        let pool = CloudSpeechConnectionPool(
+            connector: connector,
+            circuitBreakerFailureCount: 1,
+            circuitBreakerDelay: .seconds(5 * 60)
+        )
+        let target = CloudSpeechConnectionTarget.aliyun(
+            apiKey: "test-key",
+            endpoint: URL(string: "wss://example.com/api-ws/v1/inference")!
+        )
+
+        await pool.reconcile(targets: [target])
+        try await waitUntilReady(pool, key: target.key)
+        await connector.failLatestConnectionPing()
+
+        #expect(await pool.lease(for: target) == nil)
+        let snapshot = await pool.snapshot()
+        #expect(snapshot.failureCounts[target.key] == 1)
+        #expect(snapshot.retryingKeys.contains(target.key))
+        #expect(await connector.openCount == 1)
         await pool.shutdown()
     }
 
@@ -257,6 +492,55 @@ struct CloudSpeechPreconnectionTests {
     }
 }
 
+private struct CloudSpeechLookupTestModel: TranscriptionModel {
+    let id = UUID()
+    let name: String
+    let displayName = "Test"
+    let description = "Test"
+    let provider: ModelProvider
+    let isMultilingualModel = false
+    let supportedLanguages = ["en": "English"]
+}
+
+@MainActor
+private final class CloudSpeechReconciliationProbe {
+    private(set) var values: [String] = []
+
+    func append(_ value: String) {
+        values.append(value)
+    }
+}
+
+private actor CloudSpeechReconciliationGate {
+    private var didStart = false
+    private var isReleased = false
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        didStart = true
+        startWaiters.forEach { $0.resume() }
+        startWaiters.removeAll()
+        guard !isReleased else { return }
+        await withCheckedContinuation { continuation in
+            self.continuation = continuation
+        }
+    }
+
+    func waitUntilStarted() async {
+        guard !didStart else { return }
+        await withCheckedContinuation { continuation in
+            startWaiters.append(continuation)
+        }
+    }
+
+    func release() {
+        isReleased = true
+        continuation?.resume()
+        continuation = nil
+    }
+}
+
 private final class CloudSpeechPingCompletionProbe: @unchecked Sendable {
     private let lock = NSLock()
     private var results: [Result<Void, Error>] = []
@@ -305,6 +589,116 @@ private actor FakeCloudSpeechConnector: CloudSpeechWebSocketConnecting {
         let connection = FakeCloudSpeechConnection(onClosed: onClosed)
         connections.append(connection)
         return connection
+    }
+}
+
+private actor ImmediatelyClosingCloudSpeechConnector: CloudSpeechWebSocketConnecting {
+    func open(
+        target _: CloudSpeechConnectionTarget,
+        onClosed: (@Sendable (Error?) -> Void)?
+    ) async throws -> any CloudSpeechWebSocketConnection {
+        let connection = FakeCloudSpeechConnection(onClosed: onClosed)
+        connection.close()
+        for _ in 0..<5 {
+            await Task.yield()
+        }
+        return connection
+    }
+}
+
+private actor LeaseValidationGate {
+    private var didStart = false
+    private var isReleased = false
+    private var releaseContinuation: CheckedContinuation<Void, Never>?
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func waitForRelease() async {
+        didStart = true
+        startWaiters.forEach { $0.resume() }
+        startWaiters.removeAll()
+        if isReleased { return }
+        await withCheckedContinuation { continuation in
+            releaseContinuation = continuation
+        }
+    }
+
+    func waitUntilStarted() async {
+        if didStart { return }
+        await withCheckedContinuation { continuation in
+            startWaiters.append(continuation)
+        }
+    }
+
+    func release() {
+        isReleased = true
+        releaseContinuation?.resume()
+        releaseContinuation = nil
+    }
+}
+
+private actor BlockingLeaseValidationConnector: CloudSpeechWebSocketConnecting {
+    let validationGate = LeaseValidationGate()
+    nonisolated let firstConnection: BlockingLeaseValidationConnection
+    private var connections: [any CloudSpeechWebSocketConnection] = []
+
+    init() {
+        firstConnection = BlockingLeaseValidationConnection()
+    }
+
+    var openCount: Int { connections.count }
+
+    func open(
+        target _: CloudSpeechConnectionTarget,
+        onClosed: (@Sendable (Error?) -> Void)?
+    ) async throws -> any CloudSpeechWebSocketConnection {
+        let connection: any CloudSpeechWebSocketConnection
+        if connections.isEmpty {
+            firstConnection.configure(onClosed: onClosed, validationGate: validationGate)
+            connection = firstConnection
+        } else {
+            connection = FakeCloudSpeechConnection(onClosed: onClosed)
+        }
+        connections.append(connection)
+        return connection
+    }
+}
+
+private final class BlockingLeaseValidationConnection: CloudSpeechWebSocketConnection, @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedIsClosed = false
+    private var onClosed: (@Sendable (Error?) -> Void)?
+    private var validationGate: LeaseValidationGate?
+
+    var isClosed: Bool { lock.withLock { storedIsClosed } }
+
+    func configure(
+        onClosed: (@Sendable (Error?) -> Void)?,
+        validationGate: LeaseValidationGate
+    ) {
+        lock.withLock {
+            self.onClosed = onClosed
+            self.validationGate = validationGate
+        }
+    }
+
+    func send(_: URLSessionWebSocketTask.Message) async throws {}
+
+    func receive() async throws -> URLSessionWebSocketTask.Message {
+        throw StreamingTranscriptionError.notConnected
+    }
+
+    func ping(timeout _: Duration) async throws {
+        guard let validationGate = lock.withLock({ self.validationGate }) else { return }
+        await validationGate.waitForRelease()
+    }
+
+    func close() {
+        let callback = lock.withLock { () -> (@Sendable (Error?) -> Void)? in
+            guard !storedIsClosed else { return nil }
+            storedIsClosed = true
+            return onClosed
+        }
+        callback?(nil)
     }
 }
 

@@ -115,6 +115,13 @@ actor SherpaOnnxTranscriptionService: TranscriptionService {
         return activeModelName
     }
 
+    func releaseAllResources() -> String? {
+        guard let activeModelName else { return nil }
+        recognizer = nil
+        self.activeModelName = nil
+        return activeModelName
+    }
+
     private func decode(samples: [Float], using recognizer: SherpaOnnxOfflineRecognizer) -> String {
         let result = recognizer.decode(samples: samples, sampleRate: 16_000)
         return TextNormalizer.shared.normalizeSentence(result.text)

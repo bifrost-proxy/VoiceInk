@@ -132,6 +132,6 @@ final class QwenMLXStreamingProvider: StreamingTranscriptionProvider {
         connected = false
         audioBatcher.reset()
         eventsContinuation?.finish()
-        logger.notice("Qwen MLX streaming disconnected; resident model retained")
+        logger.notice("Qwen MLX streaming disconnected; unresponsive bridge cleanup bounded")
     }
 }

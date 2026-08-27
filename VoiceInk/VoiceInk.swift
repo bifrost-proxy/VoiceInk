@@ -35,6 +35,7 @@ struct VoiceInkApp: App {
     // Model prewarm service for optimizing model on wake from sleep
     @StateObject private var prewarmService: ModelPrewarmService
     @StateObject private var cloudSpeechPreconnectionService: CloudSpeechPreconnectionService
+    private let runtimeRecoveryCoordinator: RuntimeRecoveryCoordinator
 
     init() {
         // Recorder panels are created lazily, so capture screen-saver, lock,
@@ -63,6 +64,7 @@ struct VoiceInkApp: App {
             SessionMetric.self,
         ])
         let resolvedContainer: ModelContainer
+        var hasPersistentStorage = true
 
         // Attempt 1: Try persistent storage
         do {
@@ -71,6 +73,7 @@ struct VoiceInkApp: App {
             // Attempt 2: Try in-memory storage
             do {
                 resolvedContainer = try Self.createInMemoryContainer(schema: schema, logger: logger)
+                hasPersistentStorage = false
                 logger.warning("Using in-memory storage as fallback. Data will not persist between sessions.")
 
                 DispatchQueue.main.async {
@@ -174,6 +177,14 @@ struct VoiceInkApp: App {
             transcriptionModelManager: transcriptionModelManager
         )
         _cloudSpeechPreconnectionService = StateObject(wrappedValue: cloudSpeechPreconnectionService)
+
+        runtimeRecoveryCoordinator = RuntimeRecoveryCoordinator(
+            engine: engine,
+            recordingShortcutManager: recordingShortcutManager,
+            cloudSpeechPreconnectionService: cloudSpeechPreconnectionService,
+            prewarmService: prewarmService,
+            allowsAutomaticRelaunch: hasPersistentStorage
+        )
 
         appDelegate.menuBarManager = menuBarManager
 

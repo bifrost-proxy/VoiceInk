@@ -463,6 +463,21 @@ class FluidAudioTranscriptionService: TranscriptionService {
         await cleanupLoadedManagers()
     }
 
+    /// Memory pressure must drop both active managers and the reusable Core ML
+    /// model cache. Await a cancelled load before clearing the cache so a
+    /// non-cooperative loader cannot repopulate it after cleanup returns.
+    func releaseAllResourcesForPressure() async {
+        let outstandingLoad = loadingTask?.task
+        outstandingLoad?.cancel()
+        loadingTask = nil
+        await cleanupLoadedManagers()
+        if let outstandingLoad {
+            _ = try? await outstandingLoad.value
+        }
+        cachedModels = nil
+        cachedModelNames.removeAll()
+    }
+
     func releaseResourcesIfUnbound(boundModelNames: Set<String>) async -> Set<String> {
         var releasedModelNames: Set<String> = []
 

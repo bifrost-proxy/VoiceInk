@@ -30,6 +30,8 @@ struct VocabularyView: View {
     @State private var selectedScope: VocabularyScopeSelection?
     @State private var domainInput = ""
     @State private var isAddingDomain = false
+    @State private var newWordWorkID: UUID?
+    @State private var domainInputWorkID: UUID?
     @State private var showAlert = false
     @State private var alertMessage = ""
     @State private var sortMode: VocabularySortMode = .wordAsc
@@ -107,6 +109,16 @@ struct VocabularyView: View {
         .onAppear {
             warmupStore.loadInstalledAppsIfNeeded()
             if selectedScope == nil { selectedScope = scopes.first }
+        }
+        .onChange(of: newWord) { _, value in
+            updateNewWordProtection(value)
+        }
+        .onChange(of: domainInput) { _, value in
+            updateDomainInputProtection(value)
+        }
+        .onDisappear {
+            endNewWordProtection()
+            endDomainInputProtection()
         }
     }
 
@@ -359,6 +371,38 @@ struct VocabularyView: View {
     private func toggleSort() {
         sortMode = (sortMode == .wordAsc) ? .wordDesc : .wordAsc
         UserDefaults.standard.set(sortMode.rawValue, forKey: "vocabularySortMode")
+    }
+
+    private func updateNewWordProtection(_ value: String) {
+        let shouldProtect = RuntimeCriticalWorkPolicy.textDraftIsProtected(value, savedValue: nil)
+        if shouldProtect, newWordWorkID == nil {
+            newWordWorkID = RuntimeProtectedWorkActivity.shared.begin()
+        } else if !shouldProtect {
+            endNewWordProtection()
+        }
+    }
+
+    private func updateDomainInputProtection(_ value: String) {
+        let shouldProtect = RuntimeCriticalWorkPolicy.textDraftIsProtected(value, savedValue: nil)
+        if shouldProtect, domainInputWorkID == nil {
+            domainInputWorkID = RuntimeProtectedWorkActivity.shared.begin()
+        } else if !shouldProtect {
+            endDomainInputProtection()
+        }
+    }
+
+    private func endNewWordProtection() {
+        if let newWordWorkID {
+            RuntimeProtectedWorkActivity.shared.end(newWordWorkID)
+        }
+        newWordWorkID = nil
+    }
+
+    private func endDomainInputProtection() {
+        if let domainInputWorkID {
+            RuntimeProtectedWorkActivity.shared.end(domainInputWorkID)
+        }
+        domainInputWorkID = nil
     }
 
     private func removeGlobalWord(_ word: VocabularyWord) {

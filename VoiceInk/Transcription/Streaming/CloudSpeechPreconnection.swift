@@ -313,6 +313,7 @@ actor CloudSpeechConnectionPool {
     private struct ReadyConnection: Sendable {
         let connection: any CloudSpeechWebSocketConnection
         let openedAt: ContinuousClock.Instant
+        let attemptID: UUID
     }
 
     struct Snapshot: Sendable {
@@ -320,6 +321,8 @@ actor CloudSpeechConnectionPool {
         let readyKeys: Set<CloudSpeechConnectionKey>
         let connectingKeys: Set<CloudSpeechConnectionKey>
         let dormantKeys: Set<CloudSpeechConnectionKey>
+        let retryingKeys: Set<CloudSpeechConnectionKey>
+        let failureCounts: [CloudSpeechConnectionKey: Int]
     }
 
     static let shared = CloudSpeechConnectionPool()
@@ -329,12 +332,15 @@ actor CloudSpeechConnectionPool {
     private let maxStandbyAge: Duration
     private let leaseValidationTimeout: Duration
     private let healthCheckTimeout: Duration
+    private let circuitBreakerFailureCount: Int
+    private let circuitBreakerDelay: Duration
     private let clock = ContinuousClock()
     private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "CloudSpeechPreconnection")
     private var targets: [CloudSpeechConnectionKey: CloudSpeechConnectionTarget] = [:]
     private var generations: [CloudSpeechConnectionKey: UUID] = [:]
     private var readyConnections: [CloudSpeechConnectionKey: ReadyConnection] = [:]
     private var connectTasks: [CloudSpeechConnectionKey: Task<Void, Never>] = [:]
+    private var connectingAttemptIDs: [CloudSpeechConnectionKey: UUID] = [:]
     private var retryTasks: [CloudSpeechConnectionKey: Task<Void, Never>] = [:]
     private var healthTasks: [CloudSpeechConnectionKey: Task<Void, Never>] = [:]
     private var idleTasks: [CloudSpeechConnectionKey: Task<Void, Never>] = [:]
@@ -349,13 +355,17 @@ actor CloudSpeechConnectionPool {
         idleTimeout: Duration = .seconds(30 * 60),
         maxStandbyAge: Duration = .seconds(5 * 60),
         leaseValidationTimeout: Duration = .milliseconds(750),
-        healthCheckTimeout: Duration = .seconds(3)
+        healthCheckTimeout: Duration = .seconds(3),
+        circuitBreakerFailureCount: Int = 5,
+        circuitBreakerDelay: Duration = .seconds(5 * 60)
     ) {
         self.connector = connector
         self.idleTimeout = idleTimeout
         self.maxStandbyAge = maxStandbyAge
         self.leaseValidationTimeout = leaseValidationTimeout
         self.healthCheckTimeout = healthCheckTimeout
+        self.circuitBreakerFailureCount = circuitBreakerFailureCount
+        self.circuitBreakerDelay = circuitBreakerDelay
     }
 
     func reconcile(targets newTargets: [CloudSpeechConnectionTarget]) {
@@ -399,11 +409,12 @@ actor CloudSpeechConnectionPool {
         }
 
         healthTasks.removeValue(forKey: key)?.cancel()
-        generations[key] = UUID()
-        ensureConnecting(for: key)
+        let leaseGeneration = UUID()
+        generations[key] = leaseGeneration
         let age = readyConnection.openedAt.duration(to: clock.now)
         guard age < maxStandbyAge else {
             readyConnection.connection.close()
+            ensureConnecting(for: key)
             logger.notice(
                 "Cloud speech keep-alive lease rejected reason=maxStandbyAge ageMs=\(Self.milliseconds(age), privacy: .public) \(key.diagnosticLabel, privacy: .public)"
             )
@@ -414,7 +425,7 @@ actor CloudSpeechConnectionPool {
         do {
             try await readyConnection.connection.ping(timeout: leaseValidationTimeout)
             let validationDuration = validationStartedAt.duration(to: clock.now)
-            guard targets[key] == target, !isSuspended, !isShuttingDown else {
+            guard generations[key] == leaseGeneration, targets[key] == target, !isSuspended, !isShuttingDown else {
                 readyConnection.connection.close()
                 logger.notice(
                     "Cloud speech keep-alive lease rejected reason=poolStateChanged validationMs=\(Self.milliseconds(validationDuration), privacy: .public) \(key.diagnosticLabel, privacy: .public)"
@@ -424,6 +435,8 @@ actor CloudSpeechConnectionPool {
             logger.notice(
                 "Cloud speech keep-alive lease hit source=preconnected validationMs=\(Self.milliseconds(validationDuration), privacy: .public) ageMs=\(Self.milliseconds(age), privacy: .public) \(key.diagnosticLabel, privacy: .public)"
             )
+            failureCounts[key] = 0
+            ensureConnecting(for: key)
             return readyConnection.connection
         } catch {
             readyConnection.connection.close()
@@ -431,12 +444,21 @@ actor CloudSpeechConnectionPool {
             logger.warning(
                 "Cloud speech keep-alive lease rejected reason=validationFailed validationMs=\(Self.milliseconds(validationDuration), privacy: .public) ageMs=\(Self.milliseconds(age), privacy: .public) \(key.diagnosticLabel, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
             )
+            if generations[key] == leaseGeneration {
+                scheduleRetry(for: key, generation: leaseGeneration)
+            }
             return nil
         }
     }
 
-    func recordUseCompleted(for target: CloudSpeechConnectionTarget) {
+    func recordUseCompleted(for target: CloudSpeechConnectionTarget, successful: Bool) {
         guard targets[target.key] == target else { return }
+        guard successful else {
+            recordActivity(for: target.key)
+            return
+        }
+        failureCounts[target.key] = 0
+        retryTasks.removeValue(forKey: target.key)?.cancel()
         recordActivity(for: target.key)
     }
 
@@ -448,12 +470,30 @@ actor CloudSpeechConnectionPool {
         )
         if suspended {
             for key in targets.keys {
-                invalidateConnectionWork(for: key)
+                invalidateConnectionWork(for: key, preserveRetrySchedule: true, resetFailureCount: false)
             }
         } else {
             for key in targets.keys {
                 ensureConnecting(for: key)
             }
+        }
+    }
+
+    /// Invalidates process-local transports while retaining configured targets
+    /// and their idle state, then recreates only the connections that should be
+    /// active. This is used after sleep, session resume, or system-service
+    /// interruption where an apparently open socket may refer to stale state.
+    func recoverRuntimeConnections() {
+        guard !isShuttingDown else { return }
+        logger.notice(
+            "Cloud speech keep-alive runtime recovery started targetCount=\(self.targets.count, privacy: .public) suspended=\(self.isSuspended, privacy: .public)"
+        )
+        for key in targets.keys {
+            invalidateConnectionWork(for: key, preserveRetrySchedule: true, resetFailureCount: false)
+        }
+        guard !isSuspended else { return }
+        for key in targets.keys where !dormantKeys.contains(key) {
+            ensureConnecting(for: key)
         }
     }
 
@@ -470,7 +510,9 @@ actor CloudSpeechConnectionPool {
             targetCount: targets.count,
             readyKeys: Set(readyConnections.keys),
             connectingKeys: Set(connectTasks.keys),
-            dormantKeys: dormantKeys
+            dormantKeys: dormantKeys,
+            retryingKeys: Set(retryTasks.keys),
+            failureCounts: failureCounts
         )
     }
 
@@ -484,6 +526,8 @@ actor CloudSpeechConnectionPool {
 
         let generation = generations[key] ?? UUID()
         generations[key] = generation
+        let attemptID = UUID()
+        connectingAttemptIDs[key] = attemptID
         let connector = connector
         let attempt = (failureCounts[key] ?? 0) + 1
         let startedAt = Date()
@@ -497,7 +541,12 @@ actor CloudSpeechConnectionPool {
                     target: target,
                     onClosed: { [weak self] error in
                         Task {
-                            await self?.connectionClosed(for: key, generation: generation, error: error)
+                            await self?.connectionClosed(
+                                for: key,
+                                generation: generation,
+                                attemptID: attemptID,
+                                error: error
+                            )
                         }
                     }
                 )
@@ -505,6 +554,7 @@ actor CloudSpeechConnectionPool {
                     connection,
                     for: key,
                     generation: generation,
+                    attemptID: attemptID,
                     attempt: attempt,
                     elapsed: Date().timeIntervalSince(startedAt)
                 )
@@ -512,6 +562,7 @@ actor CloudSpeechConnectionPool {
                 await self.connectionFailed(
                     for: key,
                     generation: generation,
+                    attemptID: attemptID,
                     attempt: attempt,
                     elapsed: Date().timeIntervalSince(startedAt),
                     error: error
@@ -524,20 +575,35 @@ actor CloudSpeechConnectionPool {
         _ connection: any CloudSpeechWebSocketConnection,
         for key: CloudSpeechConnectionKey,
         generation: UUID,
+        attemptID: UUID,
         attempt: Int,
         elapsed: TimeInterval
     ) {
-        guard generations[key] == generation, targets[key] != nil, !isSuspended, !isShuttingDown else {
+        guard generations[key] == generation,
+            connectingAttemptIDs[key] == attemptID,
+            targets[key] != nil,
+            !isSuspended,
+            !isShuttingDown
+        else {
             connection.close()
             return
         }
 
         connectTasks[key] = nil
+        connectingAttemptIDs[key] = nil
         retryTasks.removeValue(forKey: key)?.cancel()
-        failureCounts[key] = 0
         readyConnections[key]?.connection.close()
-        readyConnections[key] = ReadyConnection(connection: connection, openedAt: clock.now)
-        startHealthChecks(for: key, generation: generation, connection: connection)
+        readyConnections[key] = ReadyConnection(
+            connection: connection,
+            openedAt: clock.now,
+            attemptID: attemptID
+        )
+        startHealthChecks(
+            for: key,
+            generation: generation,
+            attemptID: attemptID,
+            connection: connection
+        )
         logger.notice(
             "Cloud speech keep-alive connect ready attempt=\(attempt, privacy: .public) elapsed=\(elapsed, format: .fixed(precision: 3), privacy: .public)s \(key.diagnosticLabel, privacy: .public)"
         )
@@ -546,12 +612,19 @@ actor CloudSpeechConnectionPool {
     private func connectionFailed(
         for key: CloudSpeechConnectionKey,
         generation: UUID,
+        attemptID: UUID,
         attempt: Int,
         elapsed: TimeInterval,
         error: Error
     ) {
-        guard generations[key] == generation, targets[key] != nil, !isSuspended, !isShuttingDown else { return }
+        guard generations[key] == generation,
+            connectingAttemptIDs[key] == attemptID,
+            targets[key] != nil,
+            !isSuspended,
+            !isShuttingDown
+        else { return }
         connectTasks[key] = nil
+        connectingAttemptIDs[key] = nil
         logger.warning(
             "Cloud speech keep-alive connect failed attempt=\(attempt, privacy: .public) elapsed=\(elapsed, format: .fixed(precision: 3), privacy: .public)s \(key.diagnosticLabel, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
         )
@@ -561,13 +634,22 @@ actor CloudSpeechConnectionPool {
     private func connectionClosed(
         for key: CloudSpeechConnectionKey,
         generation: UUID,
+        attemptID: UUID,
         source: String = "transportCallback",
         error: Error?
     ) {
         guard generations[key] == generation, targets[key] != nil, !isSuspended, !isShuttingDown else { return }
-        readyConnections.removeValue(forKey: key)?.connection.close()
+        let isConnectingAttempt = connectingAttemptIDs[key] == attemptID
+        let isReadyAttempt = readyConnections[key]?.attemptID == attemptID
+        guard isConnectingAttempt || isReadyAttempt else { return }
+        if isReadyAttempt {
+            readyConnections.removeValue(forKey: key)?.connection.close()
+        }
         healthTasks.removeValue(forKey: key)?.cancel()
-        connectTasks[key] = nil
+        if isConnectingAttempt {
+            connectTasks[key] = nil
+            connectingAttemptIDs[key] = nil
+        }
         let errorDescription = error?.localizedDescription ?? "none"
         logger.notice(
             "Cloud speech keep-alive standby closed source=\(source, privacy: .public) \(key.diagnosticLabel, privacy: .public) error=\(errorDescription, privacy: .public)"
@@ -578,6 +660,7 @@ actor CloudSpeechConnectionPool {
     private func startHealthChecks(
         for key: CloudSpeechConnectionKey,
         generation: UUID,
+        attemptID: UUID,
         connection: any CloudSpeechWebSocketConnection
     ) {
         healthTasks[key]?.cancel()
@@ -588,10 +671,16 @@ actor CloudSpeechConnectionPool {
                 guard !Task.isCancelled else { return }
                 do {
                     try await connection.ping(timeout: healthCheckTimeout)
+                    await self?.connectionHealthCheckSucceeded(
+                        for: key,
+                        generation: generation,
+                        attemptID: attemptID
+                    )
                 } catch {
                     await self?.connectionClosed(
                         for: key,
                         generation: generation,
+                        attemptID: attemptID,
                         source: "healthCheck",
                         error: error
                     )
@@ -601,20 +690,40 @@ actor CloudSpeechConnectionPool {
         }
     }
 
+    private func connectionHealthCheckSucceeded(
+        for key: CloudSpeechConnectionKey,
+        generation: UUID,
+        attemptID: UUID
+    ) {
+        guard generations[key] == generation,
+            readyConnections[key]?.attemptID == attemptID
+        else { return }
+        if failureCounts[key, default: 0] > 0 {
+            logger.notice(
+                "Cloud speech keep-alive failure history cleared after a successful health check \(key.diagnosticLabel, privacy: .public)"
+            )
+        }
+        failureCounts[key] = 0
+    }
+
     private func scheduleRetry(for key: CloudSpeechConnectionKey, generation: UUID) {
         guard retryTasks[key] == nil, targets[key] != nil, !dormantKeys.contains(key),
             !isSuspended, !isShuttingDown
         else { return }
         let failureCount = (failureCounts[key] ?? 0) + 1
         failureCounts[key] = failureCount
-        let exponentialDelay = min(0.5 * pow(2, Double(max(0, failureCount - 1))), 30)
-        let delay = exponentialDelay + Double.random(in: 0...0.25)
+        let delay = Self.retryDelay(
+            failureCount: failureCount,
+            circuitBreakerFailureCount: circuitBreakerFailureCount,
+            circuitBreakerDelay: circuitBreakerDelay,
+            jitter: Double.random(in: 0...0.25)
+        )
         logger.notice(
-            "Cloud speech keep-alive retry scheduled nextAttempt=\(failureCount + 1, privacy: .public) delay=\(delay, format: .fixed(precision: 3), privacy: .public)s \(key.diagnosticLabel, privacy: .public)"
+            "Cloud speech keep-alive retry scheduled nextAttempt=\(failureCount + 1, privacy: .public) delayMs=\(Self.milliseconds(delay), privacy: .public) circuitOpen=\((failureCount >= self.circuitBreakerFailureCount), privacy: .public) \(key.diagnosticLabel, privacy: .public)"
         )
 
         retryTasks[key] = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(delay))
+            try? await Task.sleep(for: delay)
             guard !Task.isCancelled else { return }
             await self?.retryConnection(for: key, generation: generation)
         }
@@ -649,19 +758,31 @@ actor CloudSpeechConnectionPool {
         activityTokens[key] = nil
         idleTasks[key] = nil
         dormantKeys.insert(key)
-        invalidateConnectionWork(for: key)
+        invalidateConnectionWork(for: key, preserveRetrySchedule: true, resetFailureCount: false)
         logger.notice(
             "Cloud speech keep-alive paused reason=idleTimeout \(key.diagnosticLabel, privacy: .public)"
         )
     }
 
-    private func invalidateConnectionWork(for key: CloudSpeechConnectionKey) {
-        generations[key] = UUID()
+    private func invalidateConnectionWork(
+        for key: CloudSpeechConnectionKey,
+        preserveRetrySchedule: Bool = false,
+        resetFailureCount: Bool = true
+    ) {
+        let keepsScheduledRetry = preserveRetrySchedule && retryTasks[key] != nil
+        if !keepsScheduledRetry {
+            generations[key] = UUID()
+        }
         readyConnections.removeValue(forKey: key)?.connection.close()
         connectTasks.removeValue(forKey: key)?.cancel()
-        retryTasks.removeValue(forKey: key)?.cancel()
+        connectingAttemptIDs[key] = nil
+        if !keepsScheduledRetry {
+            retryTasks.removeValue(forKey: key)?.cancel()
+        }
         healthTasks.removeValue(forKey: key)?.cancel()
-        failureCounts[key] = 0
+        if resetFailureCount {
+            failureCounts[key] = 0
+        }
     }
 
     private func removeSlot(for key: CloudSpeechConnectionKey) {
@@ -680,6 +801,40 @@ actor CloudSpeechConnectionPool {
         let milliseconds = components.attoseconds / 1_000_000_000_000_000
         return seconds + milliseconds
     }
+
+    nonisolated static func retryDelay(
+        failureCount: Int,
+        circuitBreakerFailureCount: Int = 5,
+        circuitBreakerDelay: Duration = .seconds(5 * 60),
+        jitter: Double = 0
+    ) -> Duration {
+        guard failureCount < circuitBreakerFailureCount else { return circuitBreakerDelay }
+        let exponentialDelay = min(0.5 * pow(2, Double(max(0, failureCount - 1))), 30)
+        return .seconds(exponentialDelay + max(0, jitter))
+    }
+}
+
+@MainActor
+final class CloudSpeechTargetReconciliationQueue {
+    private var pendingTask: Task<Void, Never>?
+
+    func enqueue(_ operation: @MainActor @escaping () async -> Void) {
+        let previousTask = pendingTask
+        pendingTask = Task { @MainActor in
+            await previousTask?.value
+            guard !Task.isCancelled else { return }
+            await operation()
+        }
+    }
+
+    func waitForPending() async {
+        await pendingTask?.value
+    }
+
+    func cancel() {
+        pendingTask?.cancel()
+        pendingTask = nil
+    }
 }
 
 @MainActor
@@ -695,8 +850,11 @@ final class CloudSpeechPreconnectionService: ObservableObject {
     private var observers: [NSObjectProtocol] = []
     private var workspaceObservers: [NSObjectProtocol] = []
     private var refreshTask: Task<Void, Never>?
+    private var suspensionUpdateTask: Task<Void, Never>?
+    private let targetReconciliationQueue = CloudSpeechTargetReconciliationQueue()
     private var isSleeping = false
     private var isNetworkAvailable = true
+    private var isUnderMemoryPressure = false
     private var lastConfigurationSummary: String?
 
     init(
@@ -712,6 +870,11 @@ final class CloudSpeechPreconnectionService: ObservableObject {
 
     deinit {
         refreshTask?.cancel()
+        suspensionUpdateTask?.cancel()
+        let targetReconciliationQueue = targetReconciliationQueue
+        Task { @MainActor in
+            targetReconciliationQueue.cancel()
+        }
         pathMonitor.cancel()
         observers.forEach(NotificationCenter.default.removeObserver)
         workspaceObservers.forEach(NSWorkspace.shared.notificationCenter.removeObserver)
@@ -722,6 +885,23 @@ final class CloudSpeechPreconnectionService: ObservableObject {
 
     func refreshNow() {
         scheduleRefresh(delay: .zero)
+    }
+
+    func setMemoryPressure(_ pressured: Bool) {
+        guard isUnderMemoryPressure != pressured else { return }
+        isUnderMemoryPressure = pressured
+        updateSuspension()
+        if !pressured {
+            scheduleRefresh(delay: .milliseconds(250))
+        }
+    }
+
+    func recoverAfterRuntimeInterruption() {
+        logger.notice("Rebuilding cloud speech connections after runtime interruption")
+        Task { [pool] in
+            await pool.recoverRuntimeConnections()
+        }
+        scheduleRefresh(delay: .milliseconds(250))
     }
 
     private func setupObservers() {
@@ -788,11 +968,14 @@ final class CloudSpeechPreconnectionService: ObservableObject {
     }
 
     private func updateSuspension() {
-        let suspended = isSleeping || !isNetworkAvailable
+        let suspended = isSleeping || !isNetworkAvailable || isUnderMemoryPressure
         logger.notice(
-            "Cloud speech keep-alive runtime state suspended=\(suspended, privacy: .public) sleeping=\(self.isSleeping, privacy: .public) pathAvailable=\(self.isNetworkAvailable, privacy: .public)"
+            "Cloud speech keep-alive runtime state suspended=\(suspended, privacy: .public) sleeping=\(self.isSleeping, privacy: .public) pathAvailable=\(self.isNetworkAvailable, privacy: .public) memoryPressure=\(self.isUnderMemoryPressure, privacy: .public)"
         )
-        Task { [pool] in
+        let previousUpdate = suspensionUpdateTask
+        suspensionUpdateTask = Task { [pool] in
+            await previousUpdate?.value
+            guard !Task.isCancelled else { return }
             await pool.setSuspended(suspended)
         }
     }
@@ -852,7 +1035,7 @@ final class CloudSpeechPreconnectionService: ObservableObject {
             logger.notice("Cloud speech keep-alive configuration \(summary, privacy: .public)")
         }
 
-        Task { [pool] in
+        targetReconciliationQueue.enqueue { [pool] in
             await pool.reconcile(targets: targets)
         }
     }
@@ -866,22 +1049,30 @@ final class CloudSpeechPreconnectionService: ObservableObject {
             resourceIDs.insert(model.name)
         }
 
-        let modelsByName = Dictionary(
-            uniqueKeysWithValues: transcriptionModelManager.allAvailableModels.map { ($0.name, $0) }
-        )
         for configuration in ModeManager.shared.enabledConfigurations where configuration.isRealtimeTranscriptionEnabled {
             guard let modelName = configuration.selectedTranscriptionModelName,
-                let model = modelsByName[modelName],
-                model.provider == .doubaoSpeech
+                let resourceID = Self.doubaoResourceID(
+                    named: modelName,
+                    models: transcriptionModelManager.allAvailableModels
+                )
             else {
                 continue
             }
-            resourceIDs.insert(model.name)
+            resourceIDs.insert(resourceID)
         }
 
         if resourceIDs.isEmpty {
             resourceIDs.insert(DoubaoSpeechProvider.defaultResourceID)
         }
         return resourceIDs.sorted()
+    }
+
+    static func doubaoResourceID(
+        named modelName: String,
+        models: [any TranscriptionModel]
+    ) -> String? {
+        models.first {
+            $0.name == modelName && $0.provider == .doubaoSpeech
+        }?.name
     }
 }

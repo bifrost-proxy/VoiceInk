@@ -1,0 +1,1283 @@
+import AppKit
+import Darwin
+import Foundation
+import Testing
+
+@testable import VoiceInk
+
+@Suite(.serialized)
+struct RuntimeRecoveryTests {
+    @Test func visibleAssistantSessionsRemainProtectedAfterResponseCompletes() {
+        #expect(!RuntimeCriticalWorkPolicy.assistantSessionIsProtected(.inactive))
+        #expect(RuntimeCriticalWorkPolicy.assistantSessionIsProtected(.responding))
+        #expect(RuntimeCriticalWorkPolicy.assistantSessionIsProtected(.ready))
+        #expect(RuntimeCriticalWorkPolicy.assistantSessionIsProtected(.sendingFollowUp))
+        #expect(RuntimeCriticalWorkPolicy.assistantSessionIsProtected(.failed("retry available")))
+    }
+
+    @Test func onlyUnsavedAPIKeyDraftsRequireRelaunchProtection() {
+        #expect(!RuntimeCriticalWorkPolicy.apiKeyDraftIsProtected("", savedKey: nil))
+        #expect(!RuntimeCriticalWorkPolicy.apiKeyDraftIsProtected("  saved-key  ", savedKey: "saved-key"))
+        #expect(RuntimeCriticalWorkPolicy.apiKeyDraftIsProtected("new-key", savedKey: nil))
+        #expect(RuntimeCriticalWorkPolicy.apiKeyDraftIsProtected("new-key", savedKey: "saved-key"))
+    }
+
+    @Test func textDraftProtectionIgnoresPersistedAndWhitespaceOnlyValues() {
+        #expect(!RuntimeCriticalWorkPolicy.textDraftIsProtected("", savedValue: nil))
+        #expect(!RuntimeCriticalWorkPolicy.textDraftIsProtected("   ", savedValue: nil))
+        #expect(!RuntimeCriticalWorkPolicy.textDraftIsProtected("persisted", savedValue: "persisted"))
+        #expect(RuntimeCriticalWorkPolicy.textDraftIsProtected("", savedValue: "persisted"))
+        #expect(RuntimeCriticalWorkPolicy.textDraftIsProtected("changed", savedValue: "persisted"))
+    }
+
+    @Test @MainActor func asyncRestorationRemainsProtectedUntilItCompletes() async {
+        let activity = RuntimeProtectedWorkActivity.shared
+        let gate = NonCooperativeTaskGate()
+        let task = Recorder.makeProtectedRestorationTask {
+            await gate.wait()
+        }
+
+        #expect(activity.isBusy)
+        await gate.release()
+        await task.value
+        #expect(!activity.isBusy)
+    }
+
+    @Test @MainActor func protectedAsyncOperationEndsItsLeaseAfterCompletion() async {
+        let activity = RuntimeProtectedWorkActivity.shared
+        let gate = NonCooperativeTaskGate()
+        let task = Task { @MainActor in
+            await activity.performProtected {
+                await gate.wait()
+            }
+        }
+        await Task.yield()
+
+        #expect(activity.isBusy)
+
+        await gate.release()
+        await task.value
+        #expect(!activity.isBusy)
+    }
+
+    @Test func livenessMonitorReportsSoftStallOnceAndRelaunchesOnlyWhenIdle() {
+        let probe = RuntimeRecoveryProbe()
+        let monitor = MainThreadLivenessMonitor(
+            softStallThreshold: 5,
+            hardStallThreshold: 30,
+            clockDiscontinuityThreshold: 1_000,
+            clock: { 1_000_000_000 },
+            onClockDiscontinuity: { probe.recordClockGap($0, critical: $1) },
+            onSoftStall: { duration, critical in probe.recordSoftStall(duration, critical: critical) },
+            onHardStall: { duration, shouldProceed in
+                guard shouldProceed() else { return false }
+                probe.recordHardStall(duration)
+                return true
+            }
+        )
+        monitor.start(interval: 1_000)
+        defer { monitor.stop() }
+        monitor.acknowledgeAppKitEvent(now: 1_000_000_000)
+
+        monitor.simulateTick(now: 7_000_000_000)
+        monitor.simulateTick(now: 8_000_000_000)
+        #expect(probe.softStalls.count == 1)
+        #expect(probe.hardStalls.isEmpty)
+
+        monitor.setCriticalWorkActive(true)
+        monitor.simulateTick(now: 40_000_000_000)
+        #expect(probe.hardStalls.isEmpty)
+
+        monitor.setCriticalWorkActive(false)
+        monitor.simulateTick(now: 41_000_000_000)
+        #expect(probe.hardStalls.count == 1)
+    }
+
+    @Test func livenessMonitorDetectsAClockDiscontinuityAfterProcessResume() {
+        let probe = RuntimeRecoveryProbe()
+        let monitor = MainThreadLivenessMonitor(
+            softStallThreshold: 5,
+            hardStallThreshold: 30,
+            clockDiscontinuityThreshold: 8,
+            clock: { 1_000_000_000 },
+            onClockDiscontinuity: { probe.recordClockGap($0, critical: $1) },
+            onSoftStall: { duration, critical in probe.recordSoftStall(duration, critical: critical) },
+            onHardStall: { duration, shouldProceed in
+                guard shouldProceed() else { return false }
+                probe.recordHardStall(duration)
+                return true
+            }
+        )
+        monitor.start(interval: 1_000)
+        defer { monitor.stop() }
+        monitor.acknowledgeAppKitEvent(now: 1_000_000_000)
+
+        monitor.simulateTick(now: 12_000_000_000)
+
+        #expect(probe.clockGaps == [11])
+        #expect(probe.clockGapCriticalStates == [false])
+    }
+
+    @Test func appKitEventAcknowledgementClearsAStallBeforeEscalation() {
+        let probe = RuntimeRecoveryProbe()
+        let monitor = MainThreadLivenessMonitor(
+            softStallThreshold: 5,
+            hardStallThreshold: 30,
+            clockDiscontinuityThreshold: 1_000,
+            clock: { 1_000_000_000 },
+            onClockDiscontinuity: { probe.recordClockGap($0, critical: $1) },
+            onSoftStall: { duration, critical in probe.recordSoftStall(duration, critical: critical) },
+            onHardStall: { duration, shouldProceed in
+                guard shouldProceed() else { return false }
+                probe.recordHardStall(duration)
+                return true
+            }
+        )
+        monitor.start(interval: 1_000)
+        defer { monitor.stop() }
+        monitor.acknowledgeAppKitEvent(now: 1_000_000_000)
+
+        monitor.simulateTick(now: 7_000_000_000)
+        #expect(probe.softStalls.count == 1)
+        monitor.acknowledgeAppKitEvent(now: 7_500_000_000)
+        monitor.simulateTick(now: 9_000_000_000)
+
+        #expect(probe.softStalls.count == 1)
+        #expect(probe.hardStalls.isEmpty)
+    }
+
+    @Test @MainActor func appKitProbeAcknowledgesOnlyMatchingDispatchedEvents() throws {
+        let eventProbe = AppKitEventProbe()
+        defer { eventProbe.stop() }
+        var acknowledged = false
+        eventProbe.onAcknowledged = {
+            acknowledged = true
+        }
+
+        let unrelatedEvent = try #require(
+            NSEvent.otherEvent(
+                with: .applicationDefined,
+                location: .zero,
+                modifierFlags: [],
+                timestamp: 0,
+                windowNumber: 0,
+                context: nil,
+                subtype: 1,
+                data1: 0,
+                data2: 0
+            )
+        )
+        #expect(eventProbe.handleDispatchedEvent(unrelatedEvent) === unrelatedEvent)
+        #expect(!acknowledged)
+
+        let probeEvent = try #require(
+            NSEvent.otherEvent(
+                with: .applicationDefined,
+                location: .zero,
+                modifierFlags: [],
+                timestamp: 0,
+                windowNumber: 0,
+                context: nil,
+                subtype: AppKitEventProbe.eventSubtype,
+                data1: 1,
+                data2: 0
+            )
+        )
+        #expect(eventProbe.handleDispatchedEvent(probeEvent) == nil)
+
+        #expect(acknowledged)
+    }
+
+    @Test @MainActor func appKitProbeReportsEventCreationFailure() {
+        let eventProbe = AppKitEventProbe(eventFactory: { _ in nil })
+        defer { eventProbe.stop() }
+        var requestFailed = false
+        eventProbe.onRequestFailed = {
+            requestFailed = true
+        }
+
+        eventProbe.requestProbe()
+
+        #expect(requestFailed)
+    }
+
+    @Test func watchdogDoesNotEscalateBeforeAppKitDispatchesItsFirstProbe() {
+        let probe = RuntimeRecoveryProbe()
+        let monitor = MainThreadLivenessMonitor(
+            softStallThreshold: 5,
+            hardStallThreshold: 30,
+            clockDiscontinuityThreshold: 1_000,
+            clock: { 1_000_000_000 },
+            onClockDiscontinuity: { probe.recordClockGap($0, critical: $1) },
+            onSoftStall: { duration, critical in probe.recordSoftStall(duration, critical: critical) },
+            onHardStall: { duration, shouldProceed in
+                guard shouldProceed() else { return false }
+                probe.recordHardStall(duration)
+                return true
+            }
+        )
+        monitor.start(interval: 1_000)
+        defer { monitor.stop() }
+
+        monitor.simulateTick(now: 40_000_000_000)
+        #expect(probe.softStalls.isEmpty)
+        #expect(probe.hardStalls.isEmpty)
+
+        monitor.acknowledgeAppKitEvent(now: 40_000_000_000)
+        monitor.simulateTick(now: 71_000_000_000)
+        #expect(probe.hardStalls.count == 1)
+    }
+
+    @Test func terminationPermanentlyDisarmsTheWatchdog() {
+        let probe = RuntimeRecoveryProbe()
+        let monitor = MainThreadLivenessMonitor(
+            softStallThreshold: 5,
+            hardStallThreshold: 30,
+            clockDiscontinuityThreshold: 1_000,
+            clock: { 1_000_000_000 },
+            onClockDiscontinuity: { probe.recordClockGap($0, critical: $1) },
+            onSoftStall: { duration, critical in probe.recordSoftStall(duration, critical: critical) },
+            onHardStall: { duration, _ in
+                probe.recordHardStall(duration)
+                return true
+            }
+        )
+        monitor.start(interval: 1_000)
+        monitor.acknowledgeAppKitEvent(now: 1_000_000_000)
+        monitor.disarmPermanently()
+
+        monitor.simulateTick(now: 40_000_000_000)
+        #expect(probe.softStalls.isEmpty)
+        #expect(probe.hardStalls.isEmpty)
+    }
+
+    @Test func hardRecoveryRevalidatesTheLatestAppKitAcknowledgement() {
+        let probe = RuntimeRecoveryProbe()
+        let monitorBox = LivenessMonitorBox()
+        let monitor = MainThreadLivenessMonitor(
+            softStallThreshold: 5,
+            hardStallThreshold: 30,
+            clockDiscontinuityThreshold: 1_000,
+            clock: { 1_000_000_000 },
+            onClockDiscontinuity: { probe.recordClockGap($0, critical: $1) },
+            onSoftStall: { duration, critical in probe.recordSoftStall(duration, critical: critical) },
+            onHardStall: { duration, shouldProceed in
+                monitorBox.monitor?.acknowledgeAppKitEvent(now: 31_000_000_000)
+                guard shouldProceed() else { return false }
+                probe.recordHardStall(duration)
+                return true
+            }
+        )
+        monitorBox.monitor = monitor
+        monitor.start(interval: 1_000)
+        defer { monitor.stop() }
+        monitor.acknowledgeAppKitEvent(now: 1_000_000_000)
+
+        monitor.simulateTick(now: 31_000_000_000)
+        #expect(probe.hardStalls.isEmpty)
+    }
+
+    @Test func hardRecoveryPolicyProtectsRecordingAndTranscriptionWork() {
+        #expect(
+            !RuntimeRecoveryPolicy.shouldRelaunch(
+                stallDuration: RuntimeRecoveryPolicy.hardStallThreshold,
+                isCriticalWorkActive: true
+            )
+        )
+        #expect(
+            RuntimeRecoveryPolicy.shouldRelaunch(
+                stallDuration: RuntimeRecoveryPolicy.hardStallThreshold,
+                isCriticalWorkActive: false
+            )
+        )
+    }
+
+    @Test func unavailableHardRecoveryIsRetriedOnLaterWatchdogTicks() {
+        let probe = RuntimeRecoveryProbe()
+        let monitor = MainThreadLivenessMonitor(
+            softStallThreshold: 5,
+            hardStallThreshold: 30,
+            clockDiscontinuityThreshold: 1_000,
+            clock: { 1_000_000_000 },
+            onClockDiscontinuity: { probe.recordClockGap($0, critical: $1) },
+            onSoftStall: { duration, critical in probe.recordSoftStall(duration, critical: critical) },
+            onHardStall: { duration, shouldProceed in
+                guard shouldProceed() else { return false }
+                probe.recordHardStall(duration)
+                return probe.hardStalls.count > 1
+            }
+        )
+        monitor.start(interval: 1_000)
+        defer { monitor.stop() }
+        monitor.acknowledgeAppKitEvent(now: 1_000_000_000)
+
+        monitor.simulateTick(now: 31_000_000_000)
+        monitor.simulateTick(now: 32_000_000_000)
+        monitor.simulateTick(now: 33_000_000_000)
+
+        #expect(probe.hardStalls.count == 2)
+    }
+
+    @Test func memoryPressureSimulationSuspendsWorkThenRecoversOnNormal() {
+        #expect(
+            RuntimeMemoryPressurePolicy.plan(for: .warning)
+                == RuntimeMemoryPressurePlan(suspendOptionalWork: true, performRecovery: false)
+        )
+
+        var eventGate = RuntimeMemoryPressureEventGate()
+        let acceptedNewerEvent = eventGate.accept(sequence: 2)
+        let acceptedOlderEvent = eventGate.accept(sequence: 1)
+        #expect(acceptedNewerEvent)
+        #expect(!acceptedOlderEvent)
+        #expect(eventGate.latestSequence == 2)
+        #expect(
+            RuntimeMemoryPressurePolicy.plan(for: .critical)
+                == RuntimeMemoryPressurePlan(suspendOptionalWork: true, performRecovery: false)
+        )
+        #expect(
+            RuntimeMemoryPressurePolicy.plan(for: .normal)
+                == RuntimeMemoryPressurePlan(suspendOptionalWork: false, performRecovery: true)
+        )
+
+        let coalescedCritical: DispatchSource.MemoryPressureEvent = [.critical, .normal]
+        #expect(RuntimeMemoryPressurePolicy.level(for: coalescedCritical) == .critical)
+        let coalescedWarning: DispatchSource.MemoryPressureEvent = [.warning, .normal]
+        #expect(RuntimeMemoryPressurePolicy.level(for: coalescedWarning) == .warning)
+    }
+
+    @Test func pressureResourceReleaseWaitsForRecordingAndModelWorkToFinish() {
+        #expect(
+            RuntimePressureResourceReleasePolicy.canRelease(
+                activeOperationCount: 0,
+                isRecordingActive: false
+            )
+        )
+        #expect(
+            !RuntimePressureResourceReleasePolicy.canRelease(
+                activeOperationCount: 1,
+                isRecordingActive: false
+            )
+        )
+        #expect(
+            !RuntimePressureResourceReleasePolicy.canRelease(
+                activeOperationCount: 0,
+                isRecordingActive: true
+            )
+        )
+    }
+
+    @Test func onlyLocalModelProvidersCoordinateRuntimePressure() {
+        let localProviders: Set<ModelProvider> = [.whisper, .fluidAudio, .sherpaOnnx, .qwenMlx]
+
+        for provider in ModelProvider.allCases {
+            #expect(
+                RuntimePressureOperationPolicy.coordinatesLocalRuntime(for: provider)
+                    == localProviders.contains(provider)
+            )
+        }
+    }
+
+    @Test @MainActor func memoryPressureTransitionsSerializeAcrossSuspensionAwait() async {
+        let queue = RuntimeMemoryPressureTransitionQueue()
+        let gate = NonCooperativeTaskGate()
+        let probe = OrderedTransitionProbe()
+
+        #expect(queue.enqueue(sequence: 1) {
+            probe.append("warning-start")
+            await gate.wait()
+            probe.append("warning-finished")
+        })
+        await Task.yield()
+        #expect(queue.enqueue(sequence: 2) {
+            probe.append("normal")
+        })
+        #expect(probe.values == ["warning-start"])
+
+        await gate.release()
+        await queue.waitForIdle()
+        #expect(probe.values == ["warning-start", "warning-finished", "normal"])
+    }
+
+    @Test @MainActor func pressureReleaseWaitsForOperationsFromEveryRegistry() async {
+        let coordinator = RuntimePressureOperationCoordinator()
+        let probe = OrderedTransitionProbe()
+
+        #expect(await coordinator.beginOperation())
+        #expect(await coordinator.beginOperation())
+        let releaseTask = Task { @MainActor in
+            await coordinator.requestRelease(
+                recordingIsActive: { false },
+                operation: {
+                    probe.append("released")
+                    return true
+                }
+            )
+        }
+        await Task.yield()
+        #expect(!(await releaseTask.value))
+        #expect(probe.values.isEmpty)
+
+        coordinator.endOperation()
+        await Task.yield()
+        #expect(probe.values.isEmpty)
+
+        coordinator.endOperation()
+        _ = await coordinator.retryPendingRelease()
+        #expect(probe.values == ["released"])
+    }
+
+    @Test @MainActor func pressureReleaseBlocksNewOperationsForItsFullAsyncWindow() async {
+        let coordinator = RuntimePressureOperationCoordinator()
+        let gate = NonCooperativeTaskGate()
+        let probe = OrderedTransitionProbe()
+
+        let releaseTask = Task { @MainActor in
+            await coordinator.requestRelease(
+                recordingIsActive: { false },
+                operation: {
+                    probe.append("release-started")
+                    await gate.wait()
+                    probe.append("release-finished")
+                    return true
+                }
+            )
+        }
+        await Task.yield()
+        let operationTask = Task { @MainActor in
+            let started = await coordinator.beginOperation()
+            if started {
+                probe.append("operation-started")
+            }
+            return started
+        }
+        await Task.yield()
+        #expect(probe.values == ["release-started"])
+
+        await gate.release()
+        #expect(await releaseTask.value)
+        #expect(await operationTask.value)
+        coordinator.endOperation()
+        #expect(probe.values == ["release-started", "release-finished", "operation-started"])
+    }
+
+    @Test @MainActor func pressureReleaseRemainsArmedForModelsReloadedBeforeRecovery() async {
+        let coordinator = RuntimePressureOperationCoordinator()
+        let probe = OrderedTransitionProbe()
+
+        #expect(
+            await coordinator.requestRelease(
+                recordingIsActive: { false },
+                operation: {
+                    probe.append("released")
+                    return true
+                }
+            )
+        )
+        #expect(coordinator.hasPendingRelease)
+
+        #expect(await coordinator.beginOperation())
+        coordinator.endOperation()
+        for _ in 0..<20 where probe.values.count < 2 {
+            await Task.yield()
+        }
+
+        #expect(probe.values == ["released", "released"])
+        #expect(coordinator.hasPendingRelease)
+
+        coordinator.cancelPendingRelease()
+        #expect(!coordinator.hasPendingRelease)
+    }
+
+    @Test @MainActor func pressureRecoveryCancelsAnInFlightStaleRelease() async {
+        let coordinator = RuntimePressureOperationCoordinator()
+        let gate = NonCooperativeTaskGate()
+        let probe = OrderedTransitionProbe()
+
+        let releaseTask = Task { @MainActor in
+            await coordinator.requestRelease(
+                recordingIsActive: { false },
+                operation: {
+                    probe.append("release-started")
+                    await gate.wait()
+                    guard !Task.isCancelled else {
+                        probe.append("release-cancelled")
+                        return false
+                    }
+                    probe.append("release-finished")
+                    return true
+                }
+            )
+        }
+        await Task.yield()
+        coordinator.cancelPendingRelease()
+        await gate.release()
+
+        #expect(!(await releaseTask.value))
+        #expect(probe.values == ["release-started", "release-cancelled"])
+        #expect(!coordinator.hasPendingRelease)
+        #expect(!coordinator.isReleasingResources)
+    }
+
+    @Test @MainActor func pressureCleanupReleasesResourcesFromEveryRegistryParticipant() async {
+        let coordinator = RuntimePressureOperationCoordinator()
+        let probe = OrderedTransitionProbe()
+        let firstID = UUID()
+        let secondID = UUID()
+        coordinator.registerResourceReleaseParticipant(id: firstID) {
+            probe.append("first")
+            return true
+        }
+        coordinator.registerResourceReleaseParticipant(id: secondID) {
+            probe.append("second")
+            return true
+        }
+
+        #expect(await coordinator.requestRegisteredResourceRelease(recordingIsActive: { false }))
+        #expect(Set(probe.values) == ["first", "second"])
+    }
+
+    @Test @MainActor func optionalModelPreparationIsDeferredWhilePressureIsActive() async {
+        let coordinator = RuntimePressureOperationCoordinator()
+        coordinator.suspendOptionalOperations()
+        #expect(!(await coordinator.beginOptionalOperation()))
+
+        coordinator.resumeOptionalOperations()
+        #expect(await coordinator.beginOptionalOperation())
+        coordinator.endOperation()
+    }
+
+    @Test @MainActor func optionalModelPreparationRechecksPressureAfterWaitingForRelease() async {
+        let coordinator = RuntimePressureOperationCoordinator()
+        let gate = NonCooperativeTaskGate()
+        let releaseTask = Task { @MainActor in
+            await coordinator.requestRelease(
+                recordingIsActive: { false },
+                operation: {
+                    await gate.wait()
+                    return true
+                }
+            )
+        }
+        await Task.yield()
+        let optionalTask = Task { @MainActor in
+            await coordinator.beginOptionalOperation()
+        }
+        await Task.yield()
+
+        coordinator.suspendOptionalOperations()
+        await gate.release()
+
+        #expect(await releaseTask.value)
+        #expect(!(await optionalTask.value))
+        #expect(!coordinator.hasActiveOperations)
+    }
+
+    @Test func watchdogKeepsOnlyOneAppKitProbeOutstanding() {
+        let probe = RuntimeRecoveryProbe()
+        let monitor = MainThreadLivenessMonitor(
+            softStallThreshold: 5,
+            hardStallThreshold: 30,
+            clockDiscontinuityThreshold: 1_000,
+            clock: { 1_000_000_000 },
+            onProbeRequested: { probe.recordProbeRequest() },
+            onClockDiscontinuity: { _, _ in },
+            onSoftStall: { _, _ in },
+            onHardStall: { _, _ in false }
+        )
+        monitor.start(interval: 1_000)
+        defer { monitor.stop() }
+        monitor.acknowledgeAppKitEvent(now: 1_000_000_000)
+
+        monitor.simulateTick(now: 2_000_000_000, enqueueMainProbe: true)
+        monitor.simulateTick(now: 3_000_000_000, enqueueMainProbe: true)
+        #expect(probe.probeRequestCount == 1)
+
+        monitor.acknowledgeAppKitEvent(now: 3_500_000_000)
+        monitor.simulateTick(now: 4_000_000_000, enqueueMainProbe: true)
+        #expect(probe.probeRequestCount == 2)
+    }
+
+    @Test func watchdogRetriesAfterAppKitProbeCreationFails() {
+        let probe = RuntimeRecoveryProbe()
+        let monitor = MainThreadLivenessMonitor(
+            softStallThreshold: 5,
+            hardStallThreshold: 30,
+            clockDiscontinuityThreshold: 1_000,
+            clock: { 1_000_000_000 },
+            onProbeRequested: { probe.recordProbeRequest() },
+            onClockDiscontinuity: { _, _ in },
+            onSoftStall: { _, _ in },
+            onHardStall: { _, _ in false }
+        )
+        monitor.start(interval: 1_000)
+        defer { monitor.stop() }
+        monitor.acknowledgeAppKitEvent(now: 1_000_000_000)
+
+        monitor.simulateTick(now: 2_000_000_000, enqueueMainProbe: true)
+        monitor.reportAppKitProbeRequestFailure()
+        monitor.simulateTick(now: 3_000_000_000, enqueueMainProbe: true)
+
+        #expect(probe.probeRequestCount == 2)
+    }
+
+    @Test func clockDiscontinuityReplacesAnUndeliveredPreSleepProbe() {
+        let probe = RuntimeRecoveryProbe()
+        let monitor = MainThreadLivenessMonitor(
+            softStallThreshold: 5,
+            hardStallThreshold: 30,
+            clockDiscontinuityThreshold: 8,
+            clock: { 1_000_000_000 },
+            onProbeRequested: { probe.recordProbeRequest() },
+            onClockDiscontinuity: { _, _ in },
+            onSoftStall: { _, _ in },
+            onHardStall: { _, _ in false }
+        )
+        monitor.start(interval: 1_000)
+        defer { monitor.stop() }
+        monitor.acknowledgeAppKitEvent(now: 1_000_000_000)
+
+        monitor.simulateTick(now: 2_000_000_000, enqueueMainProbe: true)
+        monitor.simulateTick(now: 12_000_000_000, enqueueMainProbe: true)
+
+        #expect(probe.probeRequestCount == 2)
+    }
+
+    @Test func relaunchHelperIsPreparedWithARecoveryCooldown() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("VoiceInk-RuntimeRecoveryTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let caches = root.appendingPathComponent("Caches", isDirectory: true)
+        let library = root.appendingPathComponent("Library", isDirectory: true)
+        let app = root.appendingPathComponent("VoiceInk.app", isDirectory: true)
+
+        let plan = try #require(
+            RuntimeRecoveryRelauncher.prepareIfAllowed(
+                environment: [:],
+                appURL: app,
+                cachesDirectory: caches,
+                libraryDirectory: library
+            )
+        )
+        #expect(FileManager.default.isExecutableFile(atPath: plan.helperURL.path))
+        #expect(RuntimeRecoveryRelauncher.helperScript.contains("/usr/bin/open -n \"$app_path\""))
+        #expect(RuntimeRecoveryRelauncher.helperScript.contains("for launch_attempt in {1..20}"))
+        #expect(RuntimeRecoveryRelauncher.helperScript.contains("/bin/rm -f -- \"$marker_path\""))
+        let syntaxCheck = Process()
+        syntaxCheck.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        syntaxCheck.arguments = ["-n", plan.helperURL.path]
+        try syntaxCheck.run()
+        syntaxCheck.waitUntilExit()
+        #expect(syntaxCheck.terminationStatus == 0)
+
+        try Data("recent".utf8).write(to: plan.markerURL, options: .atomic)
+        #expect(!plan.canRelaunch(now: Date()))
+        #expect(plan.canRelaunch(now: Date().addingTimeInterval(RuntimeRecoveryRelauncher.cooldown + 1)))
+    }
+
+    @Test func qwenShutdownWaitIsBoundedWhenTheBridgeDoesNotExit() async throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        process.arguments = ["10"]
+        try process.run()
+        defer {
+            if process.isRunning {
+                process.terminate()
+            }
+        }
+
+        let clock = ContinuousClock()
+        let startedAt = clock.now
+        let exited = await QwenMLXRuntime.waitForExit(process, timeout: .milliseconds(100))
+        let elapsed = startedAt.duration(to: clock.now)
+
+        #expect(!exited)
+        #expect(elapsed < .seconds(1))
+    }
+
+    @Test func qwenForcedShutdownConfirmsAStubbornBridgeHasExited() async throws {
+        let process = Process()
+        let output = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        process.arguments = ["-c", "trap '' TERM; print ready; while true; do /bin/sleep 1; done"]
+        process.standardOutput = output
+        try process.run()
+        defer {
+            if process.isRunning {
+                _ = Darwin.kill(process.processIdentifier, SIGKILL)
+            }
+        }
+        _ = output.fileHandleForReading.availableData
+
+        let exited = await QwenMLXRuntime.terminateAndWait(process, timeout: .milliseconds(100))
+
+        #expect(exited)
+        #expect(!process.isRunning)
+    }
+
+    @Test func qwenBlockingResponseReadDoesNotOccupyTheCallingActor() async throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        process.arguments = ["10"]
+        try process.run()
+        defer {
+            if process.isRunning {
+                process.terminate()
+            }
+        }
+
+        let pipe = Pipe()
+        let readStarted = QwenReadStartSignal()
+        let reader = QwenMLXBlockingResponseReader(
+            standardOutput: pipe.fileHandleForReading,
+            process: process,
+            onReadStart: { readStarted.signal() }
+        )
+        let probe = QwenReadIsolationProbe(reader: reader)
+        let readTask = Task {
+            try await probe.readResponse()
+        }
+
+        await readStarted.wait()
+        await probe.ping()
+        #expect(await probe.pingCount == 1)
+
+        let response = Data("{\"ok\":true}\n".utf8)
+        pipe.fileHandleForWriting.write(response)
+        #expect(try await readTask.value == Data("{\"ok\":true}".utf8))
+    }
+
+    @Test func qwenBlockingRequestWriteDoesNotOccupyTheCallingActor() async throws {
+        let writeStarted = QwenReadStartSignal()
+        let writeGate = DispatchSemaphore(value: 0)
+        let writer = QwenMLXBlockingRequestWriter(
+            writeOperation: { _ in writeGate.wait() },
+            onWriteStart: { writeStarted.signal() }
+        )
+        let probe = QwenWriteIsolationProbe(writer: writer)
+        let writeTask = Task { try await probe.writeRequest() }
+
+        await writeStarted.wait()
+        await probe.ping()
+        #expect(await probe.pingCount == 1)
+
+        writeGate.signal()
+        try await writeTask.value
+    }
+
+    @Test func qwenBlockingRequestWritePropagatesClosedPipeErrors() async {
+        let writer = QwenMLXBlockingRequestWriter(
+            writeOperation: { _ in throw QwenWriteTestError.closedPipe }
+        )
+
+        await #expect(throws: QwenWriteTestError.self) {
+            try await QwenMLXRuntime.writeRequestOffActor(writer, data: Data("request".utf8))
+        }
+    }
+
+    @Test func testProcessesNeverPrepareAnAutomaticRelaunch() {
+        let plan = RuntimeRecoveryRelauncher.prepareIfAllowed(
+            environment: ["XCTestConfigurationFilePath": "/tmp/test.xctestconfiguration"]
+        )
+        #expect(plan?.helperURL == nil)
+    }
+
+    @Test func inMemoryStorageNeverPreparesAnAutomaticRelaunch() {
+        let plan = RuntimeRecoveryRelauncher.prepareIfAllowed(
+            allowsAutomaticRelaunch: false,
+            environment: [:],
+            appURL: URL(fileURLWithPath: "/Applications/VoiceInk.app")
+        )
+        #expect(plan?.helperURL == nil)
+    }
+
+    @Test func missingHelperPreventsExitAndClearsTheCooldownMarker() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("VoiceInk-RuntimeRecoveryFailureTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let plan = try #require(
+            RuntimeRecoveryRelauncher.prepareIfAllowed(
+                environment: [:],
+                appURL: root.appendingPathComponent("VoiceInk.app"),
+                cachesDirectory: root.appendingPathComponent("Caches"),
+                libraryDirectory: root.appendingPathComponent("Library")
+            )
+        )
+
+        try FileManager.default.removeItem(at: plan.helperURL)
+        #expect(!plan.launchAndExit())
+        #expect(!FileManager.default.fileExists(atPath: plan.markerURL.path))
+        #expect(plan.canRelaunch())
+    }
+
+    @Test @MainActor func overlappingModelOperationsRemainProtectedUntilAllFinish() {
+        let activity = RuntimeProtectedWorkActivity.shared
+        let first = activity.begin()
+        let second = activity.begin()
+        #expect(activity.isBusy)
+        #expect(activity.activeOperationCount == 2)
+
+        activity.end(first)
+        #expect(activity.isBusy)
+        #expect(activity.activeOperationCount == 1)
+
+        activity.end(second)
+        #expect(!activity.isBusy)
+        #expect(activity.activeOperationCount == 0)
+    }
+
+    @Test @MainActor func supersededPrewarmTasksRemainTrackedUntilEachFinishes() async {
+        let registry = ModelPrewarmTaskRegistry()
+        let firstGate = NonCooperativeTaskGate()
+        let secondGate = NonCooperativeTaskGate()
+        let firstID = UUID()
+        let secondID = UUID()
+        let firstTask = Task { await firstGate.wait() }
+        registry.insert(firstTask, id: firstID)
+        registry.cancelAll()
+        let secondTask = Task { await secondGate.wait() }
+        registry.insert(secondTask, id: secondID)
+
+        let outstandingTasks = registry.cancelAll()
+        #expect(registry.count == 2)
+        #expect(outstandingTasks.count == 2)
+
+        await firstGate.release()
+        await secondGate.release()
+        for task in outstandingTasks {
+            await task.value
+        }
+        registry.remove(id: firstID)
+        registry.remove(id: secondID)
+        #expect(registry.isEmpty)
+    }
+
+    @Test func clockDiscontinuityReportsProtectedWorkState() {
+        let probe = RuntimeRecoveryProbe()
+        let monitor = MainThreadLivenessMonitor(
+            softStallThreshold: 5,
+            hardStallThreshold: 30,
+            clockDiscontinuityThreshold: 8,
+            clock: { 1_000_000_000 },
+            onClockDiscontinuity: { probe.recordClockGap($0, critical: $1) },
+            onSoftStall: { _, _ in },
+            onHardStall: { _, shouldProceed in shouldProceed() }
+        )
+        monitor.start(interval: 1_000)
+        defer { monitor.stop() }
+        monitor.acknowledgeAppKitEvent(now: 1_000_000_000)
+        monitor.setCriticalWorkActive(true)
+
+        monitor.simulateTick(now: 12_000_000_000)
+
+        #expect(probe.clockGapCriticalStates == [true])
+    }
+
+    @Test @MainActor func pendingAudioFilesRemainProtectedBeforeProcessingStarts() throws {
+        let manager = AudioTranscriptionManager.shared
+        manager.clearAll()
+        defer { manager.clearAll() }
+        let audioURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("VoiceInk-PendingAudio-\(UUID().uuidString).wav")
+        defer { try? FileManager.default.removeItem(at: audioURL) }
+        try Data(repeating: 0, count: 44).write(to: audioURL)
+
+        manager.addToQueue(urls: [audioURL])
+        let queuedItem = try #require(manager.queue.first)
+        #expect(manager.hasQueuedWork)
+
+        manager.removeFromQueue(id: queuedItem.id)
+        #expect(!manager.hasQueuedWork)
+    }
+
+    @Test @MainActor func failedAudioFilesRemainProtectedUntilExplicitlyCleared() throws {
+        let manager = AudioTranscriptionManager.shared
+        manager.clearAll()
+        defer { manager.clearAll() }
+        let audioURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("VoiceInk-FailedAudio-\(UUID().uuidString).wav")
+        defer { try? FileManager.default.removeItem(at: audioURL) }
+        try Data(repeating: 0, count: 44).write(to: audioURL)
+
+        manager.addToQueue(urls: [audioURL])
+        let queuedItem = try #require(manager.queue.first)
+        queuedItem.status = .failed(message: "simulated failure")
+        manager.refreshQueuedWorkState()
+        #expect(manager.hasQueuedWork)
+
+        manager.clearAll()
+        #expect(!manager.hasQueuedWork)
+    }
+
+    @Test func qwenRequestAdmissionSerializesOverlappingWork() async throws {
+        let admission = QwenMLXRequestAdmissionQueue()
+        try await admission.acquire()
+        let secondRequestStarted = QwenRequestAdmissionProbe()
+
+        let secondRequest = Task {
+            secondRequestStarted.recordAttempt()
+            try await admission.acquire()
+            secondRequestStarted.recordStart()
+            admission.release()
+        }
+
+        for _ in 0..<100 where !secondRequestStarted.didAttempt {
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        #expect(secondRequestStarted.didAttempt)
+        #expect(!secondRequestStarted.didStart)
+
+        admission.release()
+        try await secondRequest.value
+        #expect(secondRequestStarted.didStart)
+    }
+
+    @Test @MainActor func settingsExportIsProtectedForEntireWriteTransaction() throws {
+        let activity = RuntimeProtectedWorkActivity.shared
+        #expect(!activity.isBusy)
+
+        try ImportExportService.writeExportData(Data([0x01]), to: URL(fileURLWithPath: "/dev/null")) {
+            _, _ in
+            #expect(activity.isBusy)
+        }
+
+        #expect(!activity.isBusy)
+    }
+
+    @Test func qwenCancellationStopsNonCooperativeBridgeWork() async throws {
+        let admission = QwenMLXRequestAdmissionQueue()
+        let probe = QwenCancellationStopProbe()
+        let operation = Task {
+            try await admission.acquire()
+            defer { admission.release() }
+            await QwenMLXCancellationBridge.run {
+                await probe.runNonCooperativeOperation()
+            } stopRuntime: {
+                await probe.stopRuntime()
+            }
+        }
+
+        await probe.waitUntilStarted()
+        operation.cancel()
+        await probe.waitUntilStopStarted()
+
+        let successor = Task {
+            try await admission.acquire()
+            await probe.markSuccessorAdmitted()
+            admission.release()
+        }
+        await Task.yield()
+        #expect(!(await probe.didAdmitSuccessor))
+
+        await probe.allowStopToFinish()
+        _ = await operation.result
+        _ = await successor.result
+
+        #expect(await probe.didStopRuntime)
+    }
+
+    @Test func queuedQwenCancellationDoesNotStopTheAdmittedRequest() async throws {
+        let admission = QwenMLXRequestAdmissionQueue()
+        let probe = QwenCancellationStopProbe()
+        try await admission.acquire()
+
+        let queuedOperation = Task {
+            try await admission.acquire()
+            defer { admission.release() }
+            await QwenMLXCancellationBridge.run {
+                await probe.runNonCooperativeOperation()
+            } stopRuntime: {
+                await probe.stopRuntime()
+            }
+        }
+
+        queuedOperation.cancel()
+        await Task.yield()
+        #expect(!(await probe.didStopRuntime))
+
+        admission.release()
+        _ = await queuedOperation.result
+        #expect(!(await probe.didStopRuntime))
+    }
+
+    @Test func sealedQwenCancellationIgnoresALateStopRequest() async {
+        let probe = QwenLateStopProbe()
+        let coordinator = QwenMLXCancellationStopCoordinator {
+            await probe.recordStop()
+        }
+
+        await coordinator.sealAndWaitForStopIfRequested()
+        coordinator.requestStop()
+        await Task.yield()
+
+        #expect(!(await probe.didStop))
+    }
+
+    @Test @MainActor func ollamaServerDraftSuppressesRelaunchUntilSaved() {
+        let savedURL = "http://localhost:11434"
+        #expect(
+            RuntimeCriticalWorkPolicy.textDraftIsProtected(
+                "http://192.168.1.10:11434",
+                savedValue: savedURL
+            )
+        )
+        #expect(!RuntimeCriticalWorkPolicy.textDraftIsProtected(savedURL, savedValue: savedURL))
+    }
+
+    @Test func editorsProtectOnlyDirtyOrInFlightWork() {
+        #expect(!RuntimeCriticalWorkPolicy.editorIsProtected(isDirty: false, isOperationActive: false))
+        #expect(RuntimeCriticalWorkPolicy.editorIsProtected(isDirty: true, isOperationActive: false))
+        #expect(RuntimeCriticalWorkPolicy.editorIsProtected(isDirty: false, isOperationActive: true))
+    }
+
+    @Test func dictionaryQuickAddProtectsOnlyMeaningfulInputOrPendingSubmission() {
+        #expect(
+            !RuntimeCriticalWorkPolicy.dictionaryQuickAddIsProtected(
+                vocabulary: "  ", original: "", replacement: "", hasPendingSubmission: false
+            )
+        )
+        #expect(
+            RuntimeCriticalWorkPolicy.dictionaryQuickAddIsProtected(
+                vocabulary: "VoiceInk", original: "", replacement: "", hasPendingSubmission: false
+            )
+        )
+        #expect(
+            RuntimeCriticalWorkPolicy.dictionaryQuickAddIsProtected(
+                vocabulary: "", original: "", replacement: "", hasPendingSubmission: true
+            )
+        )
+    }
+
+    @Test func arkEditorProtectsModelDraftAndVerificationWithASavedKey() {
+        #expect(
+            !RuntimeCriticalWorkPolicy.providerEditorIsProtected(
+                apiKeyDraft: "", currentModel: "saved-model", savedModel: "saved-model", isVerifying: false
+            )
+        )
+        #expect(
+            RuntimeCriticalWorkPolicy.providerEditorIsProtected(
+                apiKeyDraft: "", currentModel: "new-model", savedModel: "saved-model", isVerifying: false
+            )
+        )
+        #expect(
+            RuntimeCriticalWorkPolicy.providerEditorIsProtected(
+                apiKeyDraft: "", currentModel: "saved-model", savedModel: "saved-model", isVerifying: true
+            )
+        )
+    }
+}
+
+private actor QwenCancellationStopProbe {
+    private var startContinuation: CheckedContinuation<Void, Never>?
+    private var operationContinuation: CheckedContinuation<Void, Never>?
+    private var stopStartContinuation: CheckedContinuation<Void, Never>?
+    private var stopFinishContinuation: CheckedContinuation<Void, Never>?
+    private var hasStarted = false
+    private var hasStartedStopping = false
+    private(set) var didStopRuntime = false
+    private(set) var didAdmitSuccessor = false
+
+    func runNonCooperativeOperation() async {
+        hasStarted = true
+        startContinuation?.resume()
+        startContinuation = nil
+        await withCheckedContinuation { continuation in
+            operationContinuation = continuation
+        }
+    }
+
+    func waitUntilStarted() async {
+        if hasStarted { return }
+        await withCheckedContinuation { continuation in
+            startContinuation = continuation
+        }
+    }
+
+    func stopRuntime() async {
+        hasStartedStopping = true
+        stopStartContinuation?.resume()
+        stopStartContinuation = nil
+        operationContinuation?.resume()
+        operationContinuation = nil
+        await withCheckedContinuation { continuation in
+            stopFinishContinuation = continuation
+        }
+        didStopRuntime = true
+    }
+
+    func waitUntilStopStarted() async {
+        if hasStartedStopping { return }
+        await withCheckedContinuation { continuation in
+            stopStartContinuation = continuation
+        }
+    }
+
+    func allowStopToFinish() {
+        stopFinishContinuation?.resume()
+        stopFinishContinuation = nil
+    }
+
+    func markSuccessorAdmitted() {
+        didAdmitSuccessor = true
+    }
+}
+
+private final class QwenRequestAdmissionProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedDidAttempt = false
+    private var storedDidStart = false
+
+    var didAttempt: Bool { lock.withLock { storedDidAttempt } }
+    var didStart: Bool { lock.withLock { storedDidStart } }
+
+    func recordAttempt() {
+        lock.withLock { storedDidAttempt = true }
+    }
+
+    func recordStart() {
+        lock.withLock { storedDidStart = true }
+    }
+}
+
+private final class RuntimeRecoveryProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedClockGaps: [TimeInterval] = []
+    private var storedClockGapCriticalStates: [Bool] = []
+    private var storedSoftStalls: [(TimeInterval, Bool)] = []
+    private var storedHardStalls: [TimeInterval] = []
+    private var storedProbeRequestCount = 0
+
+    var clockGaps: [TimeInterval] { lock.withLock { storedClockGaps } }
+    var clockGapCriticalStates: [Bool] { lock.withLock { storedClockGapCriticalStates } }
+    var softStalls: [(TimeInterval, Bool)] { lock.withLock { storedSoftStalls } }
+    var hardStalls: [TimeInterval] { lock.withLock { storedHardStalls } }
+    var probeRequestCount: Int { lock.withLock { storedProbeRequestCount } }
+
+    func recordClockGap(_ duration: TimeInterval, critical: Bool) {
+        lock.withLock {
+            storedClockGaps.append(duration)
+            storedClockGapCriticalStates.append(critical)
+        }
+    }
+
+    func recordSoftStall(_ duration: TimeInterval, critical: Bool) {
+        lock.withLock { storedSoftStalls.append((duration, critical)) }
+    }
+
+    func recordHardStall(_ duration: TimeInterval) {
+        lock.withLock { storedHardStalls.append(duration) }
+    }
+
+    func recordProbeRequest() {
+        lock.withLock { storedProbeRequestCount += 1 }
+    }
+}
+
+private actor NonCooperativeTaskGate {
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var isReleased = false
+
+    func wait() async {
+        if isReleased { return }
+        await withCheckedContinuation { continuation in
+            self.continuation = continuation
+        }
+    }
+
+    func release() {
+        isReleased = true
+        continuation?.resume()
+        continuation = nil
+    }
+}
+
+private actor QwenReadIsolationProbe {
+    private let reader: QwenMLXBlockingResponseReader
+    private(set) var pingCount = 0
+
+    init(reader: QwenMLXBlockingResponseReader) {
+        self.reader = reader
+    }
+
+    func readResponse() async throws -> Data {
+        try await QwenMLXRuntime.readResponseOffActor(reader)
+    }
+
+    func ping() {
+        pingCount += 1
+    }
+}
+
+private actor QwenWriteIsolationProbe {
+    private let writer: QwenMLXBlockingRequestWriter
+    private(set) var pingCount = 0
+
+    init(writer: QwenMLXBlockingRequestWriter) {
+        self.writer = writer
+    }
+
+    func writeRequest() async throws {
+        try await QwenMLXRuntime.writeRequestOffActor(writer, data: Data(repeating: 0, count: 1024))
+    }
+
+    func ping() {
+        pingCount += 1
+    }
+}
+
+private enum QwenWriteTestError: Error {
+    case closedPipe
+}
+
+private actor QwenLateStopProbe {
+    private(set) var didStop = false
+
+    func recordStop() {
+        didStop = true
+    }
+}
+
+private final class QwenReadStartSignal: @unchecked Sendable {
+    private let lock = NSLock()
+    private var didSignal = false
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    func signal() {
+        let continuation = lock.withLock { () -> CheckedContinuation<Void, Never>? in
+            didSignal = true
+            defer { self.continuation = nil }
+            return self.continuation
+        }
+        continuation?.resume()
+    }
+
+    func wait() async {
+        if lock.withLock({ didSignal }) {
+            return
+        }
+        await withCheckedContinuation { continuation in
+            let shouldResume = lock.withLock { () -> Bool in
+                if didSignal {
+                    return true
+                }
+                self.continuation = continuation
+                return false
+            }
+            if shouldResume {
+                continuation.resume()
+            }
+        }
+    }
+}
+
+private final class LivenessMonitorBox: @unchecked Sendable {
+    weak var monitor: MainThreadLivenessMonitor?
+}
+
+@MainActor
+private final class OrderedTransitionProbe {
+    private(set) var values: [String] = []
+
+    func append(_ value: String) {
+        values.append(value)
+    }
+}

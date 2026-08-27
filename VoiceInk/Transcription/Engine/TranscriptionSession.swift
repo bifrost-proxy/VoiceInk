@@ -13,6 +13,10 @@ protocol TranscriptionSession: AnyObject {
     /// Cancel the session and clean up resources.
     func cancel()
 
+    /// Waits until asynchronous cancellation cleanup has actually stopped
+    /// using runtime resources.
+    func waitForCancellation() async
+
     /// Records audio discarded before it reached the session's streaming queue.
     func recordDroppedAudioChunks(_ count: Int)
 
@@ -23,19 +27,49 @@ extension TranscriptionSession {
     var performanceSnapshot: TranscriptionPerformanceSnapshot? { nil }
 
     func recordDroppedAudioChunks(_ count: Int) {}
+
+    func waitForCancellation() async {}
 }
 
 @MainActor
 final class ResourceManagedTranscriptionSession: TranscriptionSession {
     private let session: TranscriptionSession
+    private var onPrepare: (() async -> Bool)?
     private var onFinish: (() -> Void)?
+    private var didPrepareResources = false
+    private var isPreparingResources = false
+    private var isCancelled = false
+    private var isTranscribing = false
+    private var cancellationCleanupTask: Task<Void, Never>?
 
     init(session: TranscriptionSession, onFinish: @escaping () -> Void) {
         self.session = session
         self.onFinish = onFinish
+        self.didPrepareResources = true
+    }
+
+    init(
+        session: TranscriptionSession,
+        onPrepare: @escaping () async -> Bool,
+        onFinish: @escaping () -> Void
+    ) {
+        self.session = session
+        self.onPrepare = onPrepare
+        self.onFinish = onFinish
     }
 
     func prepare(configuration: TranscriptionRuntimeConfiguration) async throws -> ((Data) -> Void)? {
+        if !didPrepareResources {
+            isPreparingResources = true
+            let didStartResources = await onPrepare?() ?? false
+            isPreparingResources = false
+            onPrepare = nil
+            didPrepareResources = didStartResources
+            if isCancelled || Task.isCancelled {
+                finish()
+                throw CancellationError()
+            }
+        }
         do {
             return try await session.prepare(configuration: configuration)
         } catch {
@@ -45,13 +79,34 @@ final class ResourceManagedTranscriptionSession: TranscriptionSession {
     }
 
     func transcribe(audioURL: URL) async throws -> String {
-        defer { finish() }
-        return try await session.transcribe(audioURL: audioURL)
+        isTranscribing = true
+        do {
+            let result = try await session.transcribe(audioURL: audioURL)
+            finishTranscription()
+            return result
+        } catch {
+            finishTranscription()
+            throw error
+        }
     }
 
     func cancel() {
+        isCancelled = true
         session.cancel()
-        finish()
+        if didPrepareResources {
+            if !isTranscribing {
+                if cancellationCleanupTask == nil {
+                    cancellationCleanupTask = Task { @MainActor [self, session] in
+                        await session.waitForCancellation()
+                        finish()
+                        cancellationCleanupTask = nil
+                    }
+                }
+            }
+        } else if !isPreparingResources {
+            onPrepare = nil
+            onFinish = nil
+        }
     }
 
     func recordDroppedAudioChunks(_ count: Int) {
@@ -62,13 +117,29 @@ final class ResourceManagedTranscriptionSession: TranscriptionSession {
         session.performanceSnapshot
     }
 
+    private func finishTranscription() {
+        isTranscribing = false
+        guard cancellationCleanupTask == nil else { return }
+        cancellationCleanupTask = Task { @MainActor [self, session] in
+            await session.waitForCancellation()
+            finish()
+            cancellationCleanupTask = nil
+        }
+    }
+
     private func finish() {
+        guard didPrepareResources else {
+            onPrepare = nil
+            onFinish = nil
+            return
+        }
         let completion = onFinish
         onFinish = nil
         completion?()
     }
 
     deinit {
+        guard didPrepareResources else { return }
         let completion = onFinish
         if let completion {
             Task { @MainActor in completion() }
@@ -133,6 +204,7 @@ final class StreamingTranscriptionSession: TranscriptionSession {
     private(set) var lastResolution: Resolution?
     private var startupTask: Task<Void, Never>?
     private var startupTaskID: UUID?
+    private var startupCleanupTasks: [UUID: Task<Void, Never>] = [:]
     private var fallbackDuration: TimeInterval?
     private var fallbackErrorDescription: String?
     private var fallbackTask: Task<String, Error>?
@@ -166,7 +238,7 @@ final class StreamingTranscriptionSession: TranscriptionSession {
             service?.sendAudioChunk(data)
         }
 
-        startupTask?.cancel()
+        cancelAndRetainStartupTask()
         let taskID = UUID()
         startupTaskID = taskID
         startupTask = Task { [weak self] in
@@ -176,6 +248,7 @@ final class StreamingTranscriptionSession: TranscriptionSession {
                     self.startupTask = nil
                     self.startupTaskID = nil
                 }
+                self.startupCleanupTasks.removeValue(forKey: taskID)
             }
             guard !Task.isCancelled else { return }
 
@@ -229,8 +302,7 @@ final class StreamingTranscriptionSession: TranscriptionSession {
             if !startedInTime {
                 logger.warning("Streaming startup exceeded the reliability deadline; retrying the complete audio file")
                 streamingFailed = true
-                startupTaskID = nil
-                self.startupTask = nil
+                cancelAndRetainStartupTask()
             }
         }
 
@@ -262,15 +334,11 @@ final class StreamingTranscriptionSession: TranscriptionSession {
             } catch {
                 lastResolution = .batchFallbackAfterStreamingError
                 logger.error("❌ Streaming failed, falling back to batch: \(error, privacy: .public)")
-                startupTask?.cancel()
-                startupTask = nil
-                startupTaskID = nil
+                cancelAndRetainStartupTask()
             }
         } else {
             lastResolution = .batchFallbackAfterStartupFailure
-            startupTask?.cancel()
-            startupTask = nil
-            startupTaskID = nil
+            cancelAndRetainStartupTask()
         }
 
         await streamingService.stopTransportForCompleteFileRecovery()
@@ -361,12 +429,30 @@ final class StreamingTranscriptionSession: TranscriptionSession {
 
     func cancel() {
         isCancelled = true
-        startupTask?.cancel()
-        startupTask = nil
-        startupTaskID = nil
+        cancelAndRetainStartupTask()
         fallbackTask?.cancel()
         fallbackTask = nil
         streamingService.cancel()
+    }
+
+    func waitForCancellation() async {
+        let startupTasks = Array(startupCleanupTasks.values)
+        for startupTask in startupTasks {
+            await startupTask.value
+        }
+        startupCleanupTasks.removeAll()
+        await streamingService.waitForCancellation()
+    }
+
+    private func cancelAndRetainStartupTask() {
+        guard let startupTask else {
+            startupTaskID = nil
+            return
+        }
+        startupTask.cancel()
+        startupCleanupTasks[startupTaskID ?? UUID()] = startupTask
+        self.startupTask = nil
+        startupTaskID = nil
     }
 
     func recordDroppedAudioChunks(_ count: Int) {

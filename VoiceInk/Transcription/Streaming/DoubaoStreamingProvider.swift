@@ -422,6 +422,7 @@ actor DoubaoWebSocketSession {
     private var finalResultTimeoutTask: Task<Void, Never>?
     private var audioPacketizer = DoubaoAudioPacketizer()
     private var preconnectionTarget: CloudSpeechConnectionTarget?
+    private var sessionCompletedSuccessfully = false
     private var sessionGeneration = UUID()
     private var earlyRecoveryTarget: CloudSpeechConnectionTarget?
     private var earlyRecoveryInitialRequest: Data?
@@ -532,6 +533,7 @@ actor DoubaoWebSocketSession {
         }
         audioPacketizer.reset()
         resetEarlyRecoveryState()
+        sessionCompletedSuccessfully = false
         sessionGeneration = UUID()
 
         let target = CloudSpeechConnectionTarget.doubao(
@@ -718,8 +720,12 @@ actor DoubaoWebSocketSession {
         closeSocket()
         resetEarlyRecoveryState()
         if let completedTarget {
-            await connectionPool.recordUseCompleted(for: completedTarget)
+            await connectionPool.recordUseCompleted(
+                for: completedTarget,
+                successful: sessionCompletedSuccessfully
+            )
         }
+        sessionCompletedSuccessfully = false
         await releaseAttemptOwnership()
     }
 
@@ -747,7 +753,7 @@ actor DoubaoWebSocketSession {
             finalResultTimeoutTask = nil
         }
 
-        return try await withTaskCancellationHandler {
+        let transcript = try await withTaskCancellationHandler {
             do {
                 while true {
                     try Task.checkCancellation()
@@ -781,6 +787,8 @@ actor DoubaoWebSocketSession {
                 await self?.cancelForFinalResultCancellation()
             }
         }
+        sessionCompletedSuccessfully = true
+        return transcript
     }
 
     func armFinalResultTimeout(after timeout: Duration) {
@@ -808,6 +816,7 @@ actor DoubaoWebSocketSession {
         do {
             let message = try await connection.receive()
             _ = try DoubaoStreamingProtocol.parseServerMessage(message)
+            sessionCompletedSuccessfully = true
         } catch {
             if verificationTimedOut {
                 throw StreamingTranscriptionError.timeout
@@ -853,6 +862,7 @@ actor DoubaoWebSocketSession {
             do {
                 guard let response = try DoubaoStreamingProtocol.parseServerMessage(message) else { continue }
                 if response.isFinal {
+                    sessionCompletedSuccessfully = true
                     eventsContinuation?.yield(.committed(text: response.text))
                     // The final frame completes the Doubao request. Do not wait
                     // for the server's normal WebSocket close and surface that

@@ -12,6 +12,7 @@ struct EditReplacementSheet: View {
     @State private var replacementWord: String
     @State private var showAlert = false
     @State private var alertMessage = ""
+    @State private var draftWorkID: UUID?
 
     // MARK: – Initialiser
     init(replacement: WordReplacement, modelContext: ModelContext) {
@@ -33,6 +34,9 @@ struct EditReplacementSheet: View {
         } message: {
             Text(alertMessage)
         }
+        .onChange(of: originalWord) { _, _ in updateDraftProtection() }
+        .onChange(of: replacementWord) { _, _ in updateDraftProtection() }
+        .onDisappear { endDraftProtection() }
     }
 
     // MARK: – Subviews
@@ -169,6 +173,32 @@ struct EditReplacementSheet: View {
         } catch {
             alertMessage = String(format: String(localized: "Failed to save changes: %@"), error.localizedDescription)
             showAlert = true
+        }
+    }
+
+    private func updateDraftProtection() {
+        let hasDraft =
+            RuntimeCriticalWorkPolicy.textDraftIsProtected(
+                originalWord,
+                savedValue: replacement.originalText
+            )
+            || RuntimeCriticalWorkPolicy.textDraftIsProtected(
+                replacementWord,
+                savedValue: replacement.replacementText
+            )
+        if hasDraft {
+            if draftWorkID == nil {
+                draftWorkID = RuntimeProtectedWorkActivity.shared.begin()
+            }
+        } else {
+            endDraftProtection()
+        }
+    }
+
+    private func endDraftProtection() {
+        if let draftWorkID {
+            RuntimeProtectedWorkActivity.shared.end(draftWorkID)
+            self.draftWorkID = nil
         }
     }
 }

@@ -1,6 +1,12 @@
 import SwiftUI
 
 struct PromptEditorView: View {
+    private struct Draft: Equatable {
+        let title: String
+        let promptText: String
+        let useSystemInstructions: Bool
+    }
+
     enum Mode {
         case add
         case edit(CustomPrompt)
@@ -26,6 +32,8 @@ struct PromptEditorView: View {
     @State private var promptText: String
     @State private var useSystemInstructions: Bool
     @State private var showDeleteConfirmation = false
+    @State private var protectedEditorWorkID: UUID?
+    private let savedDraft: Draft
 
     private var saveButtonTitle: LocalizedStringKey {
         mode == .add ? "Create & Select" : "Save & Select"
@@ -62,10 +70,16 @@ struct PromptEditorView: View {
             _title = State(initialValue: "")
             _promptText = State(initialValue: "")
             _useSystemInstructions = State(initialValue: true)
+            savedDraft = Draft(title: "", promptText: "", useSystemInstructions: true)
         case .edit(let prompt):
             _title = State(initialValue: prompt.title)
             _promptText = State(initialValue: prompt.promptText)
             _useSystemInstructions = State(initialValue: prompt.useSystemInstructions)
+            savedDraft = Draft(
+                title: prompt.title,
+                promptText: prompt.promptText,
+                useSystemInstructions: prompt.useSystemInstructions
+            )
         }
     }
 
@@ -106,6 +120,9 @@ struct PromptEditorView: View {
                     format: String(localized: "Are you sure you want to delete '%@'? This action cannot be undone."),
                     title))
         }
+        .onAppear(perform: updateDraftProtection)
+        .onChange(of: currentDraft) { _, _ in updateDraftProtection() }
+        .onDisappear(perform: endDraftProtection)
     }
 
     private var header: some View {
@@ -258,5 +275,28 @@ struct PromptEditorView: View {
             enhancementService.updatePrompt(updatedPrompt)
             return updatedPrompt
         }
+    }
+
+    private var currentDraft: Draft {
+        Draft(title: title, promptText: promptText, useSystemInstructions: useSystemInstructions)
+    }
+
+    private func updateDraftProtection() {
+        let shouldProtect = RuntimeCriticalWorkPolicy.editorIsProtected(
+            isDirty: currentDraft != savedDraft,
+            isOperationActive: false
+        )
+        if shouldProtect, protectedEditorWorkID == nil {
+            protectedEditorWorkID = RuntimeProtectedWorkActivity.shared.begin()
+        } else if !shouldProtect {
+            endDraftProtection()
+        }
+    }
+
+    private func endDraftProtection() {
+        if let protectedEditorWorkID {
+            RuntimeProtectedWorkActivity.shared.end(protectedEditorWorkID)
+        }
+        protectedEditorWorkID = nil
     }
 }

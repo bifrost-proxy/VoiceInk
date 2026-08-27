@@ -155,12 +155,16 @@ struct RecordingPermissionPreflightTests {
 
     @Test func accessibilityAuthorizationMonitorRetriesUntilShortcutRecoveryIsStable() async throws {
         var attemptCount = 0
+        var completionCount = 0
         let monitor = AccessibilityAuthorizationMonitor(
             pollingIntervalNanoseconds: 10_000_000,
             isAuthorized: { true },
             onRecoveryAttempt: {
                 attemptCount += 1
                 return attemptCount >= 3
+            },
+            onRecoveryCompleted: {
+                completionCount += 1
             }
         )
 
@@ -171,10 +175,12 @@ struct RecordingPermissionPreflightTests {
         }
 
         #expect(attemptCount == 4)
+        #expect(completionCount == 1)
         #expect(!monitor.isRunning)
 
         try await Task.sleep(nanoseconds: 30_000_000)
         #expect(attemptCount == 4)
+        #expect(completionCount == 1)
     }
 
     @Test func screenPermissionRequestDoesNotBlockMainActor() async throws {

@@ -22,4 +22,5 @@ extension Notification.Name {
     static let openFileForTranscription = Notification.Name("openFileForTranscription")
     static let audioDeviceSwitchRequired = Notification.Name("audioDeviceSwitchRequired")
     static let recordingDidStart = Notification.Name("recordingDidStart")
+    static let recordingDidStop = Notification.Name("recordingDidStop")
 }

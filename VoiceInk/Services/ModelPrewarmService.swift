@@ -16,9 +16,33 @@ enum ModelPrewarmPolicy {
     static func shouldRun(
         isEnabled: Bool,
         isRecordingActive: Bool,
+        isUnderRuntimePressure: Bool = false,
         provider: ModelProvider
     ) -> Bool {
-        isEnabled && !isRecordingActive && isLocalProvider(provider)
+        isEnabled && !isRecordingActive && !isUnderRuntimePressure && isLocalProvider(provider)
+    }
+}
+
+@MainActor
+final class ModelPrewarmTaskRegistry {
+    private var tasks: [UUID: Task<Void, Never>] = [:]
+
+    var count: Int { tasks.count }
+    var isEmpty: Bool { tasks.isEmpty }
+
+    func insert(_ task: Task<Void, Never>, id: UUID) {
+        tasks[id] = task
+    }
+
+    func remove(id: UUID) {
+        tasks.removeValue(forKey: id)
+    }
+
+    @discardableResult
+    func cancelAll() -> [Task<Void, Never>] {
+        let outstandingTasks = Array(tasks.values)
+        outstandingTasks.forEach { $0.cancel() }
+        return outstandingTasks
     }
 }
 
@@ -29,8 +53,9 @@ final class ModelPrewarmService: ObservableObject {
     private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "ModelPrewarm")
     private let prewarmAudioURL = Bundle.main.url(forResource: "sound7", withExtension: "wav")
     private let prewarmEnabledKey = "PrewarmModelOnWake"
-    private var prewarmTask: Task<Void, Never>?
+    private let prewarmTasks = ModelPrewarmTaskRegistry()
     private var recordingObserver: NSObjectProtocol?
+    private var isSuspendedForRuntimePressure = false
 
     init(
         transcriptionModelManager: TranscriptionModelManager,
@@ -83,26 +108,77 @@ final class ModelPrewarmService: ObservableObject {
     }
 
     private func schedulePrewarmTask() {
-        prewarmTask?.cancel()
-        prewarmTask = Task { [weak self] in
+        guard !isSuspendedForRuntimePressure else {
+            logger.notice("Skipping model prewarm scheduling while runtime pressure is active")
+            return
+        }
+        prewarmTasks.cancelAll()
+        let taskID = UUID()
+        let task = Task { [weak self] in
+            defer { self?.finishPrewarmTask(taskID) }
             do {
                 try await Task.sleep(for: .seconds(3))
             } catch {
                 return
             }
             guard let self, !Task.isCancelled else { return }
+            let operationID = RuntimeProtectedWorkActivity.shared.begin()
+            defer { RuntimeProtectedWorkActivity.shared.end(operationID) }
             await self.performPrewarm()
-            if !Task.isCancelled {
-                self.prewarmTask = nil
-            }
+        }
+        prewarmTasks.insert(task, id: taskID)
+    }
+
+    private func finishPrewarmTask(_ taskID: UUID) {
+        prewarmTasks.remove(id: taskID)
+        if isSuspendedForRuntimePressure, prewarmTasks.isEmpty {
+            logger.notice("Model prewarm termination confirmed after runtime-pressure cancellation")
         }
     }
 
     private func cancelPrewarmForRecording() {
-        guard let prewarmTask else { return }
-        prewarmTask.cancel()
-        self.prewarmTask = nil
+        guard !prewarmTasks.isEmpty else { return }
+        prewarmTasks.cancelAll()
         logger.notice("Cancelled model prewarm because recording started")
+    }
+
+    func suspendForRuntimePressure() async {
+        isSuspendedForRuntimePressure = true
+        RuntimePressureOperationCoordinator.shared.suspendOptionalOperations()
+        let tasksToStop = prewarmTasks.cancelAll()
+        await WhisperModelWarmupCoordinator.shared.suspendForRuntimePressure()
+        // Some local runtimes perform synchronous inference and cannot observe
+        // Swift task cancellation immediately. Retain and await every task,
+        // including cancelled tasks superseded by a later wake/recovery, so
+        // suspension is not reported until all inference has actually returned.
+        logger.notice("Requested model prewarm cancellation because runtime pressure increased")
+        for task in tasksToStop {
+            await task.value
+        }
+        let releasedResources = await serviceRegistry.releaseAllLocalModelResourcesForPressure()
+        if releasedResources {
+            logger.notice("Model prewarm is quiescent and idle local model resources were released")
+        } else {
+            logger.notice("Model prewarm is quiescent; resource release deferred for active recording work")
+        }
+    }
+
+    func resumeAfterRuntimePressure() {
+        guard isSuspendedForRuntimePressure else { return }
+        isSuspendedForRuntimePressure = false
+        RuntimePressureOperationCoordinator.shared.resumeOptionalOperations()
+        WhisperModelWarmupCoordinator.shared.resumeAfterRuntimePressure()
+        serviceRegistry.cancelPressureResourceRelease()
+        logger.notice("Model prewarm runtime-pressure suspension cleared")
+    }
+
+    func recoverAfterRuntimeInterruption() {
+        guard !isSuspendedForRuntimePressure else {
+            logger.notice("Deferring model prewarm recovery while runtime pressure is active")
+            return
+        }
+        logger.notice("Scheduling model prewarm after runtime recovery")
+        schedulePrewarmTask()
     }
 
     // MARK: - Core Prewarming Logic
@@ -178,6 +254,7 @@ final class ModelPrewarmService: ObservableObject {
             ModelPrewarmPolicy.shouldRun(
                 isEnabled: isEnabled,
                 isRecordingActive: AudioDeviceManager.shared.isRecordingActive,
+                isUnderRuntimePressure: isSuspendedForRuntimePressure,
                 provider: model.provider
             )
         else {
@@ -188,7 +265,9 @@ final class ModelPrewarmService: ObservableObject {
     }
 
     deinit {
-        prewarmTask?.cancel()
+        MainActor.assumeIsolated {
+            prewarmTasks.cancelAll()
+        }
         if let recordingObserver {
             NotificationCenter.default.removeObserver(recordingObserver)
         }

@@ -15,6 +15,7 @@ struct AIProviderVerificationCard: View {
     @State private var verificationDetailMessage: String?
     @State private var verificationSucceeded = false
     @State private var isSwitchingProvider = false
+    @State private var draftWorkID: UUID?
 
     private var trimmedAPIKey: String {
         apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -67,16 +68,23 @@ struct AIProviderVerificationCard: View {
             handleProviderChange()
         }
         .onChange(of: apiKey) { _, _ in
-            guard !apiKey.isEmpty else { return }
-            verificationSucceeded = false
-            verificationMessage = nil
-            verificationDetailMessage = nil
+            updateDraftProtection()
+            if !apiKey.isEmpty {
+                verificationSucceeded = false
+                verificationMessage = nil
+                verificationDetailMessage = nil
+            }
         }
         .onChange(of: arkModelID) { _, _ in
-            guard selectedProvider == .ark else { return }
-            verificationSucceeded = false
-            verificationMessage = nil
-            verificationDetailMessage = nil
+            updateDraftProtection()
+            if selectedProvider == .ark {
+                verificationSucceeded = false
+                verificationMessage = nil
+                verificationDetailMessage = nil
+            }
+        }
+        .onDisappear {
+            endDraftProtection()
         }
     }
 
@@ -336,12 +344,14 @@ struct AIProviderVerificationCard: View {
         verificationDetailMessage = nil
         verificationSucceeded = false
 
+        let verificationWorkID = RuntimeProtectedWorkActivity.shared.begin()
         Task {
             let provider = selectedProvider
             let modelName = provider == .ark ? trimmedArkModelID : provider.defaultModel
             let result = await aiService.verifyAPIKey(key, for: provider, model: modelName)
 
             await MainActor.run {
+                defer { RuntimeProtectedWorkActivity.shared.end(verificationWorkID) }
                 isVerifying = false
 
                 guard selectedProvider == provider else {
@@ -382,6 +392,31 @@ struct AIProviderVerificationCard: View {
 
                 onVerificationChanged()
             }
+        }
+    }
+
+    private func updateDraftProtection() {
+        let hasAPIKeyDraft = RuntimeCriticalWorkPolicy.apiKeyDraftIsProtected(apiKey, savedKey: nil)
+        let hasArkModelDraft =
+            selectedProvider == .ark
+            && RuntimeCriticalWorkPolicy.textDraftIsProtected(
+                arkModelID,
+                savedValue: aiService.selectedModel(for: .ark)
+            )
+
+        if hasAPIKeyDraft || hasArkModelDraft {
+            if draftWorkID == nil {
+                draftWorkID = RuntimeProtectedWorkActivity.shared.begin()
+            }
+        } else {
+            endDraftProtection()
+        }
+    }
+
+    private func endDraftProtection() {
+        if let draftWorkID {
+            RuntimeProtectedWorkActivity.shared.end(draftWorkID)
+            self.draftWorkID = nil
         }
     }
 }

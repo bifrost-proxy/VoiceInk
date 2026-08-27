@@ -10,7 +10,8 @@ final class AccessibilityAuthorizationMonitor {
     private let maximumRetryIntervalNanoseconds: UInt64
     private let requiredConsecutiveSuccesses: Int
     private let isAuthorized: @MainActor () -> Bool
-    private let onRecoveryAttempt: @MainActor () -> Bool
+    private let onRecoveryAttempt: @MainActor () async -> Bool
+    private let onRecoveryCompleted: @MainActor () -> Void
     private var pollingTask: Task<Void, Never>?
 
     init(
@@ -18,7 +19,8 @@ final class AccessibilityAuthorizationMonitor {
         maximumRetryIntervalNanoseconds: UInt64 = 30_000_000_000,
         requiredConsecutiveSuccesses: Int = 2,
         isAuthorized: @escaping @MainActor () -> Bool,
-        onRecoveryAttempt: @escaping @MainActor () -> Bool
+        onRecoveryAttempt: @escaping @MainActor () async -> Bool,
+        onRecoveryCompleted: @escaping @MainActor () -> Void = {}
     ) {
         self.pollingIntervalNanoseconds = pollingIntervalNanoseconds
         self.maximumRetryIntervalNanoseconds = max(
@@ -28,6 +30,7 @@ final class AccessibilityAuthorizationMonitor {
         self.requiredConsecutiveSuccesses = max(1, requiredConsecutiveSuccesses)
         self.isAuthorized = isAuthorized
         self.onRecoveryAttempt = onRecoveryAttempt
+        self.onRecoveryCompleted = onRecoveryCompleted
     }
 
     func start() {
@@ -44,10 +47,11 @@ final class AccessibilityAuthorizationMonitor {
                 guard let self else { return }
 
                 if self.isAuthorized() {
-                    if self.onRecoveryAttempt() {
+                    if await self.onRecoveryAttempt() {
                         consecutiveSuccesses += 1
                         retryIntervalNanoseconds = pollingIntervalNanoseconds
                         if consecutiveSuccesses >= requiredConsecutiveSuccesses {
+                            self.onRecoveryCompleted()
                             self.pollingTask = nil
                             return
                         }
@@ -144,17 +148,22 @@ class RecordingShortcutManager: ObservableObject {
         isAuthorized: { AXIsProcessTrusted() },
         onRecoveryAttempt: { [weak self] in
             guard let self else { return true }
+            await self.releasePreservedPressIfNoLongerPhysical()
             let succeeded = self.refreshShortcutMonitoringAfterAccessibilityAuthorization()
             self.logger.notice(
                 "Accessibility shortcut recovery attempt completed. succeeded=\(succeeded, privacy: .public)"
             )
             return succeeded
+        },
+        onRecoveryCompleted: { [weak self] in
+            self?.preservesShortcutPressStateDuringRecovery = false
         }
     )
     private var shortcutChangeObserver: NSObjectProtocol?
     private var appDidBecomeActiveObserver: NSObjectProtocol?
     private let shortcutModeHandler: RecordingShortcutModeHandler
     private let primaryRecordingShortcutModeSource: RecordingShortcutModeSource
+    private var preservesShortcutPressStateDuringRecovery = false
 
     // MARK: - Helper Properties
     private var canHandleShortcutAction: Bool {
@@ -305,6 +314,7 @@ class RecordingShortcutManager: ObservableObject {
             hasCompletedOnboarding: UserDefaults.standard.bool(forKey: "hasCompletedOnboardingV2")
         ) else {
             accessibilityAuthorizationMonitor.stop()
+            preservesShortcutPressStateDuringRecovery = false
             return false
         }
 
@@ -341,9 +351,19 @@ class RecordingShortcutManager: ObservableObject {
     @discardableResult
     private func refreshShortcutMonitoringAfterAccessibilityAuthorization() -> Bool {
         let recordingShortcutsStarted = refreshShortcutMonitoring()
-        let modeShortcutsStarted = modeShortcutManager.refreshAfterAccessibilityAuthorization()
+        let modeShortcutsStarted = modeShortcutManager.refreshAfterAccessibilityAuthorization(
+            initialActivePress: preservesShortcutPressStateDuringRecovery
+                ? shortcutModeHandler.activePressSnapshot : nil
+        )
         let recorderPanelShortcutsStarted = recorderPanelShortcutManager.refreshAfterAccessibilityAuthorization()
-        return recordingShortcutsStarted && modeShortcutsStarted && recorderPanelShortcutsStarted
+        let allShortcutsStarted = recordingShortcutsStarted && modeShortcutsStarted && recorderPanelShortcutsStarted
+        if !allShortcutsStarted {
+            // Accessibility may still be authorized while one event tap fails
+            // transiently. Reuse the bounded recovery monitor for every
+            // component instead of retrying only a failed primary tap.
+            accessibilityAuthorizationMonitor.start()
+        }
+        return allShortcutsStarted
     }
 
     private func setupMiddleClickMonitoring() {
@@ -400,6 +420,9 @@ class RecordingShortcutManager: ObservableObject {
         let started = shortcutMonitor.start(
             shortcuts: shortcuts,
             interruptibleActions: interruptibleRecordingActions,
+            initiallyPressedActions: preservesShortcutPressStateDuringRecovery
+                ? shortcutModeHandler.activePressSnapshot.map { [$0.action: $0.pressedAt] } ?? [:]
+                : [:],
             onKeyDown: { [weak self] action, eventTime in
                 Task { @MainActor in
                     guard let self else { return }
@@ -544,12 +567,15 @@ class RecordingShortcutManager: ObservableObject {
         middleClickMonitors = []
         middleClickTask?.cancel()
 
-        shortcutModeHandler.reset()
+        if !preservesShortcutPressStateDuringRecovery {
+            shortcutModeHandler.reset()
+        }
     }
 
     private func removeAllMonitoring() {
         removeActiveShortcutMonitoring()
         accessibilityAuthorizationMonitor.stop()
+        preservesShortcutPressStateDuringRecovery = false
     }
 
     var isShortcutConfigured: Bool {
@@ -567,6 +593,66 @@ class RecordingShortcutManager: ObservableObject {
 
     func refreshAfterLaunchReset() {
         refreshShortcutMonitoring()
+    }
+
+    /// Rebuilds every process-local shortcut monitor after macOS resumes the
+    /// app or restarts an event-related service. Re-enabling an existing event
+    /// tap is not sufficient when its Mach port or run-loop source is stale.
+    @discardableResult
+    func recoverRuntimeMonitoring() async -> Bool {
+        // Preserve an active press only when the key is still physically down.
+        // A release that occurred while the process was asleep has no key-up
+        // event to replay, so synthesize it before rebuilding the monitors.
+        let activePress = shortcutModeHandler.activePressSnapshot
+        let activeShortcut = activePress.flatMap { ShortcutStore.shortcut(for: $0.action) }
+        preservesShortcutPressStateDuringRecovery = shortcutModeHandler.preservesHandsFreeRecordingDuringRecovery
+            || (activeShortcut.map { Self.isPhysicallyPressed($0) } ?? false)
+        if activePress != nil, !preservesShortcutPressStateDuringRecovery {
+            await shortcutModeHandler.handleMonitoringLoss(eventTime: ProcessInfo.processInfo.systemUptime)
+        }
+        let succeeded: Bool
+        if AXIsProcessTrusted() {
+            succeeded = refreshShortcutMonitoringAfterAccessibilityAuthorization()
+        } else {
+            succeeded = refreshShortcutMonitoring()
+            await shortcutModeHandler.handleMonitoringLoss(eventTime: ProcessInfo.processInfo.systemUptime)
+        }
+        if (succeeded && !accessibilityAuthorizationMonitor.isRunning) || !AXIsProcessTrusted() {
+            preservesShortcutPressStateDuringRecovery = false
+        }
+        logger.notice(
+            "Runtime shortcut monitoring rebuild completed. succeeded=\(succeeded, privacy: .public) accessibilityTrusted=\(AXIsProcessTrusted(), privacy: .public)"
+        )
+        return succeeded
+    }
+
+    private func releasePreservedPressIfNoLongerPhysical() async {
+        guard preservesShortcutPressStateDuringRecovery,
+            let activePress = shortcutModeHandler.activePressSnapshot,
+            let shortcut = ShortcutStore.shortcut(for: activePress.action),
+            !Self.isPhysicallyPressed(shortcut)
+        else { return }
+
+        await shortcutModeHandler.handleMonitoringLoss(eventTime: ProcessInfo.processInfo.systemUptime)
+        preservesShortcutPressStateDuringRecovery = false
+    }
+
+    static func isPhysicallyPressed(
+        _ shortcut: Shortcut,
+        keyState: (UInt16) -> Bool = {
+            CGEventSource.keyState(.combinedSessionState, key: CGKeyCode($0))
+        },
+        modifierFlags: NSEvent.ModifierFlags = NSEvent.ModifierFlags(
+            rawValue: UInt(CGEventSource.flagsState(.combinedSessionState).rawValue)
+        )
+    ) -> Bool {
+        if shortcut.isModifierOnly, shortcut.keyCode == UInt16.max {
+            return Shortcut.normalizedModifierFlags(modifierFlags, forKeyCode: nil)
+                .isSuperset(of: shortcut.modifierFlags)
+        }
+        let hasRequiredModifiers = Shortcut.normalizedModifierFlags(modifierFlags, forKeyCode: nil)
+            .isSuperset(of: shortcut.modifierFlags)
+        return keyState(shortcut.keyCode) && hasRequiredModifiers
     }
 
     func refreshForOnboardingStateChange() {
@@ -609,6 +695,8 @@ final class RecordingShortcutModeHandler {
     private var isHandsFreeRecording = false
     private var isShortcutPressed = false
     private var activeRecordingShortcutAction: ShortcutAction?
+    private var activeRecordingShortcutMode: RecordingShortcutManager.Mode?
+    private var activeRecordingModeID: UUID?
     private var interruptedRecordingActions = Set<ShortcutAction>()
     private var activeShortcutCanCancelAccidentalStart = false
     private var isBypassingEnhancementForCurrentShortcut = false
@@ -638,9 +726,29 @@ final class RecordingShortcutModeHandler {
         shortcutPressStartTime = nil
         isHandsFreeRecording = false
         activeRecordingShortcutAction = nil
+        activeRecordingShortcutMode = nil
+        activeRecordingModeID = nil
         interruptedRecordingActions.removeAll()
         activeShortcutCanCancelAccidentalStart = false
         isBypassingEnhancementForCurrentShortcut = false
+    }
+
+    var hasActivePress: Bool {
+        isShortcutPressed
+    }
+
+    var preservesHandsFreeRecordingDuringRecovery: Bool {
+        isHandsFreeRecording
+    }
+
+    var activePressSnapshot: (action: ShortcutAction, pressedAt: TimeInterval)? {
+        guard isShortcutPressed,
+            let action = activeRecordingShortcutAction,
+            let pressedAt = shortcutPressStartTime
+        else {
+            return nil
+        }
+        return (action, pressedAt)
     }
 
     func handleKeyDown(
@@ -664,6 +772,8 @@ final class RecordingShortcutModeHandler {
         }
         isShortcutPressed = true
         activeRecordingShortcutAction = action
+        activeRecordingShortcutMode = mode
+        activeRecordingModeID = modeId
         activeShortcutCanCancelAccidentalStart = canCurrentShortcutPressCancelAccidentalStart
         lastShortcutPressTime = Date()
         shortcutPressStartTime = eventTime
@@ -705,6 +815,8 @@ final class RecordingShortcutModeHandler {
         guard isShortcutPressed, activeRecordingShortcutAction == action else { return }
         isShortcutPressed = false
         activeRecordingShortcutAction = nil
+        activeRecordingShortcutMode = nil
+        activeRecordingModeID = nil
         activeShortcutCanCancelAccidentalStart = false
 
         if isBypassingEnhancementForCurrentShortcut {
@@ -736,6 +848,30 @@ final class RecordingShortcutModeHandler {
         }
 
         shortcutPressStartTime = nil
+    }
+
+    func handleMonitoringLoss(eventTime: TimeInterval) async {
+        guard let action = activeRecordingShortcutAction,
+            let mode = activeRecordingShortcutMode
+        else {
+            // Toggle and short-hybrid recordings have already consumed key-up
+            // and intentionally continue hands-free. Losing the event tap must
+            // not erase that state or the next shortcut press cannot stop them.
+            isShortcutPressed = false
+            shortcutPressStartTime = nil
+            activeRecordingShortcutAction = nil
+            activeRecordingShortcutMode = nil
+            activeRecordingModeID = nil
+            activeShortcutCanCancelAccidentalStart = false
+            isBypassingEnhancementForCurrentShortcut = false
+            return
+        }
+        await handleKeyUp(
+            action: action,
+            eventTime: eventTime,
+            mode: mode,
+            modeId: activeRecordingModeID
+        )
     }
 
     func handleInterruption(action: ShortcutAction) async {

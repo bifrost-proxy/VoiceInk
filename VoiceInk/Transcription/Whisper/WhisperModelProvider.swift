@@ -11,4 +11,5 @@ protocol WhisperModelProvider: AnyObject {
     var availableModels: [WhisperModelFile] { get }
 
     func releaseResourcesIfUnbound(boundModelNames: Set<String>) async
+    func releaseAllResources() async
 }

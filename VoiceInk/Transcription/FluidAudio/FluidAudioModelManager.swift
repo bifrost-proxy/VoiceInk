@@ -207,6 +207,8 @@ class FluidAudioModelManager: ObservableObject {
         if isFluidAudioModelDownloaded(model) || isFluidAudioModelDownloading(model) {
             return
         }
+        let operationID = RuntimeProtectedWorkActivity.shared.begin()
+        defer { RuntimeProtectedWorkActivity.shared.end(operationID) }
 
         let modelName = model.name
         let downloadID = UUID()
@@ -241,6 +243,11 @@ class FluidAudioModelManager: ObservableObject {
                         )
                     }
                 }
+                guard await RuntimePressureOperationCoordinator.shared.beginOptionalOperation() else {
+                    modelStateRevision += 1
+                    return
+                }
+                defer { RuntimePressureOperationCoordinator.shared.endOperation() }
                 beginModelPreparation(for: modelName, downloadID: downloadID)
                 _ = try ParakeetCtcZhCnManager.load(from: Self.parakeetCtcZhCnCacheDirectory())
             case .senseVoice:
@@ -248,6 +255,11 @@ class FluidAudioModelManager: ObservableObject {
                     precision: .int8,
                     progressHandler: Self.downloadOnlyProgressHandler(forwarding: progressHandler)
                 )
+                guard await RuntimePressureOperationCoordinator.shared.beginOptionalOperation() else {
+                    modelStateRevision += 1
+                    return
+                }
+                defer { RuntimePressureOperationCoordinator.shared.endOperation() }
                 beginModelPreparation(for: modelName, downloadID: downloadID)
                 _ = try SenseVoiceModels.load(from: directory, precision: .int8)
             case .paraformerZh:
@@ -255,6 +267,11 @@ class FluidAudioModelManager: ObservableObject {
                     precision: .int8,
                     progressHandler: Self.downloadOnlyProgressHandler(forwarding: progressHandler)
                 )
+                guard await RuntimePressureOperationCoordinator.shared.beginOptionalOperation() else {
+                    modelStateRevision += 1
+                    return
+                }
+                defer { RuntimePressureOperationCoordinator.shared.endOperation() }
                 beginModelPreparation(for: modelName, downloadID: downloadID)
                 _ = try ParaformerModels.load(from: directory, precision: .int8)
             case .parakeetUnified:
@@ -265,6 +282,11 @@ class FluidAudioModelManager: ObservableObject {
                     additionalModelNames: [Self.parakeetUnifiedStreamingEncoderFile],
                     progressHandler: Self.downloadOnlyProgressHandler(forwarding: progressHandler)
                 )
+                guard await RuntimePressureOperationCoordinator.shared.beginOptionalOperation() else {
+                    modelStateRevision += 1
+                    return
+                }
+                defer { RuntimePressureOperationCoordinator.shared.endOperation() }
                 beginModelPreparation(for: modelName, downloadID: downloadID)
                 try await Self.optimizeParakeetUnifiedRealtimeModel()
                 try await Self.optimizeParakeetUnifiedBatchModel()
@@ -274,6 +296,11 @@ class FluidAudioModelManager: ObservableObject {
                     chunkMs: Self.nemotronChunkMs,
                     progressHandler: progressHandler
                 )
+                guard await RuntimePressureOperationCoordinator.shared.beginOptionalOperation() else {
+                    modelStateRevision += 1
+                    return
+                }
+                defer { RuntimePressureOperationCoordinator.shared.endOperation() }
                 beginModelPreparation(for: modelName, downloadID: downloadID)
                 let manager = StreamingNemotronMultilingualAsrManager()
                 do {
@@ -295,6 +322,11 @@ class FluidAudioModelManager: ObservableObject {
                     additionalModelNames: [ModelNames.ASR.vocabularyFile],
                     progressHandler: Self.downloadOnlyProgressHandler(forwarding: progressHandler)
                 )
+                guard await RuntimePressureOperationCoordinator.shared.beginOptionalOperation() else {
+                    modelStateRevision += 1
+                    return
+                }
+                defer { RuntimePressureOperationCoordinator.shared.endOperation() }
                 beginModelPreparation(for: modelName, downloadID: downloadID)
                 _ = try await AsrModels.load(
                     from: cacheDirectory,
@@ -347,6 +379,8 @@ class FluidAudioModelManager: ObservableObject {
     // MARK: - Delete
 
     func deleteFluidAudioModel(_ model: FluidAudioModel) {
+        let operationID = RuntimeProtectedWorkActivity.shared.begin()
+        defer { RuntimeProtectedWorkActivity.shared.end(operationID) }
         let cacheDirectory = cacheDirectory(for: model)
 
         do {

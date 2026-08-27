@@ -46,18 +46,18 @@ class AudioCleanupManager {
     func getCleanupInfo(modelContext: ModelContext) async -> (
         fileCount: Int, totalSize: Int64, transcriptions: [Transcription]
     ) {
-        // Get retention period from UserDefaults
-        let effectiveRetentionDays = UserDefaults.standard.integer(forKey: CleanupSettingsKeys.audioRetentionPeriod)
+        await RuntimeProtectedWorkActivity.shared.performProtected {
+            // Get retention period from UserDefaults
+            let effectiveRetentionDays = UserDefaults.standard.integer(
+                forKey: CleanupSettingsKeys.audioRetentionPeriod)
 
-        // Calculate the cutoff date
-        let calendar = Calendar.current
-        guard let cutoffDate = calendar.date(byAdding: .day, value: -effectiveRetentionDays, to: Date()) else {
-            return (0, 0, [])
-        }
+            // Calculate the cutoff date
+            let calendar = Calendar.current
+            guard let cutoffDate = calendar.date(byAdding: .day, value: -effectiveRetentionDays, to: Date()) else {
+                return (0, 0, [])
+            }
 
-        do {
-            // Execute SwiftData operations on the main thread
-            return try await MainActor.run {
+            do {
                 // Create a predicate to find transcriptions with audio files older than the cutoff date
                 let descriptor = FetchDescriptor<Transcription>(
                     predicate: #Predicate<Transcription> { transcription in
@@ -88,30 +88,30 @@ class AudioCleanupManager {
                 }
 
                 return (fileCount, totalSize, eligibleTranscriptions)
+            } catch {
+                return (0, 0, [])
             }
-        } catch {
-            return (0, 0, [])
         }
     }
 
     /// Perform the cleanup operation
     private func performCleanup(modelContext: ModelContext) async {
-        // Get retention period from UserDefaults
-        let effectiveRetentionDays = UserDefaults.standard.integer(forKey: CleanupSettingsKeys.audioRetentionPeriod)
+        await RuntimeProtectedWorkActivity.shared.performProtected {
+            // Get retention period from UserDefaults
+            let effectiveRetentionDays = UserDefaults.standard.integer(
+                forKey: CleanupSettingsKeys.audioRetentionPeriod)
 
-        // Check if automatic cleanup is enabled
-        let isCleanupEnabled = UserDefaults.standard.bool(forKey: CleanupSettingsKeys.isAudioCleanupEnabled)
-        guard isCleanupEnabled else { return }
+            // Check if automatic cleanup is enabled
+            let isCleanupEnabled = UserDefaults.standard.bool(forKey: CleanupSettingsKeys.isAudioCleanupEnabled)
+            guard isCleanupEnabled else { return }
 
-        // Calculate the cutoff date
-        let calendar = Calendar.current
-        guard let cutoffDate = calendar.date(byAdding: .day, value: -effectiveRetentionDays, to: Date()) else {
-            return
-        }
+            // Calculate the cutoff date
+            let calendar = Calendar.current
+            guard let cutoffDate = calendar.date(byAdding: .day, value: -effectiveRetentionDays, to: Date()) else {
+                return
+            }
 
-        do {
-            // Execute SwiftData operations on the main thread
-            try await MainActor.run {
+            do {
                 // Create a predicate to find transcriptions with audio files older than the cutoff date
                 let descriptor = FetchDescriptor<Transcription>(
                     predicate: #Predicate<Transcription> { transcription in
@@ -140,9 +140,9 @@ class AudioCleanupManager {
                 if deletedCount > 0 {
                     try modelContext.save()
                 }
+            } catch {
+                // Silently fail - cleanup is non-critical
             }
-        } catch {
-            // Silently fail - cleanup is non-critical
         }
     }
 
@@ -166,35 +166,30 @@ class AudioCleanupManager {
     func runCleanupForTranscriptions(modelContext: ModelContext, transcriptions: [Transcription]) async -> (
         deletedCount: Int, errorCount: Int
     ) {
-        do {
-            // Execute SwiftData operations on the main thread
-            return try await MainActor.run {
-                var deletedCount = 0
-                var errorCount = 0
+        await RuntimeProtectedWorkActivity.shared.performProtected {
+            var deletedCount = 0
+            var errorCount = 0
 
-                for transcription in transcriptions {
-                    if let urlString = transcription.audioFileURL,
-                        let url = URL(string: urlString),
-                        FileManager.default.fileExists(atPath: url.path)
-                    {
-                        do {
-                            try FileManager.default.removeItem(at: url)
-                            transcription.audioFileURL = nil
-                            deletedCount += 1
-                        } catch {
-                            errorCount += 1
-                        }
+            for transcription in transcriptions {
+                if let urlString = transcription.audioFileURL,
+                    let url = URL(string: urlString),
+                    FileManager.default.fileExists(atPath: url.path)
+                {
+                    do {
+                        try FileManager.default.removeItem(at: url)
+                        transcription.audioFileURL = nil
+                        deletedCount += 1
+                    } catch {
+                        errorCount += 1
                     }
                 }
-
-                if deletedCount > 0 || errorCount > 0 {
-                    try? modelContext.save()
-                }
-
-                return (deletedCount, errorCount)
             }
-        } catch {
-            return (0, 0)
+
+            if deletedCount > 0 || errorCount > 0 {
+                try? modelContext.save()
+            }
+
+            return (deletedCount, errorCount)
         }
     }
 
