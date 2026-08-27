@@ -177,7 +177,7 @@ enum AppDefaults {
             CloudSyncSettingsKeys.usageAudioSyncEnabled: false,
 
             // UI & Behavior
-            "IsMenuBarOnly": false,
+            "IsMenuBarOnly": true,
             UpdateManager.automaticallyChecksKey: true,
             AppAppearancePreference.userDefaultsKey: AppAppearancePreference.system.rawValue,
             AppLanguagePreference.userDefaultsKey: AppLanguagePreference.systemValue,

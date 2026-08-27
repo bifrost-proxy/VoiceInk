@@ -254,6 +254,55 @@ struct VoiceInkTests {
         #expect(register.conflictCount == 0)
     }
 
+    @Test func syncRegisterBuildsDeterministicAutomaticConflictResolution() throws {
+        let firstID = UUID()
+        let secondID = UUID()
+        let first = try syncEnvelope(
+            operationID: firstID,
+            deviceID: "Mac-A",
+            sequence: 1,
+            mutation: VoiceInkSyncMutation(key: "preference/language", value: Data("en".utf8))
+        )
+        let second = try syncEnvelope(
+            operationID: secondID,
+            deviceID: "Mac-B",
+            sequence: 1,
+            mutation: VoiceInkSyncMutation(key: "preference/language", value: Data("zh".utf8))
+        )
+
+        var register = VoiceInkSyncRegisterState()
+        register.apply(second.envelope, batch: second.batch)
+        register.apply(first.envelope, batch: first.batch)
+
+        let mutation = try #require(register.conflictResolutionMutations().first)
+        #expect(mutation.key == "preference/language")
+        #expect(mutation.value == Data("zh".utf8))
+        #expect(Set(mutation.supersededOperationIDs) == Set([firstID, secondID]))
+    }
+
+    @Test func syncRegisterDoesNotRewriteEqualConcurrentValues() throws {
+        let value = Data("en".utf8)
+        let first = try syncEnvelope(
+            operationID: UUID(),
+            deviceID: "Mac-A",
+            sequence: 1,
+            mutation: VoiceInkSyncMutation(key: "preference/language", value: value)
+        )
+        let second = try syncEnvelope(
+            operationID: UUID(),
+            deviceID: "Mac-B",
+            sequence: 1,
+            mutation: VoiceInkSyncMutation(key: "preference/language", value: value)
+        )
+
+        var register = VoiceInkSyncRegisterState()
+        register.apply(first.envelope, batch: first.batch)
+        register.apply(second.envelope, batch: second.batch)
+
+        #expect(register.conflictCount == 0)
+        #expect(register.conflictResolutionMutations().isEmpty)
+    }
+
     @Test func syncRegisterResolutionRemainsStableWhenSupersededFilesArriveLate() throws {
         let firstID = UUID()
         let secondID = UUID()
@@ -2722,6 +2771,67 @@ struct VoiceInkTests {
     }
 
     @MainActor
+    @Test func cloudConfigurationAutomaticallyResolvesConcurrentPreferences() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("VoiceInkConfigurationConflict.\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let suiteA = "VoiceInkTests.ConfigurationConflict.A.\(UUID().uuidString)"
+        let suiteB = "VoiceInkTests.ConfigurationConflict.B.\(UUID().uuidString)"
+        let defaultsA = try #require(UserDefaults(suiteName: suiteA))
+        let defaultsB = try #require(UserDefaults(suiteName: suiteB))
+        defer {
+            defaultsA.removePersistentDomain(forName: suiteA)
+            defaultsB.removePersistentDomain(forName: suiteB)
+        }
+        defaultsA.set(true, forKey: CloudSyncSettingsKeys.configurationSyncEnabled)
+        defaultsB.set(true, forKey: CloudSyncSettingsKeys.configurationSyncEnabled)
+        defaultsA.set("en", forKey: "SelectedLanguage")
+        let schema = Schema([VocabularyWord.self, WordReplacement.self])
+        let containerA = try ModelContainer(
+            for: schema, configurations: [ModelConfiguration(isStoredInMemoryOnly: true)])
+        let containerB = try ModelContainer(
+            for: schema, configurations: [ModelConfiguration(isStoredInMemoryOnly: true)])
+        let serviceA = CloudConfigurationSyncService(
+            defaults: defaultsA, iCloudDriveRootURL: root, preferencesDomainName: suiteA,
+            deviceName: "Conflict Mac A")
+        let serviceB = CloudConfigurationSyncService(
+            defaults: defaultsB, iCloudDriveRootURL: root, preferencesDomainName: suiteB,
+            deviceName: "Conflict Mac B")
+        serviceA.start(modelContext: containerA.mainContext, onRemoteConfigurationApplied: {})
+        serviceB.start(modelContext: containerB.mainContext, onRemoteConfigurationApplied: {})
+        try await waitForConfigurationSync(serviceA)
+        try await waitForConfigurationSync(serviceB)
+        try await synchronizeConfigurationServices([serviceA, serviceB])
+
+        defaultsA.set("fr", forKey: "SelectedLanguage")
+        defaultsB.set("zh-Hans", forKey: "SelectedLanguage")
+        let editStartA = try #require(serviceA.lastSyncedAt)
+        serviceA.syncNow()
+        try await waitForConfigurationSync(serviceA, after: editStartA)
+        let editStartB = try #require(serviceB.lastSyncedAt)
+        serviceB.syncNow()
+        try await waitForConfigurationSync(serviceB, after: editStartB)
+        let pullStartA = try #require(serviceA.lastSyncedAt)
+        serviceA.syncNow()
+        try await waitForConfigurationSync(serviceA, after: pullStartA)
+
+        let resolvedA = try #require(defaultsA.string(forKey: "SelectedLanguage"))
+        let resolvedB = try #require(defaultsB.string(forKey: "SelectedLanguage"))
+        #expect(resolvedA == resolvedB)
+        #expect(["fr", "zh-Hans"].contains(resolvedA))
+        #expect(serviceA.configurationConflictCount == 0)
+        #expect(serviceB.configurationConflictCount == 0)
+        let resolvedOperationCount = try syncOperationFiles(root: root, domain: .configuration).count
+        #expect(resolvedOperationCount == 4)
+        let steadyStartB = try #require(serviceB.lastSyncedAt)
+        serviceB.syncNow()
+        try await waitForConfigurationSync(serviceB, after: steadyStartB)
+        #expect(try syncOperationFiles(root: root, domain: .configuration).count == resolvedOperationCount)
+        serviceA.setEnabled(false)
+        serviceB.setEnabled(false)
+    }
+
+    @MainActor
     @Test func cloudUsageImportsTextAndMetricsWhileAudioIsPending() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("VoiceInkUsagePendingAudio-\(UUID().uuidString)", isDirectory: true)
@@ -3005,11 +3115,11 @@ struct VoiceInkTests {
         serviceA.syncNow()
         try await waitForConfigurationSync(serviceA, after: pullStartA)
 
-        #expect(serviceA.dictionaryConflictCount == 1)
-        #expect(serviceB.dictionaryConflictCount == 1)
+        #expect(serviceA.dictionaryConflictCount == 0)
+        #expect(serviceB.dictionaryConflictCount == 0)
         #expect(try containerA.mainContext.fetch(FetchDescriptor<VocabularyWord>()).count == 1)
         #expect(try containerB.mainContext.fetch(FetchDescriptor<VocabularyWord>()).count == 1)
-        #expect(try syncOperationFiles(root: root, domain: .dictionary).count == 3)
+        #expect(try syncOperationFiles(root: root, domain: .dictionary).count == 4)
         serviceA.setEnabled(false)
         serviceB.setEnabled(false)
     }

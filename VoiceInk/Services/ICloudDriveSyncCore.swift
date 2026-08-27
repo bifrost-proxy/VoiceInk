@@ -217,6 +217,30 @@ struct VoiceInkSyncRegisterState: Codable, Equatable, Sendable {
         }
     }
 
+    func conflictResolutionMutations(
+        addWins: Bool = false,
+        deleteWins: Bool = false
+    ) -> [VoiceInkSyncMutation] {
+        candidatesByKey.keys.sorted().compactMap { key in
+            // Equal payloads are already converged and deliberately need no write. This prevents
+            // two devices that publish the same resolution concurrently from starting a loop of
+            // redundant resolution operations.
+            guard let candidates = candidatesByKey[key],
+                Set(candidates.map { $0.mutation.value }).count > 1,
+                let selected = selectedCandidate(
+                    for: key,
+                    addWins: addWins,
+                    deleteWins: deleteWins
+                )
+            else { return nil }
+            return VoiceInkSyncMutation(
+                key: key,
+                value: selected.mutation.value,
+                supersededOperationIDs: candidates.map(\.envelope.operationID)
+            )
+        }
+    }
+
     func latestRemoteEnvelope(
         excludingDeviceID localDeviceID: String,
         knownOperationIDs: Set<UUID>

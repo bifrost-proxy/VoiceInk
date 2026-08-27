@@ -23,6 +23,19 @@ struct RecordingDurationLimitTests {
         defaults.removePersistentDomain(forName: suiteName)
     }
 
+    @Test func appDefaultsHideDockIconByDefaultWithoutOverridingExplicitChoice() throws {
+        let suiteName = "VoiceInkTests.DockDefault.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        AppDefaults.registerDefaults(in: defaults)
+        #expect(defaults.bool(forKey: "IsMenuBarOnly"))
+
+        defaults.set(false, forKey: "IsMenuBarOnly")
+        AppDefaults.registerDefaults(in: defaults)
+        #expect(!defaults.bool(forKey: "IsMenuBarOnly"))
+    }
+
     @Test func productSafetyCapNeverExceedsTenMinutes() {
         #expect(RecordingDurationLimiter.clampedDuration(.seconds(-5)) == .zero)
         #expect(RecordingDurationLimiter.clampedDuration(.seconds(60)) == .seconds(60))
