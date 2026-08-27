@@ -101,8 +101,8 @@ final class ModelPrewarmService: ObservableObject {
                 return
             }
             guard let self, !Task.isCancelled else { return }
-            let operationID = ModelManagementActivity.shared.begin()
-            defer { ModelManagementActivity.shared.end(operationID) }
+            let operationID = RuntimeProtectedWorkActivity.shared.begin()
+            defer { RuntimeProtectedWorkActivity.shared.end(operationID) }
             await self.performPrewarm()
         }
     }

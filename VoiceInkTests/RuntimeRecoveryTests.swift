@@ -13,7 +13,7 @@ struct RuntimeRecoveryTests {
             hardStallThreshold: 30,
             clockDiscontinuityThreshold: 1_000,
             clock: { 1_000_000_000 },
-            onClockDiscontinuity: { probe.recordClockGap($0) },
+            onClockDiscontinuity: { probe.recordClockGap($0, critical: $1) },
             onSoftStall: { duration, critical in probe.recordSoftStall(duration, critical: critical) },
             onHardStall: {
                 probe.recordHardStall($0)
@@ -44,7 +44,7 @@ struct RuntimeRecoveryTests {
             hardStallThreshold: 30,
             clockDiscontinuityThreshold: 8,
             clock: { 1_000_000_000 },
-            onClockDiscontinuity: { probe.recordClockGap($0) },
+            onClockDiscontinuity: { probe.recordClockGap($0, critical: $1) },
             onSoftStall: { duration, critical in probe.recordSoftStall(duration, critical: critical) },
             onHardStall: {
                 probe.recordHardStall($0)
@@ -57,6 +57,7 @@ struct RuntimeRecoveryTests {
         monitor.simulateTick(now: 12_000_000_000)
 
         #expect(probe.clockGaps == [11])
+        #expect(probe.clockGapCriticalStates == [false])
     }
 
     @Test func appKitEventAcknowledgementClearsAStallBeforeEscalation() {
@@ -66,7 +67,7 @@ struct RuntimeRecoveryTests {
             hardStallThreshold: 30,
             clockDiscontinuityThreshold: 1_000,
             clock: { 1_000_000_000 },
-            onClockDiscontinuity: { probe.recordClockGap($0) },
+            onClockDiscontinuity: { probe.recordClockGap($0, critical: $1) },
             onSoftStall: { duration, critical in probe.recordSoftStall(duration, critical: critical) },
             onHardStall: {
                 probe.recordHardStall($0)
@@ -149,7 +150,7 @@ struct RuntimeRecoveryTests {
             hardStallThreshold: 30,
             clockDiscontinuityThreshold: 1_000,
             clock: { 1_000_000_000 },
-            onClockDiscontinuity: { probe.recordClockGap($0) },
+            onClockDiscontinuity: { probe.recordClockGap($0, critical: $1) },
             onSoftStall: { duration, critical in probe.recordSoftStall(duration, critical: critical) },
             onHardStall: { duration in
                 probe.recordHardStall(duration)
@@ -237,7 +238,7 @@ struct RuntimeRecoveryTests {
     }
 
     @Test @MainActor func overlappingModelOperationsRemainProtectedUntilAllFinish() {
-        let activity = ModelManagementActivity.shared
+        let activity = RuntimeProtectedWorkActivity.shared
         let first = activity.begin()
         let second = activity.begin()
         #expect(activity.isBusy)
@@ -250,6 +251,26 @@ struct RuntimeRecoveryTests {
         activity.end(second)
         #expect(!activity.isBusy)
         #expect(activity.activeOperationCount == 0)
+    }
+
+    @Test func clockDiscontinuityReportsProtectedWorkState() {
+        let probe = RuntimeRecoveryProbe()
+        let monitor = MainThreadLivenessMonitor(
+            softStallThreshold: 5,
+            hardStallThreshold: 30,
+            clockDiscontinuityThreshold: 8,
+            clock: { 1_000_000_000 },
+            onClockDiscontinuity: { probe.recordClockGap($0, critical: $1) },
+            onSoftStall: { _, _ in },
+            onHardStall: { _ in true }
+        )
+        monitor.start(interval: 1_000)
+        defer { monitor.stop() }
+        monitor.setCriticalWorkActive(true)
+
+        monitor.simulateTick(now: 12_000_000_000)
+
+        #expect(probe.clockGapCriticalStates == [true])
     }
 
     @Test @MainActor func pendingAudioFilesRemainProtectedBeforeProcessingStarts() throws {
@@ -273,15 +294,20 @@ struct RuntimeRecoveryTests {
 private final class RuntimeRecoveryProbe: @unchecked Sendable {
     private let lock = NSLock()
     private var storedClockGaps: [TimeInterval] = []
+    private var storedClockGapCriticalStates: [Bool] = []
     private var storedSoftStalls: [(TimeInterval, Bool)] = []
     private var storedHardStalls: [TimeInterval] = []
 
     var clockGaps: [TimeInterval] { lock.withLock { storedClockGaps } }
+    var clockGapCriticalStates: [Bool] { lock.withLock { storedClockGapCriticalStates } }
     var softStalls: [(TimeInterval, Bool)] { lock.withLock { storedSoftStalls } }
     var hardStalls: [TimeInterval] { lock.withLock { storedHardStalls } }
 
-    func recordClockGap(_ duration: TimeInterval) {
-        lock.withLock { storedClockGaps.append(duration) }
+    func recordClockGap(_ duration: TimeInterval, critical: Bool) {
+        lock.withLock {
+            storedClockGaps.append(duration)
+            storedClockGapCriticalStates.append(critical)
+        }
     }
 
     func recordSoftStall(_ duration: TimeInterval, critical: Bool) {

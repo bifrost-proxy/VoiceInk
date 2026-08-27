@@ -46,11 +46,11 @@ enum RuntimeMemoryPressurePolicy {
     }
 }
 
-/// Tracks model downloads, installation, deletion, imports, and warm-up work
-/// that must never be interrupted by the hard-stall relaunch path.
+/// Tracks non-persisted work such as model management, warm-up, standalone
+/// retranscription, and re-enhancement that a hard-stall relaunch must not interrupt.
 @MainActor
-final class ModelManagementActivity: ObservableObject {
-    static let shared = ModelManagementActivity()
+final class RuntimeProtectedWorkActivity: ObservableObject {
+    static let shared = RuntimeProtectedWorkActivity()
 
     @Published private(set) var activeOperationCount = 0
     private var activeOperations: Set<UUID> = []
@@ -107,7 +107,7 @@ final class RuntimeRecoveryCoordinator {
             || AudioTranscriptionManager.shared.hasQueuedWork
             || UpdateManager.shared.isBusy
             || engine.assistantSession.isBusy
-            || ModelManagementActivity.shared.isBusy
+            || RuntimeProtectedWorkActivity.shared.isBusy
         setupLivenessMonitoring(isCriticalWorkActive: initialCriticalWork)
         let appWork = Publishers.CombineLatest4(
             engine.$recordingState,
@@ -118,7 +118,7 @@ final class RuntimeRecoveryCoordinator {
             recordingState != .idle || hasQueuedAudioFiles || updateActivity.isBusy
                     || assistantPhase == .responding || assistantPhase == .sendingFollowUp
         }
-        criticalWorkObserver = appWork.combineLatest(ModelManagementActivity.shared.$activeOperationCount)
+        criticalWorkObserver = appWork.combineLatest(RuntimeProtectedWorkActivity.shared.$activeOperationCount)
             .sink { [weak self] isAppWorkActive, modelOperationCount in
                 self?.livenessMonitor?.setCriticalWorkActive(isAppWorkActive || modelOperationCount > 0)
         }
@@ -221,11 +221,11 @@ final class RuntimeRecoveryCoordinator {
                     eventProbe?.requestProbe()
                 }
             },
-            onClockDiscontinuity: { [weak self] gap in
+            onClockDiscontinuity: { [weak self] gap, criticalWork in
                 RuntimeRecoveryDiagnostics.record(
                     kind: "clockDiscontinuity",
                     duration: gap,
-                    isCriticalWorkActive: false
+                    isCriticalWorkActive: criticalWork
                 )
                 Task { @MainActor [weak self] in
                     self?.requestRecovery(.clockDiscontinuity)
@@ -301,7 +301,7 @@ final class MainThreadLivenessMonitor: @unchecked Sendable {
     private let clockDiscontinuityNanoseconds: UInt64
     private let clock: Clock
     private let onProbeRequested: @Sendable () -> Void
-    private let onClockDiscontinuity: @Sendable (TimeInterval) -> Void
+    private let onClockDiscontinuity: @Sendable (TimeInterval, Bool) -> Void
     private let onSoftStall: @Sendable (TimeInterval, Bool) -> Void
     private let onHardStall: @Sendable (TimeInterval) -> Bool
     private let lastMainAcknowledgement = ManagedAtomic<UInt64>(0)
@@ -318,7 +318,7 @@ final class MainThreadLivenessMonitor: @unchecked Sendable {
         clockDiscontinuityThreshold: TimeInterval,
         clock: @escaping Clock = { DispatchTime.now().uptimeNanoseconds },
         onProbeRequested: @escaping @Sendable () -> Void = {},
-        onClockDiscontinuity: @escaping @Sendable (TimeInterval) -> Void,
+        onClockDiscontinuity: @escaping @Sendable (TimeInterval, Bool) -> Void,
         onSoftStall: @escaping @Sendable (TimeInterval, Bool) -> Void,
         onHardStall: @escaping @Sendable (TimeInterval) -> Bool
     ) {
@@ -381,7 +381,8 @@ final class MainThreadLivenessMonitor: @unchecked Sendable {
                 lastMainAcknowledgement.store(now, ordering: .releasing)
                 didReportSoftStall.store(false, ordering: .releasing)
                 didHandleHardStall.store(false, ordering: .releasing)
-                onClockDiscontinuity(Self.seconds(gap))
+                let criticalWork = isCriticalWorkActive.load(ordering: .acquiring)
+                onClockDiscontinuity(Self.seconds(gap), criticalWork)
                 if enqueueMainProbe {
                     onProbeRequested()
                 }

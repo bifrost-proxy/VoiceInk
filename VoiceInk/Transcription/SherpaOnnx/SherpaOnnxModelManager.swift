@@ -41,8 +41,8 @@ final class SherpaOnnxModelManager: ObservableObject {
 
     func download(_ model: SherpaOnnxModel) async {
         guard !isDownloaded(model), !isDownloading(model) else { return }
-        let operationID = ModelManagementActivity.shared.begin()
-        defer { ModelManagementActivity.shared.end(operationID) }
+        let operationID = RuntimeProtectedWorkActivity.shared.begin()
+        defer { RuntimeProtectedWorkActivity.shared.end(operationID) }
         activeDownloads.insert(model.name)
         errors[model.name] = nil
         downloadStatuses[model.name] = .init(fractionCompleted: 0, message: "正在下载模型…")
@@ -92,8 +92,8 @@ final class SherpaOnnxModelManager: ObservableObject {
     }
 
     func delete(_ model: SherpaOnnxModel) {
-        let operationID = ModelManagementActivity.shared.begin()
-        defer { ModelManagementActivity.shared.end(operationID) }
+        let operationID = RuntimeProtectedWorkActivity.shared.begin()
+        defer { RuntimeProtectedWorkActivity.shared.end(operationID) }
         do {
             let directory = modelDirectory(for: model)
             if FileManager.default.fileExists(atPath: directory.path) {

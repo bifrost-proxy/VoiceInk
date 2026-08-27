@@ -54,6 +54,8 @@ class AudioTranscriptionService: ObservableObject {
         guard FileManager.default.fileExists(atPath: url.path) else {
             throw TranscriptionError.noAudioFile
         }
+        let protectedWorkID = RuntimeProtectedWorkActivity.shared.begin()
+        defer { RuntimeProtectedWorkActivity.shared.end(protectedWorkID) }
 
         await MainActor.run {
             isTranscribing = true

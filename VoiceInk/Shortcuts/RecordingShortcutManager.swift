@@ -342,7 +342,10 @@ class RecordingShortcutManager: ObservableObject {
     @discardableResult
     private func refreshShortcutMonitoringAfterAccessibilityAuthorization() -> Bool {
         let recordingShortcutsStarted = refreshShortcutMonitoring()
-        let modeShortcutsStarted = modeShortcutManager.refreshAfterAccessibilityAuthorization()
+        let modeShortcutsStarted = modeShortcutManager.refreshAfterAccessibilityAuthorization(
+            initialActivePress: preservesShortcutPressStateDuringRecovery
+                ? shortcutModeHandler.activePressSnapshot : nil
+        )
         let recorderPanelShortcutsStarted = recorderPanelShortcutManager.refreshAfterAccessibilityAuthorization()
         return recordingShortcutsStarted && modeShortcutsStarted && recorderPanelShortcutsStarted
     }

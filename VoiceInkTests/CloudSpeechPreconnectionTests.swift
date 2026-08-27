@@ -80,6 +80,7 @@ struct CloudSpeechPreconnectionTests {
         #expect(leased == nil)
         try await waitUntilReady(pool, key: target.key)
         #expect(await connector.openCount == 2)
+        #expect(await pool.snapshot().failureCounts[target.key] == 1)
         #expect(await connector.connection(at: 0)?.isClosed == true)
 
         await pool.shutdown()
@@ -287,6 +288,30 @@ struct CloudSpeechPreconnectionTests {
         }
 
         await pool.recoverRuntimeConnections()
+        let snapshot = await pool.snapshot()
+        #expect(snapshot.failureCounts[target.key] == 1)
+        #expect(snapshot.retryingKeys.contains(target.key))
+        #expect(await connector.openCount == 1)
+        await pool.shutdown()
+    }
+
+    @Test func failedLeaseValidationCanOpenTheCircuit() async throws {
+        let connector = FakeCloudSpeechConnector()
+        let pool = CloudSpeechConnectionPool(
+            connector: connector,
+            circuitBreakerFailureCount: 1,
+            circuitBreakerDelay: .seconds(5 * 60)
+        )
+        let target = CloudSpeechConnectionTarget.aliyun(
+            apiKey: "test-key",
+            endpoint: URL(string: "wss://example.com/api-ws/v1/inference")!
+        )
+
+        await pool.reconcile(targets: [target])
+        try await waitUntilReady(pool, key: target.key)
+        await connector.failLatestConnectionPing()
+
+        #expect(await pool.lease(for: target) == nil)
         let snapshot = await pool.snapshot()
         #expect(snapshot.failureCounts[target.key] == 1)
         #expect(snapshot.retryingKeys.contains(target.key))

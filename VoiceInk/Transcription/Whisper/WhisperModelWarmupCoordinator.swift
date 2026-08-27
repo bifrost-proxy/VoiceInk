@@ -23,8 +23,8 @@ final class WhisperModelWarmupCoordinator: ObservableObject {
         warmingModels.insert(model.name)
 
         Task {
-            let operationID = ModelManagementActivity.shared.begin()
-            defer { ModelManagementActivity.shared.end(operationID) }
+            let operationID = RuntimeProtectedWorkActivity.shared.begin()
+            defer { RuntimeProtectedWorkActivity.shared.end(operationID) }
             do {
                 try await runWarmup(for: model, whisperModelManager: whisperModelManager)
             } catch {

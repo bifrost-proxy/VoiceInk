@@ -58,12 +58,16 @@ class ModeShortcutManager {
     }
 
     @discardableResult
-    func refreshAfterAccessibilityAuthorization() -> Bool {
-        refreshModeShortcuts()
+    func refreshAfterAccessibilityAuthorization(
+        initialActivePress: (action: ShortcutAction, pressedAt: TimeInterval)? = nil
+    ) -> Bool {
+        refreshModeShortcuts(initialActivePress: initialActivePress)
     }
 
     @discardableResult
-    private func refreshModeShortcuts() -> Bool {
+    private func refreshModeShortcuts(
+        initialActivePress: (action: ShortcutAction, pressedAt: TimeInterval)? = nil
+    ) -> Bool {
         let shortcuts = ModeManager.shared.enabledConfigurations.reduce(into: [ShortcutAction: Shortcut]()) {
             result, config in
             let action = ShortcutAction.mode(config.id)
@@ -75,6 +79,7 @@ class ModeShortcutManager {
         return shortcutMonitor.start(
             shortcuts: shortcuts,
             interruptibleActions: Set(shortcuts.keys),
+            initiallyPressedActions: initialActivePress.map { [$0.action: $0.pressedAt] } ?? [:],
             onKeyDown: { [weak self] action, eventTime in
                 Task { @MainActor in
                     guard let self,

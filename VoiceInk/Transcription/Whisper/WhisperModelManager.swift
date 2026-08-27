@@ -198,8 +198,8 @@ class WhisperModelManager: ObservableObject {
 
     func downloadModel(_ model: WhisperModel) async {
         guard let url = URL(string: model.downloadURL) else { return }
-        let operationID = ModelManagementActivity.shared.begin()
-        defer { ModelManagementActivity.shared.end(operationID) }
+        let operationID = RuntimeProtectedWorkActivity.shared.begin()
+        defer { RuntimeProtectedWorkActivity.shared.end(operationID) }
         await performModelDownload(model, url)
     }
 
@@ -307,8 +307,8 @@ class WhisperModelManager: ObservableObject {
     }
 
     func deleteModel(_ model: WhisperModelFile) async {
-        let operationID = ModelManagementActivity.shared.begin()
-        defer { ModelManagementActivity.shared.end(operationID) }
+        let operationID = RuntimeProtectedWorkActivity.shared.begin()
+        defer { RuntimeProtectedWorkActivity.shared.end(operationID) }
         do {
             try FileManager.default.removeItem(at: model.url)
 
@@ -352,8 +352,8 @@ class WhisperModelManager: ObservableObject {
     }
 
     func clearDownloadedModels() async {
-        let operationID = ModelManagementActivity.shared.begin()
-        defer { ModelManagementActivity.shared.end(operationID) }
+        let operationID = RuntimeProtectedWorkActivity.shared.begin()
+        defer { RuntimeProtectedWorkActivity.shared.end(operationID) }
         for model in availableModels {
             do {
                 try FileManager.default.removeItem(at: model.url)
@@ -379,8 +379,8 @@ class WhisperModelManager: ObservableObject {
 
     func importWhisperModel(from sourceURL: URL) async {
         guard sourceURL.pathExtension.lowercased() == "bin" else { return }
-        let operationID = ModelManagementActivity.shared.begin()
-        defer { ModelManagementActivity.shared.end(operationID) }
+        let operationID = RuntimeProtectedWorkActivity.shared.begin()
+        defer { RuntimeProtectedWorkActivity.shared.end(operationID) }
 
         let baseName = sourceURL.deletingPathExtension().lastPathComponent
         let destinationURL = modelsDirectory.appendingPathComponent("\(baseName).bin")
