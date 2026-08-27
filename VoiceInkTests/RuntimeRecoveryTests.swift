@@ -870,6 +870,58 @@ struct RuntimeRecoveryTests {
         manager.clearAll()
         #expect(!manager.hasQueuedWork)
     }
+
+    @Test func qwenRequestAdmissionSerializesOverlappingWork() async throws {
+        let admission = QwenMLXRequestAdmissionQueue()
+        try await admission.acquire()
+        let secondRequestStarted = QwenRequestAdmissionProbe()
+
+        let secondRequest = Task {
+            secondRequestStarted.recordAttempt()
+            try await admission.acquire()
+            secondRequestStarted.recordStart()
+            admission.release()
+        }
+
+        for _ in 0..<100 where !secondRequestStarted.didAttempt {
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        #expect(secondRequestStarted.didAttempt)
+        #expect(!secondRequestStarted.didStart)
+
+        admission.release()
+        try await secondRequest.value
+        #expect(secondRequestStarted.didStart)
+    }
+
+    @Test @MainActor func settingsExportIsProtectedForEntireWriteTransaction() throws {
+        let activity = RuntimeProtectedWorkActivity.shared
+        #expect(!activity.isBusy)
+
+        try ImportExportService.writeExportData(Data([0x01]), to: URL(fileURLWithPath: "/dev/null")) {
+            _, _ in
+            #expect(activity.isBusy)
+        }
+
+        #expect(!activity.isBusy)
+    }
+}
+
+private final class QwenRequestAdmissionProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedDidAttempt = false
+    private var storedDidStart = false
+
+    var didAttempt: Bool { lock.withLock { storedDidAttempt } }
+    var didStart: Bool { lock.withLock { storedDidStart } }
+
+    func recordAttempt() {
+        lock.withLock { storedDidAttempt = true }
+    }
+
+    func recordStart() {
+        lock.withLock { storedDidStart = true }
+    }
 }
 
 private final class RuntimeRecoveryProbe: @unchecked Sendable {

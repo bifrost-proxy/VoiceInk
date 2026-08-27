@@ -47,6 +47,52 @@ struct QwenMLXStreamSnapshot: Sendable, Equatable {
     let rewriteEvents: Int
 }
 
+/// Serializes bridge requests without occupying the runtime actor. Shutdown is
+/// intentionally kept outside this queue so a wedged response can still be
+/// interrupted by closing the bridge pipes.
+final class QwenMLXRequestAdmissionQueue: @unchecked Sendable {
+    private let lock = NSLock()
+    private var isOccupied = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func acquire() async throws {
+        await withCheckedContinuation { continuation in
+            let acquiredImmediately = lock.withLock { () -> Bool in
+                if !isOccupied {
+                    isOccupied = true
+                    return true
+                }
+                waiters.append(continuation)
+                return false
+            }
+            if acquiredImmediately {
+                continuation.resume()
+            }
+        }
+        do {
+            try Task.checkCancellation()
+        } catch {
+            // A resumed waiter owns the admission slot. Hand it to the next
+            // waiter before propagating cancellation.
+            release()
+            throw error
+        }
+    }
+
+    func release() {
+        let nextWaiter = lock.withLock { () -> CheckedContinuation<Void, Never>? in
+            guard !waiters.isEmpty else {
+                isOccupied = false
+                return nil
+            }
+            // Keep the slot occupied while transferring ownership directly to
+            // the oldest queued request.
+            return waiters.removeFirst()
+        }
+        nextWaiter?.resume()
+    }
+}
+
 actor QwenMLXRuntime {
     static let shared = QwenMLXRuntime()
 
@@ -60,14 +106,14 @@ actor QwenMLXRuntime {
     private var backendDescription: String?
     private var isStopping = false
     private var shutdownTask: Task<Void, Never>?
+    private let requestAdmission = QwenMLXRequestAdmissionQueue()
 
     static let shutdownGracePeriod: Duration = .milliseconds(500)
     static let shutdownPollInterval: Duration = .milliseconds(25)
 
     func load(model: QwenMLXModel) async throws -> String {
-        guard activeResponseRequestID == nil else {
-            throw QwenMLXRuntimeError.requestInProgress
-        }
+        try await requestAdmission.acquire()
+        defer { requestAdmission.release() }
         guard !isStopping else { throw QwenMLXRuntimeError.notRunning }
         let modelPath = QwenMLXPaths.modelDirectory(for: model).path
         if process?.isRunning == true, loadedModelPath == modelPath,
@@ -78,7 +124,7 @@ actor QwenMLXRuntime {
 
         await stop()
         try launchProcess()
-        let response = try await request([
+        let response = try await requestWhileAdmitted([
             "command": "load",
             "model_path": modelPath,
         ])
@@ -98,7 +144,7 @@ actor QwenMLXRuntime {
         chunkSizeSeconds: Double = 1.0,
         maxContextSeconds: Double = 30.0
     ) async throws -> QwenMLXStreamSnapshot {
-        let response = try await request([
+        let response = try await performRequest([
             "command": "start",
             "language": language ?? "auto",
             "context": context ?? "",
@@ -111,7 +157,7 @@ actor QwenMLXRuntime {
     }
 
     func feedAudio(_ pcm16Data: Data) async throws -> QwenMLXStreamSnapshot {
-        let response = try await request([
+        let response = try await performRequest([
             "command": "audio",
             "pcm16_base64": pcm16Data.base64EncodedString(),
         ])
@@ -119,7 +165,7 @@ actor QwenMLXRuntime {
     }
 
     func finishStreaming() async throws -> QwenMLXStreamSnapshot {
-        let response = try await request(["command": "finish"])
+        let response = try await performRequest(["command": "finish"])
         return try Self.snapshot(from: response)
     }
 
@@ -133,7 +179,7 @@ actor QwenMLXRuntime {
     }
 
     func transcribe(audioURL: URL, language: String?, context: String?) async throws -> String {
-        let response = try await request([
+        let response = try await performRequest([
             "command": "transcribe",
             "audio_path": audioURL.path,
             "language": language ?? "auto",
@@ -225,12 +271,15 @@ actor QwenMLXRuntime {
         )
     }
 
-    private func request(_ payload: [String: Any]) async throws -> [String: Any] {
+    private func performRequest(_ payload: [String: Any]) async throws -> [String: Any] {
+        try await requestAdmission.acquire()
+        defer { requestAdmission.release() }
+        return try await requestWhileAdmitted(payload)
+    }
+
+    private func requestWhileAdmitted(_ payload: [String: Any]) async throws -> [String: Any] {
         guard !isStopping, let process, process.isRunning, let responseReader else {
             throw QwenMLXRuntimeError.notRunning
-        }
-        guard activeResponseRequestID == nil else {
-            throw QwenMLXRuntimeError.requestInProgress
         }
 
         let sentRequestID = try writeRequest(payload)
@@ -344,7 +393,6 @@ enum QwenMLXRuntimeError: LocalizedError {
     case runtimeNotInstalled
     case runnerMissing
     case notRunning
-    case requestInProgress
     case gpuUnavailable(String)
     case processExited(Int32)
     case invalidResponse(String)
@@ -358,8 +406,6 @@ enum QwenMLXRuntimeError: LocalizedError {
             return "VoiceInk 缺少 Qwen MLX 运行脚本"
         case .notRunning:
             return "Qwen MLX 运行时未启动"
-        case .requestInProgress:
-            return "Qwen MLX 运行时正在处理另一个请求"
         case .gpuUnavailable(let backend):
             return "Qwen MLX 未能启用 Metal GPU（当前后端：\(backend)）"
         case .processExited(let status):

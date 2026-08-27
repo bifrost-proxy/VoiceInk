@@ -238,7 +238,7 @@ class ImportExportService {
                 if savePanel.runModal() == .OK {
                     if let url = savePanel.url {
                         do {
-                            try jsonData.write(to: url)
+                            try Self.writeExportData(jsonData, to: url)
                             self.showAlert(
                                 title: String(localized: "Export Successful"),
                                 message: String(
@@ -264,6 +264,19 @@ class ImportExportService {
                 message: String(
                     format: String(localized: "Could not encode settings to JSON: %@"), error.localizedDescription))
         }
+    }
+
+    @MainActor
+    static func writeExportData(
+        _ data: Data,
+        to url: URL,
+        writer: (Data, URL) throws -> Void = { data, url in
+            try data.write(to: url, options: .atomic)
+        }
+    ) throws {
+        let protectedWorkID = RuntimeProtectedWorkActivity.shared.begin()
+        defer { RuntimeProtectedWorkActivity.shared.end(protectedWorkID) }
+        try writer(data, url)
     }
 
     @MainActor
