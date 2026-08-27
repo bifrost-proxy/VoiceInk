@@ -17,7 +17,7 @@ struct ModeConfigEditorView: View {
     @State private var promptEditorID = UUID()
     @State private var didSaveConfiguration = false
     @State private var protectedEditorWorkID: UUID?
-    @State private var savedDraft: ModeConfigDraft?
+    @State private var savedConfig: ModeConfig?
 
     init(mode: ConfigurationMode, modeManager: ModeManager, onDismiss: @escaping () -> Void) {
         self.mode = mode
@@ -54,14 +54,14 @@ struct ModeConfigEditorView: View {
         }
         .onAppear {
             prepareView()
-            savedDraft = draft
+            savedConfig = draft.makeConfig(mode: mode)
             updateDraftProtection()
         }
         .onDisappear {
             cleanupUnsavedShortcutIfNeeded()
             endDraftProtection()
         }
-        .onChange(of: draft) { _, _ in updateDraftProtection() }
+        .onChange(of: draft.makeConfig(mode: mode)) { _, _ in updateDraftProtection() }
         .onExitCommand(perform: handleExitCommand)
     }
 
@@ -140,7 +140,7 @@ struct ModeConfigEditorView: View {
         }
 
         didSaveConfiguration = true
-        savedDraft = draft
+        savedConfig = draft.makeConfig(mode: mode)
         updateDraftProtection()
         onDismiss()
     }
@@ -165,7 +165,7 @@ struct ModeConfigEditorView: View {
     }
 
     private func updateDraftProtection() {
-        let isDirty = savedDraft.map { $0 != draft } ?? false
+        let isDirty = savedConfig.map { $0 != draft.makeConfig(mode: mode) } ?? false
         let shouldProtect = RuntimeCriticalWorkPolicy.editorIsProtected(
             isDirty: isDirty,
             isOperationActive: false

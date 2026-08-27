@@ -39,6 +39,9 @@ final class DictionaryQuickAddManager {
             onDismiss: { [weak self] in self?.hide() },
             onResize: { [weak self] height in
                 self?.panel?.resize(to: NSSize(width: 500, height: height))
+            },
+            onProtectedWorkChange: { [weak self] isProtected in
+                self?.updateProtectedWork(isProtected)
             }
         )
         .modelContainer(modelContainer)
@@ -47,7 +50,6 @@ final class DictionaryQuickAddManager {
         newPanel.contentView = controller.view
         hostingController = controller
         panel = newPanel
-        protectedEditorWorkID = RuntimeProtectedWorkActivity.shared.begin()
         newPanel.makeKeyAndOrderFront(nil)
     }
 
@@ -62,6 +64,15 @@ final class DictionaryQuickAddManager {
         }
         previousApp?.activate(options: .activateIgnoringOtherApps)
         previousApp = nil
+    }
+
+    private func updateProtectedWork(_ isProtected: Bool) {
+        if isProtected, protectedEditorWorkID == nil {
+            protectedEditorWorkID = RuntimeProtectedWorkActivity.shared.begin()
+        } else if !isProtected, let protectedEditorWorkID {
+            RuntimeProtectedWorkActivity.shared.end(protectedEditorWorkID)
+            self.protectedEditorWorkID = nil
+        }
     }
 }
 
@@ -265,15 +276,18 @@ struct DictionaryQuickAddView: View {
     let initialUsageContext: VocabularyUsageContext
     let onDismiss: () -> Void
     let onResize: (CGFloat) -> Void
+    let onProtectedWorkChange: (Bool) -> Void
 
     init(
         initialUsageContext: VocabularyUsageContext,
         onDismiss: @escaping () -> Void,
-        onResize: @escaping (CGFloat) -> Void
+        onResize: @escaping (CGFloat) -> Void,
+        onProtectedWorkChange: @escaping (Bool) -> Void = { _ in }
     ) {
         self.initialUsageContext = initialUsageContext
         self.onDismiss = onDismiss
         self.onResize = onResize
+        self.onProtectedWorkChange = onProtectedWorkChange
         _scopeState = State(
             initialValue: DictionaryQuickAddScopeState(usageContext: initialUsageContext)
         )
@@ -315,6 +329,7 @@ struct DictionaryQuickAddView: View {
         }
         .onAppear {
             DispatchQueue.main.async { focusedField = .word }
+            updateProtectedWork()
         }
         .task(id: websiteLookupState.requestID) {
             await captureCurrentWebsite(requestID: websiteLookupState.requestID)
@@ -322,6 +337,7 @@ struct DictionaryQuickAddView: View {
         .onDisappear {
             websiteLookupState.cancel()
             pendingSubmission.cancel()
+            onProtectedWorkChange(false)
         }
         .onChange(of: mode) { _, newMode in
             wordInput = ""
@@ -340,6 +356,10 @@ struct DictionaryQuickAddView: View {
         .onChange(of: websiteLookupFailure) { _, _ in
             resizeForCurrentState()
         }
+        .onChange(of: wordInput) { _, _ in updateProtectedWork() }
+        .onChange(of: originalInput) { _, _ in updateProtectedWork() }
+        .onChange(of: replacementInput) { _, _ in updateProtectedWork() }
+        .onChange(of: pendingSubmission) { _, _ in updateProtectedWork() }
     }
 
     // MARK: - Mode Bar
@@ -638,6 +658,17 @@ struct DictionaryQuickAddView: View {
             return
         }
         onDismiss()
+    }
+
+    private func updateProtectedWork() {
+        onProtectedWorkChange(
+            RuntimeCriticalWorkPolicy.dictionaryQuickAddIsProtected(
+                vocabulary: wordInput,
+                original: originalInput,
+                replacement: replacementInput,
+                hasPendingSubmission: pendingSubmission.input != nil
+            )
+        )
     }
 }
 

@@ -1009,6 +1009,42 @@ struct RuntimeRecoveryTests {
         #expect(RuntimeCriticalWorkPolicy.editorIsProtected(isDirty: true, isOperationActive: false))
         #expect(RuntimeCriticalWorkPolicy.editorIsProtected(isDirty: false, isOperationActive: true))
     }
+
+    @Test func dictionaryQuickAddProtectsOnlyMeaningfulInputOrPendingSubmission() {
+        #expect(
+            !RuntimeCriticalWorkPolicy.dictionaryQuickAddIsProtected(
+                vocabulary: "  ", original: "", replacement: "", hasPendingSubmission: false
+            )
+        )
+        #expect(
+            RuntimeCriticalWorkPolicy.dictionaryQuickAddIsProtected(
+                vocabulary: "VoiceInk", original: "", replacement: "", hasPendingSubmission: false
+            )
+        )
+        #expect(
+            RuntimeCriticalWorkPolicy.dictionaryQuickAddIsProtected(
+                vocabulary: "", original: "", replacement: "", hasPendingSubmission: true
+            )
+        )
+    }
+
+    @Test func arkEditorProtectsModelDraftAndVerificationWithASavedKey() {
+        #expect(
+            !RuntimeCriticalWorkPolicy.providerEditorIsProtected(
+                apiKeyDraft: "", currentModel: "saved-model", savedModel: "saved-model", isVerifying: false
+            )
+        )
+        #expect(
+            RuntimeCriticalWorkPolicy.providerEditorIsProtected(
+                apiKeyDraft: "", currentModel: "new-model", savedModel: "saved-model", isVerifying: false
+            )
+        )
+        #expect(
+            RuntimeCriticalWorkPolicy.providerEditorIsProtected(
+                apiKeyDraft: "", currentModel: "saved-model", savedModel: "saved-model", isVerifying: true
+            )
+        )
+    }
 }
 
 private actor QwenCancellationStopProbe {

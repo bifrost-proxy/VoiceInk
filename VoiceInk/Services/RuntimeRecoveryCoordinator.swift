@@ -155,6 +155,31 @@ enum RuntimeCriticalWorkPolicy {
     static func editorIsProtected(isDirty: Bool, isOperationActive: Bool) -> Bool {
         isDirty || isOperationActive
     }
+
+    static func dictionaryQuickAddIsProtected(
+        vocabulary: String,
+        original: String,
+        replacement: String,
+        hasPendingSubmission: Bool
+    ) -> Bool {
+        hasPendingSubmission
+            || [vocabulary, original, replacement].contains {
+                !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            }
+    }
+
+    static func providerEditorIsProtected(
+        apiKeyDraft: String,
+        currentModel: String?,
+        savedModel: String?,
+        isVerifying: Bool
+    ) -> Bool {
+        let hasAPIKeyDraft = !apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let hasModelDraft = currentModel.map {
+            textDraftIsProtected($0, savedValue: savedModel)
+        } ?? false
+        return hasAPIKeyDraft || hasModelDraft || isVerifying
+    }
 }
 
 /// Coordinates recovery of process-local resources that can become stale when

@@ -17,7 +17,7 @@ struct ProviderDetailPanel: View {
     @State private var isShowingRemoveAPIKeyConfirmation = false
     @State private var activeDescriptorID = ""
     @State private var arkModel = ""
-    @State private var apiKeyDraftWorkID: UUID?
+    @State private var providerEditorWorkID: UUID?
     @AppStorage(DoubaoSpeechSettings.Keys.enableTwoPassRecognition)
     private var doubaoEnableTwoPassRecognition = DoubaoSpeechSettings.defaults.enableTwoPassRecognition
     @AppStorage(DoubaoSpeechSettings.Keys.enableTextNormalization)
@@ -162,11 +162,13 @@ struct ProviderDetailPanel: View {
         .onChange(of: descriptor.id) { _, _ in
             resetProviderState()
         }
-        .onChange(of: apiKey) { _, newValue in
-            updateAPIKeyDraftProtection(newValue)
+        .onChange(of: apiKey) { _, _ in
+            updateProviderEditorProtection()
         }
+        .onChange(of: arkModel) { _, _ in updateProviderEditorProtection() }
+        .onChange(of: isVerifying) { _, _ in updateProviderEditorProtection() }
         .onDisappear {
-            endAPIKeyDraftProtection()
+            endProviderEditorProtection()
         }
     }
 
@@ -1076,29 +1078,37 @@ struct ProviderDetailPanel: View {
         activeDescriptorID = descriptor.id
         verificationSucceeded = isConfigured
         apiKey = ""
-        endAPIKeyDraftProtection()
+        endProviderEditorProtection()
         isVerifying = false
         isRefreshingOpenRouterModels = false
         verificationMessage = nil
         verificationDetailMessage = nil
         isShowingRemoveAPIKeyConfirmation = false
         arkModel = descriptor.aiProvider == .ark ? aiService.selectedModel(for: .ark) : ""
+        updateProviderEditorProtection()
         normalizeDoubaoNumericSettingsIfNeeded()
         normalizeAliyunSettingsIfNeeded()
     }
 
-    private func updateAPIKeyDraftProtection(_ value: String) {
-        if value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            endAPIKeyDraftProtection()
-        } else if apiKeyDraftWorkID == nil {
-            apiKeyDraftWorkID = RuntimeProtectedWorkActivity.shared.begin()
+    private func updateProviderEditorProtection() {
+        let savedArkModel = descriptor.aiProvider == .ark ? aiService.selectedModel(for: .ark) : nil
+        let shouldProtect = RuntimeCriticalWorkPolicy.providerEditorIsProtected(
+            apiKeyDraft: apiKey,
+            currentModel: descriptor.aiProvider == .ark ? arkModel : nil,
+            savedModel: savedArkModel,
+            isVerifying: isVerifying
+        )
+        if shouldProtect, providerEditorWorkID == nil {
+            providerEditorWorkID = RuntimeProtectedWorkActivity.shared.begin()
+        } else if !shouldProtect {
+            endProviderEditorProtection()
         }
     }
 
-    private func endAPIKeyDraftProtection() {
-        if let apiKeyDraftWorkID {
-            RuntimeProtectedWorkActivity.shared.end(apiKeyDraftWorkID)
-            self.apiKeyDraftWorkID = nil
+    private func endProviderEditorProtection() {
+        if let providerEditorWorkID {
+            RuntimeProtectedWorkActivity.shared.end(providerEditorWorkID)
+            self.providerEditorWorkID = nil
         }
     }
 
@@ -1168,6 +1178,7 @@ struct ProviderDetailPanel: View {
         if descriptor.aiProvider == .ark, arkVerificationModel.isEmpty { return }
 
         isVerifying = true
+        updateProviderEditorProtection()
         verificationMessage = nil
         verificationDetailMessage = nil
         let providerID = descriptor.id
@@ -1231,6 +1242,7 @@ struct ProviderDetailPanel: View {
                         key: trimmedKey
                     )
                 }
+                updateProviderEditorProtection()
             }
         }
     }
@@ -1259,6 +1271,7 @@ struct ProviderDetailPanel: View {
         else { return }
 
         isVerifying = true
+        updateProviderEditorProtection()
         verificationMessage = nil
         verificationDetailMessage = nil
         let providerID = descriptor.id
@@ -1279,6 +1292,7 @@ struct ProviderDetailPanel: View {
                     verificationMessage = String(localized: "Could not verify this model. Check the name and try again.")
                     verificationDetailMessage = result.errorMessage
                 }
+                updateProviderEditorProtection()
             }
         }
     }
