@@ -93,10 +93,10 @@ final class ResourceManagedTranscriptionSession: TranscriptionSession {
         if didPrepareResources {
             if !isTranscribing {
                 if cancellationCleanupTask == nil {
-                    cancellationCleanupTask = Task { @MainActor [weak self, session] in
+                    cancellationCleanupTask = Task { @MainActor [self, session] in
                         await session.waitForCancellation()
-                        self?.finish()
-                        self?.cancellationCleanupTask = nil
+                        finish()
+                        cancellationCleanupTask = nil
                     }
                 }
             }

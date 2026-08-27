@@ -23,6 +23,7 @@ struct WordReplacementView: View {
     @State private var originalWord = ""
     @State private var replacementWord = ""
     @State private var showInfoPopover = false
+    @State private var draftWorkID: UUID?
 
     init() {
         if let savedSort = UserDefaults.standard.string(forKey: "wordReplacementSortMode"),
@@ -183,6 +184,9 @@ struct WordReplacementView: View {
         } message: {
             Text(alertMessage)
         }
+        .onChange(of: originalWord) { _, _ in updateDraftProtection() }
+        .onChange(of: replacementWord) { _, _ in updateDraftProtection() }
+        .onDisappear { endDraftProtection() }
     }
 
     private func addReplacement() {
@@ -223,6 +227,26 @@ struct WordReplacementView: View {
                 }
             }
         )
+    }
+
+    private func updateDraftProtection() {
+        let hasDraft =
+            RuntimeCriticalWorkPolicy.textDraftIsProtected(originalWord, savedValue: nil)
+            || RuntimeCriticalWorkPolicy.textDraftIsProtected(replacementWord, savedValue: nil)
+        if hasDraft {
+            if draftWorkID == nil {
+                draftWorkID = RuntimeProtectedWorkActivity.shared.begin()
+            }
+        } else {
+            endDraftProtection()
+        }
+    }
+
+    private func endDraftProtection() {
+        if let draftWorkID {
+            RuntimeProtectedWorkActivity.shared.end(draftWorkID)
+            self.draftWorkID = nil
+        }
     }
 }
 

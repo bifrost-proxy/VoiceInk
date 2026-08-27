@@ -133,6 +133,13 @@ enum RuntimeCriticalWorkPolicy {
         guard !trimmedDraft.isEmpty else { return false }
         return trimmedDraft != savedKey?.trimmingCharacters(in: .whitespacesAndNewlines)
     }
+
+    static func textDraftIsProtected(_ draft: String, savedValue: String?) -> Bool {
+        if let savedValue {
+            return draft != savedValue
+        }
+        return !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
 }
 
 /// Coordinates recovery of process-local resources that can become stale when

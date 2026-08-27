@@ -21,6 +21,14 @@ struct RuntimeRecoveryTests {
         #expect(RuntimeCriticalWorkPolicy.apiKeyDraftIsProtected("new-key", savedKey: "saved-key"))
     }
 
+    @Test func textDraftProtectionIgnoresPersistedAndWhitespaceOnlyValues() {
+        #expect(!RuntimeCriticalWorkPolicy.textDraftIsProtected("", savedValue: nil))
+        #expect(!RuntimeCriticalWorkPolicy.textDraftIsProtected("   ", savedValue: nil))
+        #expect(!RuntimeCriticalWorkPolicy.textDraftIsProtected("persisted", savedValue: "persisted"))
+        #expect(RuntimeCriticalWorkPolicy.textDraftIsProtected("", savedValue: "persisted"))
+        #expect(RuntimeCriticalWorkPolicy.textDraftIsProtected("changed", savedValue: "persisted"))
+    }
+
     @Test @MainActor func asyncRestorationRemainsProtectedUntilItCompletes() async {
         let activity = RuntimeProtectedWorkActivity.shared
         let gate = NonCooperativeTaskGate()

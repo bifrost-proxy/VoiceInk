@@ -20,6 +20,7 @@ struct OnboardingTranscriptionSetupCard: View {
     @State private var verificationDetailMessage: String?
     @State private var verificationSucceeded = false
     @State private var isSwitchingProvider = false
+    @State private var draftWorkID: UUID?
 
     private var selectedProvider: (any CloudProvider)? {
         providerOptions.first {
@@ -64,10 +65,15 @@ struct OnboardingTranscriptionSetupCard: View {
             handleProviderChange()
         }
         .onChange(of: apiKey) { _, _ in
-            guard !apiKey.isEmpty else { return }
-            verificationSucceeded = false
-            verificationMessage = nil
-            verificationDetailMessage = nil
+            updateDraftProtection()
+            if !apiKey.isEmpty {
+                verificationSucceeded = false
+                verificationMessage = nil
+                verificationDetailMessage = nil
+            }
+        }
+        .onDisappear {
+            endDraftProtection()
         }
     }
 
@@ -365,10 +371,12 @@ struct OnboardingTranscriptionSetupCard: View {
         verificationSucceeded = false
         let providerKey = selectedProvider.providerKey
 
+        let verificationWorkID = RuntimeProtectedWorkActivity.shared.begin()
         Task {
             let result = await selectedProvider.verifyAPIKey(key)
 
             await MainActor.run {
+                defer { RuntimeProtectedWorkActivity.shared.end(verificationWorkID) }
                 isVerifying = false
 
                 guard self.selectedProvider?.providerKey == providerKey else {
@@ -402,6 +410,23 @@ struct OnboardingTranscriptionSetupCard: View {
 
                 onVerificationChanged()
             }
+        }
+    }
+
+    private func updateDraftProtection() {
+        if RuntimeCriticalWorkPolicy.apiKeyDraftIsProtected(apiKey, savedKey: nil) {
+            if draftWorkID == nil {
+                draftWorkID = RuntimeProtectedWorkActivity.shared.begin()
+            }
+        } else {
+            endDraftProtection()
+        }
+    }
+
+    private func endDraftProtection() {
+        if let draftWorkID {
+            RuntimeProtectedWorkActivity.shared.end(draftWorkID)
+            self.draftWorkID = nil
         }
     }
 

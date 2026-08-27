@@ -95,6 +95,34 @@ struct LocalModelResourceRetentionTests {
     }
 
     @MainActor
+    @Test func managedSessionRetainsItselfUntilStreamingCancellationFinishes() async {
+        let gate = ResourceRetentionTaskGate()
+        let baseSession = ResourceRetentionTestSession(result: "unused", cancellationGate: gate)
+        var finishCount = 0
+        var session: ResourceManagedTranscriptionSession? = ResourceManagedTranscriptionSession(
+            session: baseSession
+        ) {
+            finishCount += 1
+        }
+        weak let retainedSession = session
+
+        session?.cancel()
+        session = nil
+        await Task.yield()
+
+        #expect(retainedSession != nil)
+        #expect(finishCount == 0)
+
+        await gate.release()
+        for _ in 0..<20 where retainedSession != nil {
+            await Task.yield()
+        }
+
+        #expect(retainedSession == nil)
+        #expect(finishCount == 1)
+    }
+
+    @MainActor
     @Test func managedSessionReleasesItsResourceLeaseWhenPreparationFails() async {
         let baseSession = ResourceRetentionTestSession(
             result: "unused",
