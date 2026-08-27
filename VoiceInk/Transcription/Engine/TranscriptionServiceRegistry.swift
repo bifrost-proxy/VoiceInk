@@ -134,7 +134,7 @@ final class RuntimePressureOperationCoordinator {
         let id = UUID()
         let task = Task { @MainActor [weak self] in
             let released = await pendingRelease()
-            self?.finishRelease(id: id, released: released)
+            self?.finishRelease(id: id)
             return released
         }
         releaseID = id
@@ -142,14 +142,14 @@ final class RuntimePressureOperationCoordinator {
         return await task.value
     }
 
-    private func finishRelease(id: UUID, released: Bool) {
+    private func finishRelease(id: UUID) {
         guard releaseID == id else { return }
         releaseID = nil
         releaseTask = nil
-        if released {
-            pendingRelease = nil
-            recordingIsActive = nil
-        }
+        // Keep a successful pressure-release request armed until an explicit
+        // normal-pressure recovery cancels it. A required local operation may
+        // reload a bound model while pressure remains elevated; endOperation()
+        // must then trigger another release pass.
     }
 
     private func releaseRegisteredResources() async -> Bool {

@@ -460,6 +460,34 @@ struct RuntimeRecoveryTests {
         #expect(probe.values == ["release-started", "release-finished", "operation-started"])
     }
 
+    @Test @MainActor func pressureReleaseRemainsArmedForModelsReloadedBeforeRecovery() async {
+        let coordinator = RuntimePressureOperationCoordinator()
+        let probe = OrderedTransitionProbe()
+
+        #expect(
+            await coordinator.requestRelease(
+                recordingIsActive: { false },
+                operation: {
+                    probe.append("released")
+                    return true
+                }
+            )
+        )
+        #expect(coordinator.hasPendingRelease)
+
+        #expect(await coordinator.beginOperation())
+        coordinator.endOperation()
+        for _ in 0..<20 where probe.values.count < 2 {
+            await Task.yield()
+        }
+
+        #expect(probe.values == ["released", "released"])
+        #expect(coordinator.hasPendingRelease)
+
+        coordinator.cancelPendingRelease()
+        #expect(!coordinator.hasPendingRelease)
+    }
+
     @Test @MainActor func pressureRecoveryCancelsAnInFlightStaleRelease() async {
         let coordinator = RuntimePressureOperationCoordinator()
         let gate = NonCooperativeTaskGate()
