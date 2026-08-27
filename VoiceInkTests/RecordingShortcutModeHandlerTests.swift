@@ -130,8 +130,10 @@ struct RecordingShortcutModeHandlerTests {
         await handler.handleKeyDown(action: .primaryRecording, eventTime: 5, mode: .toggle)
         await handler.handleKeyUp(action: .primaryRecording, eventTime: 5.1, mode: .toggle)
         #expect(recordingState == .recording)
+        #expect(handler.preservesHandsFreeRecordingDuringRecovery)
 
         await handler.handleMonitoringLoss(eventTime: 6)
+        #expect(handler.preservesHandsFreeRecordingDuringRecovery)
         try await Task.sleep(for: .milliseconds(510))
         await handler.handleKeyDown(action: .primaryRecording, eventTime: 7, mode: .toggle)
 

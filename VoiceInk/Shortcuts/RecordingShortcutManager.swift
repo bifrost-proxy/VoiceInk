@@ -605,9 +605,8 @@ class RecordingShortcutManager: ObservableObject {
         // event to replay, so synthesize it before rebuilding the monitors.
         let activePress = shortcutModeHandler.activePressSnapshot
         let activeShortcut = activePress.flatMap { ShortcutStore.shortcut(for: $0.action) }
-        preservesShortcutPressStateDuringRecovery = activeShortcut.map {
-            Self.isPhysicallyPressed($0)
-        } ?? false
+        preservesShortcutPressStateDuringRecovery = shortcutModeHandler.preservesHandsFreeRecordingDuringRecovery
+            || (activeShortcut.map { Self.isPhysicallyPressed($0) } ?? false)
         if activePress != nil, !preservesShortcutPressStateDuringRecovery {
             await shortcutModeHandler.handleMonitoringLoss(eventTime: ProcessInfo.processInfo.systemUptime)
         }
@@ -734,6 +733,10 @@ final class RecordingShortcutModeHandler {
 
     var hasActivePress: Bool {
         isShortcutPressed
+    }
+
+    var preservesHandsFreeRecordingDuringRecovery: Bool {
+        isHandsFreeRecording
     }
 
     var activePressSnapshot: (action: ShortcutAction, pressedAt: TimeInterval)? {

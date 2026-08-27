@@ -117,8 +117,13 @@ class AudioTranscriptionManager: ObservableObject {
         }
     }
 
-    private func refreshQueuedWorkState() {
-        hasQueuedWork = queue.contains { !$0.status.isTerminal }
+    func refreshQueuedWorkState() {
+        // Failed rows are retryable and exist only in memory, so they remain
+        // protected from a hard recovery until the user retries or clears them.
+        hasQueuedWork = queue.contains {
+            if case .completed = $0.status { return false }
+            return true
+        }
     }
 
     // MARK: - Private

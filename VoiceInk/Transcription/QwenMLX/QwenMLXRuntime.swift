@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 final class QwenMLXBlockingResponseReader: @unchecked Sendable {
@@ -30,7 +31,8 @@ final class QwenMLXBlockingResponseReader: @unchecked Sendable {
             // consume whatever is currently available and split it ourselves.
             let chunk = standardOutput.availableData
             guard !chunk.isEmpty else {
-                throw QwenMLXRuntimeError.processExited(process.terminationStatus)
+                let status = process.isRunning ? -1 : process.terminationStatus
+                throw QwenMLXRuntimeError.processExited(status)
             }
             readBuffer.append(chunk)
         }
@@ -74,7 +76,7 @@ actor QwenMLXRuntime {
             return backendDescription
         }
 
-        stopImmediately()
+        await stop()
         try launchProcess()
         let response = try await request([
             "command": "load",
@@ -82,7 +84,7 @@ actor QwenMLXRuntime {
         ])
         let backend = response["backend"] as? String ?? "unknown"
         guard backend.localizedCaseInsensitiveContains("gpu") else {
-            stopImmediately()
+            await stop()
             throw QwenMLXRuntimeError.gpuUnavailable(backend)
         }
         loadedModelPath = modelPath
@@ -150,7 +152,7 @@ actor QwenMLXRuntime {
         }
 
         guard let process, process.isRunning else {
-            stopImmediately()
+            clearRuntimeState()
             return
         }
 
@@ -161,8 +163,15 @@ actor QwenMLXRuntime {
         _ = try? writeRequest(["command": "shutdown"])
 
         let task = Task {
-            _ = await Self.waitForExit(process, timeout: gracePeriod)
-            stopImmediately()
+            let exitedGracefully = await Self.waitForExit(process, timeout: gracePeriod)
+            if !exitedGracefully {
+                // Closing the pipe releases any detached response reader before
+                // escalating from SIGTERM to SIGKILL and confirming process exit.
+                try? standardInput?.close()
+                try? standardOutput?.close()
+                _ = await Self.terminateAndWait(process, timeout: gracePeriod)
+            }
+            clearRuntimeState()
             isStopping = false
         }
         shutdownTask = task
@@ -276,6 +285,23 @@ actor QwenMLXRuntime {
         return !process.isRunning
     }
 
+    static func terminateAndWait(_ process: Process, timeout: Duration) async -> Bool {
+        guard process.isRunning else { return true }
+        process.terminate()
+        if await waitForExit(process, timeout: timeout) {
+            return true
+        }
+
+        guard process.isRunning else { return true }
+        _ = Darwin.kill(process.processIdentifier, SIGKILL)
+        // SIGKILL cannot be handled by the bridge. Confirm its termination off
+        // actor before allowing pressure cleanup or a replacement launch.
+        await Task.detached(priority: .userInitiated) {
+            process.waitUntilExit()
+        }.value
+        return !process.isRunning
+    }
+
     private static func snapshot(from response: [String: Any]) throws -> QwenMLXStreamSnapshot {
         guard let text = response["text"] as? String,
             let stableText = response["stable_text"] as? String
@@ -301,12 +327,9 @@ actor QwenMLXRuntime {
             )
     }
 
-    private func stopImmediately() {
+    private func clearRuntimeState() {
         try? standardInput?.close()
         try? standardOutput?.close()
-        if process?.isRunning == true {
-            process?.terminate()
-        }
         process = nil
         standardInput = nil
         standardOutput = nil

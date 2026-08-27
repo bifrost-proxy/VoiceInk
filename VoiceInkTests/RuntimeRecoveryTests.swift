@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import Foundation
 import Testing
 
@@ -665,6 +666,26 @@ struct RuntimeRecoveryTests {
         #expect(elapsed < .seconds(1))
     }
 
+    @Test func qwenForcedShutdownConfirmsAStubbornBridgeHasExited() async throws {
+        let process = Process()
+        let output = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        process.arguments = ["-c", "trap '' TERM; print ready; while true; do /bin/sleep 1; done"]
+        process.standardOutput = output
+        try process.run()
+        defer {
+            if process.isRunning {
+                _ = Darwin.kill(process.processIdentifier, SIGKILL)
+            }
+        }
+        _ = output.fileHandleForReading.availableData
+
+        let exited = await QwenMLXRuntime.terminateAndWait(process, timeout: .milliseconds(100))
+
+        #expect(exited)
+        #expect(!process.isRunning)
+    }
+
     @Test func qwenBlockingResponseReadDoesNotOccupyTheCallingActor() async throws {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sleep")
@@ -800,6 +821,25 @@ struct RuntimeRecoveryTests {
         #expect(manager.hasQueuedWork)
 
         manager.removeFromQueue(id: queuedItem.id)
+        #expect(!manager.hasQueuedWork)
+    }
+
+    @Test @MainActor func failedAudioFilesRemainProtectedUntilExplicitlyCleared() throws {
+        let manager = AudioTranscriptionManager.shared
+        manager.clearAll()
+        defer { manager.clearAll() }
+        let audioURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("VoiceInk-FailedAudio-\(UUID().uuidString).wav")
+        defer { try? FileManager.default.removeItem(at: audioURL) }
+        try Data(repeating: 0, count: 44).write(to: audioURL)
+
+        manager.addToQueue(urls: [audioURL])
+        let queuedItem = try #require(manager.queue.first)
+        queuedItem.status = .failed(message: "simulated failure")
+        manager.refreshQueuedWorkState()
+        #expect(manager.hasQueuedWork)
+
+        manager.clearAll()
         #expect(!manager.hasQueuedWork)
     }
 }
