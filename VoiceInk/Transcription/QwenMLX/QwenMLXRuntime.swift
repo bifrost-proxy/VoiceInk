@@ -52,11 +52,49 @@ enum QwenMLXCancellationBridge {
         operation: () async throws -> T,
         stopRuntime: @escaping @Sendable () async -> Void
     ) async rethrows -> T {
-        try await withTaskCancellationHandler(operation: operation) {
+        let stopCoordinator = QwenMLXCancellationStopCoordinator(stopRuntime: stopRuntime)
+        return try await withTaskCancellationHandler {
+            do {
+                let result = try await operation()
+                await stopCoordinator.waitForStopIfRequested()
+                return result
+            } catch {
+                await stopCoordinator.waitForStopIfRequested()
+                throw error
+            }
+        } onCancel: {
             // The bridge may ignore Swift cancellation while blocked on stdout.
-            // Stop it independently so the admitted operation can return.
-            Task { await stopRuntime() }
+            // Start shutdown immediately, then keep admission until it finishes.
+            stopCoordinator.requestStop()
         }
+    }
+}
+
+private final class QwenMLXCancellationStopCoordinator: @unchecked Sendable {
+    private let lock = NSLock()
+    private let stopRuntime: @Sendable () async -> Void
+    private var stopTask: Task<Void, Never>?
+
+    init(stopRuntime: @escaping @Sendable () async -> Void) {
+        self.stopRuntime = stopRuntime
+    }
+
+    func requestStop() {
+        lock.lock()
+        defer { lock.unlock() }
+        guard stopTask == nil else { return }
+        stopTask = Task { await stopRuntime() }
+    }
+
+    func waitForStopIfRequested() async {
+        await currentStopTask()?.value
+    }
+
+    private func currentStopTask() -> Task<Void, Never>? {
+        lock.lock()
+        defer { lock.unlock() }
+        let task = stopTask
+        return task
     }
 }
 

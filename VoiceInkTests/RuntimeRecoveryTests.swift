@@ -907,8 +907,11 @@ struct RuntimeRecoveryTests {
     }
 
     @Test func qwenCancellationStopsNonCooperativeBridgeWork() async throws {
+        let admission = QwenMLXRequestAdmissionQueue()
         let probe = QwenCancellationStopProbe()
         let operation = Task {
+            try await admission.acquire()
+            defer { admission.release() }
             await QwenMLXCancellationBridge.run {
                 await probe.runNonCooperativeOperation()
             } stopRuntime: {
@@ -918,7 +921,19 @@ struct RuntimeRecoveryTests {
 
         await probe.waitUntilStarted()
         operation.cancel()
-        await operation.value
+        await probe.waitUntilStopStarted()
+
+        let successor = Task {
+            try await admission.acquire()
+            await probe.markSuccessorAdmitted()
+            admission.release()
+        }
+        await Task.yield()
+        #expect(!(await probe.didAdmitSuccessor))
+
+        await probe.allowStopToFinish()
+        _ = await operation.result
+        _ = await successor.result
 
         #expect(await probe.didStopRuntime)
     }
@@ -962,8 +977,12 @@ struct RuntimeRecoveryTests {
 private actor QwenCancellationStopProbe {
     private var startContinuation: CheckedContinuation<Void, Never>?
     private var operationContinuation: CheckedContinuation<Void, Never>?
+    private var stopStartContinuation: CheckedContinuation<Void, Never>?
+    private var stopFinishContinuation: CheckedContinuation<Void, Never>?
     private var hasStarted = false
+    private var hasStartedStopping = false
     private(set) var didStopRuntime = false
+    private(set) var didAdmitSuccessor = false
 
     func runNonCooperativeOperation() async {
         hasStarted = true
@@ -981,10 +1000,32 @@ private actor QwenCancellationStopProbe {
         }
     }
 
-    func stopRuntime() {
-        didStopRuntime = true
+    func stopRuntime() async {
+        hasStartedStopping = true
+        stopStartContinuation?.resume()
+        stopStartContinuation = nil
         operationContinuation?.resume()
         operationContinuation = nil
+        await withCheckedContinuation { continuation in
+            stopFinishContinuation = continuation
+        }
+        didStopRuntime = true
+    }
+
+    func waitUntilStopStarted() async {
+        if hasStartedStopping { return }
+        await withCheckedContinuation { continuation in
+            stopStartContinuation = continuation
+        }
+    }
+
+    func allowStopToFinish() {
+        stopFinishContinuation?.resume()
+        stopFinishContinuation = nil
+    }
+
+    func markSuccessorAdmitted() {
+        didAdmitSuccessor = true
     }
 }
 
