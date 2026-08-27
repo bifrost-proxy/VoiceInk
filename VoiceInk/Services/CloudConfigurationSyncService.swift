@@ -595,12 +595,15 @@ final class CloudConfigurationSyncService: ObservableObject {
         let knownOperationIDs = Set(appliedConfigurationOperationIDs.values.flatMap { $0 })
         let loaded = try loadRegister(
             for: .configuration, fullScan: fullScan, operationURLs: operationURLs)
-        let register = loaded.register
-        workerConfigurationConflictCount = register.conflictCount
-        let materialized = register.selectedValues()
+        var register = loaded.register
+        let latestRemoteEnvelope = register.latestRemoteEnvelope(
+            excludingDeviceID: syncCore.deviceID, knownOperationIDs: knownOperationIDs)
         let localBefore = makeLocalConfiguration()
         let hasRemoteDifference = hasRemoteMaterializedDifference(
             local: localBefore, register: register)
+        try resolveConflicts(in: &register, domain: .configuration)
+        workerConfigurationConflictCount = register.conflictCount
+        let materialized = register.selectedValues()
         let didApply = applyConfiguration(materialized)
         lastKnownConfiguration = makeLocalConfiguration()
         appliedConfigurationOperationIDs = activeOperationIDs(in: register)
@@ -608,8 +611,7 @@ final class CloudConfigurationSyncService: ObservableObject {
         syncCore.acknowledgeAffectedKeys(loaded.affectedKeys, in: .configuration)
         return (
             didApply && hasRemoteDifference,
-            register.latestRemoteEnvelope(
-                excludingDeviceID: syncCore.deviceID, knownOperationIDs: knownOperationIDs)
+            latestRemoteEnvelope
         )
     }
 
@@ -622,12 +624,15 @@ final class CloudConfigurationSyncService: ObservableObject {
         let knownOperationIDs = Set(appliedDictionaryOperationIDs.values.flatMap { $0 })
         let loaded = try loadRegister(
             for: .dictionary, fullScan: fullScan, operationURLs: operationURLs)
-        let register = loaded.register
-        workerDictionaryConflictCount = register.conflictCount
-        let materialized = register.selectedValues(addWins: true)
+        var register = loaded.register
+        let latestRemoteEnvelope = register.latestRemoteEnvelope(
+            excludingDeviceID: syncCore.deviceID, knownOperationIDs: knownOperationIDs)
         let localBefore = makeLocalDictionary(modelContext: modelContext)
         let hasRemoteDifference = hasRemoteMaterializedDifference(
             local: localBefore, register: register, addWins: true)
+        try resolveConflicts(in: &register, domain: .dictionary, addWins: true)
+        workerDictionaryConflictCount = register.conflictCount
+        let materialized = register.selectedValues(addWins: true)
         let didApply = try applyDictionary(materialized, context: modelContext)
         lastKnownDictionary = makeLocalDictionary(modelContext: modelContext)
         appliedDictionaryOperationIDs = activeOperationIDs(in: register)
@@ -635,8 +640,32 @@ final class CloudConfigurationSyncService: ObservableObject {
         syncCore.acknowledgeAffectedKeys(loaded.affectedKeys, in: .dictionary)
         return (
             didApply && hasRemoteDifference,
-            register.latestRemoteEnvelope(
-                excludingDeviceID: syncCore.deviceID, knownOperationIDs: knownOperationIDs)
+            latestRemoteEnvelope
+        )
+    }
+
+    private nonisolated func resolveConflicts(
+        in register: inout VoiceInkSyncRegisterState,
+        domain: VoiceInkSyncDomain,
+        addWins: Bool = false
+    ) throws {
+        let mutations = register.conflictResolutionMutations(addWins: addWins)
+        guard !mutations.isEmpty else { return }
+        let conflictCount = mutations.count
+        let batches = try syncCore.appendChunked(mutations, domain: domain)
+        for batch in batches {
+            _ = register.apply(
+                batch.envelope,
+                batch: VoiceInkSyncMutationBatch(mutations: batch.mutations)
+            )
+        }
+        try syncCore.updateIncrementalCheckpoint(
+            register: register,
+            incorporating: batches.map(\.envelope),
+            domain: domain
+        )
+        logger.notice(
+            "Automatically resolved \(conflictCount, privacy: .public) \(domain.rawValue, privacy: .public) sync conflicts"
         )
     }
 
