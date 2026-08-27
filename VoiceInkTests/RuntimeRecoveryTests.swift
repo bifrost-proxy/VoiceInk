@@ -22,6 +22,7 @@ struct RuntimeRecoveryTests {
         )
         monitor.start(interval: 1_000)
         defer { monitor.stop() }
+        monitor.acknowledgeAppKitEvent(now: 1_000_000_000)
 
         monitor.simulateTick(now: 7_000_000_000)
         monitor.simulateTick(now: 8_000_000_000)
@@ -53,6 +54,7 @@ struct RuntimeRecoveryTests {
         )
         monitor.start(interval: 1_000)
         defer { monitor.stop() }
+        monitor.acknowledgeAppKitEvent(now: 1_000_000_000)
 
         monitor.simulateTick(now: 12_000_000_000)
 
@@ -76,6 +78,7 @@ struct RuntimeRecoveryTests {
         )
         monitor.start(interval: 1_000)
         defer { monitor.stop() }
+        monitor.acknowledgeAppKitEvent(now: 1_000_000_000)
 
         monitor.simulateTick(now: 7_000_000_000)
         #expect(probe.softStalls.count == 1)
@@ -128,6 +131,32 @@ struct RuntimeRecoveryTests {
         #expect(acknowledged)
     }
 
+    @Test func watchdogDoesNotEscalateBeforeAppKitDispatchesItsFirstProbe() {
+        let probe = RuntimeRecoveryProbe()
+        let monitor = MainThreadLivenessMonitor(
+            softStallThreshold: 5,
+            hardStallThreshold: 30,
+            clockDiscontinuityThreshold: 1_000,
+            clock: { 1_000_000_000 },
+            onClockDiscontinuity: { probe.recordClockGap($0, critical: $1) },
+            onSoftStall: { duration, critical in probe.recordSoftStall(duration, critical: critical) },
+            onHardStall: {
+                probe.recordHardStall($0)
+                return true
+            }
+        )
+        monitor.start(interval: 1_000)
+        defer { monitor.stop() }
+
+        monitor.simulateTick(now: 40_000_000_000)
+        #expect(probe.softStalls.isEmpty)
+        #expect(probe.hardStalls.isEmpty)
+
+        monitor.acknowledgeAppKitEvent(now: 40_000_000_000)
+        monitor.simulateTick(now: 71_000_000_000)
+        #expect(probe.hardStalls.count == 1)
+    }
+
     @Test func hardRecoveryPolicyProtectsRecordingAndTranscriptionWork() {
         #expect(
             !RuntimeRecoveryPolicy.shouldRelaunch(
@@ -159,6 +188,7 @@ struct RuntimeRecoveryTests {
         )
         monitor.start(interval: 1_000)
         defer { monitor.stop() }
+        monitor.acknowledgeAppKitEvent(now: 1_000_000_000)
 
         monitor.simulateTick(now: 31_000_000_000)
         monitor.simulateTick(now: 32_000_000_000)
@@ -172,6 +202,13 @@ struct RuntimeRecoveryTests {
             RuntimeMemoryPressurePolicy.plan(for: .warning)
                 == RuntimeMemoryPressurePlan(suspendOptionalWork: true, performRecovery: false)
         )
+
+        var eventGate = RuntimeMemoryPressureEventGate()
+        let acceptedNewerEvent = eventGate.accept(sequence: 2)
+        let acceptedOlderEvent = eventGate.accept(sequence: 1)
+        #expect(acceptedNewerEvent)
+        #expect(!acceptedOlderEvent)
+        #expect(eventGate.latestSequence == 2)
         #expect(
             RuntimeMemoryPressurePolicy.plan(for: .critical)
                 == RuntimeMemoryPressurePlan(suspendOptionalWork: true, performRecovery: false)
@@ -292,6 +329,7 @@ struct RuntimeRecoveryTests {
         )
         monitor.start(interval: 1_000)
         defer { monitor.stop() }
+        monitor.acknowledgeAppKitEvent(now: 1_000_000_000)
         monitor.setCriticalWorkActive(true)
 
         monitor.simulateTick(now: 12_000_000_000)

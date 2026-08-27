@@ -407,7 +407,8 @@ actor CloudSpeechConnectionPool {
         }
 
         healthTasks.removeValue(forKey: key)?.cancel()
-        generations[key] = UUID()
+        let leaseGeneration = UUID()
+        generations[key] = leaseGeneration
         let age = readyConnection.openedAt.duration(to: clock.now)
         guard age < maxStandbyAge else {
             readyConnection.connection.close()
@@ -422,7 +423,7 @@ actor CloudSpeechConnectionPool {
         do {
             try await readyConnection.connection.ping(timeout: leaseValidationTimeout)
             let validationDuration = validationStartedAt.duration(to: clock.now)
-            guard targets[key] == target, !isSuspended, !isShuttingDown else {
+            guard generations[key] == leaseGeneration, targets[key] == target, !isSuspended, !isShuttingDown else {
                 readyConnection.connection.close()
                 logger.notice(
                     "Cloud speech keep-alive lease rejected reason=poolStateChanged validationMs=\(Self.milliseconds(validationDuration), privacy: .public) \(key.diagnosticLabel, privacy: .public)"
@@ -441,8 +442,8 @@ actor CloudSpeechConnectionPool {
             logger.warning(
                 "Cloud speech keep-alive lease rejected reason=validationFailed validationMs=\(Self.milliseconds(validationDuration), privacy: .public) ageMs=\(Self.milliseconds(age), privacy: .public) \(key.diagnosticLabel, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
             )
-            if let generation = generations[key] {
-                scheduleRetry(for: key, generation: generation)
+            if generations[key] == leaseGeneration {
+                scheduleRetry(for: key, generation: leaseGeneration)
             }
             return nil
         }

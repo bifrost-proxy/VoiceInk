@@ -46,6 +46,16 @@ enum RuntimeMemoryPressurePolicy {
     }
 }
 
+struct RuntimeMemoryPressureEventGate {
+    private(set) var latestSequence: UInt64 = 0
+
+    mutating func accept(sequence: UInt64) -> Bool {
+        guard sequence > latestSequence else { return false }
+        latestSequence = sequence
+        return true
+    }
+}
+
 /// Tracks non-persisted work such as model management, warm-up, standalone
 /// retranscription, and re-enhancement that a hard-stall relaunch must not interrupt.
 @MainActor
@@ -88,6 +98,8 @@ final class RuntimeRecoveryCoordinator {
     private var pendingReasons = Set<RuntimeRecoveryReason>()
     private var recoveryEpoch: UInt64 = 0
     private var memoryPressureSource: (any DispatchSourceMemoryPressure)?
+    private let memoryPressureEventSequence = ManagedAtomic<UInt64>(0)
+    private var memoryPressureEventGate = RuntimeMemoryPressureEventGate()
     private var livenessMonitor: MainThreadLivenessMonitor?
     private var appKitEventProbe: AppKitEventProbe?
 
@@ -174,15 +186,24 @@ final class RuntimeRecoveryCoordinator {
         )
         source.setEventHandler { [weak self, weak source] in
             guard let data = source?.data else { return }
+            guard let self else { return }
+            let sequence = self.memoryPressureEventSequence.wrappingIncrementThenLoad(ordering: .relaxed)
             Task { @MainActor [weak self] in
-                await self?.handleMemoryPressure(data)
+                await self?.handleMemoryPressure(data, sequence: sequence)
             }
         }
         source.resume()
         memoryPressureSource = source
     }
 
-    private func handleMemoryPressure(_ event: DispatchSource.MemoryPressureEvent) async {
+    private func handleMemoryPressure(
+        _ event: DispatchSource.MemoryPressureEvent,
+        sequence: UInt64
+    ) async {
+        guard memoryPressureEventGate.accept(sequence: sequence) else {
+            logger.notice("Discarded stale runtime memory-pressure transition sequence=\(sequence, privacy: .public)")
+            return
+        }
         let level: RuntimeMemoryPressureLevel
         if event.contains(.critical) {
             level = .critical
@@ -307,6 +328,7 @@ final class MainThreadLivenessMonitor: @unchecked Sendable {
     private let lastMainAcknowledgement = ManagedAtomic<UInt64>(0)
     private let lastTimerTick = ManagedAtomic<UInt64>(0)
     private let isCriticalWorkActive = ManagedAtomic(false)
+    private let hasAcknowledgedAppKitEvent = ManagedAtomic(false)
     private let didReportSoftStall = ManagedAtomic(false)
     private let didHandleHardStall = ManagedAtomic(false)
     private let queue = DispatchQueue(label: "com.prakashjoshipax.voiceink.main-thread-watchdog", qos: .utility)
@@ -357,6 +379,7 @@ final class MainThreadLivenessMonitor: @unchecked Sendable {
 
     func acknowledgeAppKitEvent(now: UInt64? = nil) {
         lastMainAcknowledgement.store(now ?? clock(), ordering: .releasing)
+        hasAcknowledgedAppKitEvent.store(true, ordering: .releasing)
         didReportSoftStall.store(false, ordering: .releasing)
         didHandleHardStall.store(false, ordering: .releasing)
     }
@@ -393,6 +416,11 @@ final class MainThreadLivenessMonitor: @unchecked Sendable {
         if enqueueMainProbe {
             onProbeRequested()
         }
+
+        // App construction can legitimately occupy the main actor before
+        // AppKit begins dispatching events. Arm hang escalation only after a
+        // posted probe has made one complete trip through the event loop.
+        guard hasAcknowledgedAppKitEvent.load(ordering: .acquiring) else { return }
 
         let lastAcknowledgement = lastMainAcknowledgement.load(ordering: .acquiring)
         guard lastAcknowledgement > 0, now >= lastAcknowledgement else { return }

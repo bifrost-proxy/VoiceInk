@@ -64,6 +64,29 @@ struct CloudSpeechPreconnectionTests {
         #expect(await connector.allConnectionsClosed)
     }
 
+    @Test func runtimeRecoveryInvalidatesALeaseStillAwaitingValidation() async throws {
+        let connector = BlockingLeaseValidationConnector()
+        let pool = CloudSpeechConnectionPool(connector: connector)
+        let target = CloudSpeechConnectionTarget.aliyun(
+            apiKey: "test-key",
+            endpoint: URL(string: "wss://example.com/api-ws/v1/inference")!
+        )
+
+        await pool.reconcile(targets: [target])
+        try await waitUntilReady(pool, key: target.key)
+        let leaseTask = Task { await pool.lease(for: target) }
+        await connector.validationGate.waitUntilStarted()
+
+        await pool.recoverRuntimeConnections()
+        await connector.validationGate.release()
+
+        #expect(await leaseTask.value == nil)
+        #expect(connector.firstConnection.isClosed)
+        try await waitUntilReady(pool, key: target.key)
+        #expect(await connector.openCount == 2)
+        await pool.shutdown()
+    }
+
     @Test func failedLeaseValidationRejectsTheStaleConnectionAndBuildsAReplacement() async throws {
         let connector = FakeCloudSpeechConnector()
         let pool = CloudSpeechConnectionPool(connector: connector)
@@ -454,6 +477,102 @@ private actor FakeCloudSpeechConnector: CloudSpeechWebSocketConnecting {
         let connection = FakeCloudSpeechConnection(onClosed: onClosed)
         connections.append(connection)
         return connection
+    }
+}
+
+private actor LeaseValidationGate {
+    private var didStart = false
+    private var isReleased = false
+    private var releaseContinuation: CheckedContinuation<Void, Never>?
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func waitForRelease() async {
+        didStart = true
+        startWaiters.forEach { $0.resume() }
+        startWaiters.removeAll()
+        if isReleased { return }
+        await withCheckedContinuation { continuation in
+            releaseContinuation = continuation
+        }
+    }
+
+    func waitUntilStarted() async {
+        if didStart { return }
+        await withCheckedContinuation { continuation in
+            startWaiters.append(continuation)
+        }
+    }
+
+    func release() {
+        isReleased = true
+        releaseContinuation?.resume()
+        releaseContinuation = nil
+    }
+}
+
+private actor BlockingLeaseValidationConnector: CloudSpeechWebSocketConnecting {
+    let validationGate = LeaseValidationGate()
+    nonisolated let firstConnection: BlockingLeaseValidationConnection
+    private var connections: [any CloudSpeechWebSocketConnection] = []
+
+    init() {
+        firstConnection = BlockingLeaseValidationConnection()
+    }
+
+    var openCount: Int { connections.count }
+
+    func open(
+        target _: CloudSpeechConnectionTarget,
+        onClosed: (@Sendable (Error?) -> Void)?
+    ) async throws -> any CloudSpeechWebSocketConnection {
+        let connection: any CloudSpeechWebSocketConnection
+        if connections.isEmpty {
+            firstConnection.configure(onClosed: onClosed, validationGate: validationGate)
+            connection = firstConnection
+        } else {
+            connection = FakeCloudSpeechConnection(onClosed: onClosed)
+        }
+        connections.append(connection)
+        return connection
+    }
+}
+
+private final class BlockingLeaseValidationConnection: CloudSpeechWebSocketConnection, @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedIsClosed = false
+    private var onClosed: (@Sendable (Error?) -> Void)?
+    private var validationGate: LeaseValidationGate?
+
+    var isClosed: Bool { lock.withLock { storedIsClosed } }
+
+    func configure(
+        onClosed: (@Sendable (Error?) -> Void)?,
+        validationGate: LeaseValidationGate
+    ) {
+        lock.withLock {
+            self.onClosed = onClosed
+            self.validationGate = validationGate
+        }
+    }
+
+    func send(_: URLSessionWebSocketTask.Message) async throws {}
+
+    func receive() async throws -> URLSessionWebSocketTask.Message {
+        throw StreamingTranscriptionError.notConnected
+    }
+
+    func ping(timeout _: Duration) async throws {
+        guard let validationGate = lock.withLock({ self.validationGate }) else { return }
+        await validationGate.waitForRelease()
+    }
+
+    func close() {
+        let callback = lock.withLock { () -> (@Sendable (Error?) -> Void)? in
+            guard !storedIsClosed else { return nil }
+            storedIsClosed = true
+            return onClosed
+        }
+        callback?(nil)
     }
 }
 
