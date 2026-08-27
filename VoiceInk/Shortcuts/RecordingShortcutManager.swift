@@ -401,6 +401,9 @@ class RecordingShortcutManager: ObservableObject {
         let started = shortcutMonitor.start(
             shortcuts: shortcuts,
             interruptibleActions: interruptibleRecordingActions,
+            initiallyPressedActions: preservesShortcutPressStateDuringRecovery
+                ? shortcutModeHandler.activePressSnapshot.map { [$0.action: $0.pressedAt] } ?? [:]
+                : [:],
             onKeyDown: { [weak self] action, eventTime in
                 Task { @MainActor in
                     guard let self else { return }
@@ -670,6 +673,16 @@ final class RecordingShortcutModeHandler {
 
     var hasActivePress: Bool {
         isShortcutPressed
+    }
+
+    var activePressSnapshot: (action: ShortcutAction, pressedAt: TimeInterval)? {
+        guard isShortcutPressed,
+            let action = activeRecordingShortcutAction,
+            let pressedAt = shortcutPressStartTime
+        else {
+            return nil
+        }
+        return (action, pressedAt)
     }
 
     func handleKeyDown(

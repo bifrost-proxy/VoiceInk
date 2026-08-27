@@ -458,7 +458,7 @@ actor CloudSpeechConnectionPool {
         )
         if suspended {
             for key in targets.keys {
-                invalidateConnectionWork(for: key)
+                invalidateConnectionWork(for: key, preserveRetrySchedule: true, resetFailureCount: false)
             }
         } else {
             for key in targets.keys {
@@ -477,7 +477,7 @@ actor CloudSpeechConnectionPool {
             "Cloud speech keep-alive runtime recovery started targetCount=\(self.targets.count, privacy: .public) suspended=\(self.isSuspended, privacy: .public)"
         )
         for key in targets.keys {
-            invalidateConnectionWork(for: key)
+            invalidateConnectionWork(for: key, preserveRetrySchedule: true, resetFailureCount: false)
         }
         guard !isSuspended else { return }
         for key in targets.keys where !dormantKeys.contains(key) {
@@ -693,19 +693,30 @@ actor CloudSpeechConnectionPool {
         activityTokens[key] = nil
         idleTasks[key] = nil
         dormantKeys.insert(key)
-        invalidateConnectionWork(for: key)
+        invalidateConnectionWork(for: key, preserveRetrySchedule: true, resetFailureCount: false)
         logger.notice(
             "Cloud speech keep-alive paused reason=idleTimeout \(key.diagnosticLabel, privacy: .public)"
         )
     }
 
-    private func invalidateConnectionWork(for key: CloudSpeechConnectionKey) {
-        generations[key] = UUID()
+    private func invalidateConnectionWork(
+        for key: CloudSpeechConnectionKey,
+        preserveRetrySchedule: Bool = false,
+        resetFailureCount: Bool = true
+    ) {
+        let keepsScheduledRetry = preserveRetrySchedule && retryTasks[key] != nil
+        if !keepsScheduledRetry {
+            generations[key] = UUID()
+        }
         readyConnections.removeValue(forKey: key)?.connection.close()
         connectTasks.removeValue(forKey: key)?.cancel()
-        retryTasks.removeValue(forKey: key)?.cancel()
+        if !keepsScheduledRetry {
+            retryTasks.removeValue(forKey: key)?.cancel()
+        }
         healthTasks.removeValue(forKey: key)?.cancel()
-        failureCounts[key] = 0
+        if resetFailureCount {
+            failureCounts[key] = 0
+        }
     }
 
     private func removeSlot(for key: CloudSpeechConnectionKey) {

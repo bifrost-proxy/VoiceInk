@@ -251,6 +251,23 @@ struct RuntimeRecoveryTests {
         #expect(!activity.isBusy)
         #expect(activity.activeOperationCount == 0)
     }
+
+    @Test @MainActor func pendingAudioFilesRemainProtectedBeforeProcessingStarts() throws {
+        let manager = AudioTranscriptionManager.shared
+        manager.clearAll()
+        defer { manager.clearAll() }
+        let audioURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("VoiceInk-PendingAudio-\(UUID().uuidString).wav")
+        defer { try? FileManager.default.removeItem(at: audioURL) }
+        try Data(repeating: 0, count: 44).write(to: audioURL)
+
+        manager.addToQueue(urls: [audioURL])
+        let queuedItem = try #require(manager.queue.first)
+        #expect(manager.hasQueuedWork)
+
+        manager.removeFromQueue(id: queuedItem.id)
+        #expect(!manager.hasQueuedWork)
+    }
 }
 
 private final class RuntimeRecoveryProbe: @unchecked Sendable {

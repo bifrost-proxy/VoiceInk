@@ -4,7 +4,7 @@ import Foundation
 import os
 
 final class ShortcutMonitor {
-    fileprivate enum EventKind {
+    enum EventKind {
         case keyDown
         case keyUp
         case flagsChanged
@@ -36,15 +36,14 @@ final class ShortcutMonitor {
     func start(
         shortcuts: [ShortcutAction: Shortcut],
         interruptibleActions: Set<ShortcutAction> = [],
+        initiallyPressedActions: [ShortcutAction: TimeInterval] = [:],
         onKeyDown: @escaping (ShortcutAction, TimeInterval) -> Void,
         onKeyUp: @escaping (ShortcutAction, TimeInterval) -> Void,
         onShortcutInterrupted: ((ShortcutAction, TimeInterval) -> Void)? = nil
     ) -> Bool {
         stop()
 
-        for (action, shortcut) in shortcuts {
-            self.shortcuts[action] = ShortcutState(shortcut: shortcut)
-        }
+        configureShortcutStates(shortcuts, initiallyPressedActions: initiallyPressedActions)
 
         guard !self.shortcuts.isEmpty else {
             return true
@@ -56,6 +55,23 @@ final class ShortcutMonitor {
         self.onShortcutInterrupted = onShortcutInterrupted
 
         return installEventTap()
+    }
+
+    func configureShortcutStates(
+        _ shortcuts: [ShortcutAction: Shortcut],
+        initiallyPressedActions: [ShortcutAction: TimeInterval] = [:]
+    ) {
+        self.shortcuts = shortcuts.mapValues { ShortcutState(shortcut: $0) }
+        for (action, pressedAt) in initiallyPressedActions {
+            guard var state = self.shortcuts[action] else { continue }
+            state.isDown = true
+            state.pressedAt = pressedAt
+            self.shortcuts[action] = state
+        }
+    }
+
+    func isTrackingPress(for action: ShortcutAction) -> Bool {
+        shortcuts[action]?.isDown == true
     }
 
     func stop() {
@@ -167,7 +183,7 @@ final class ShortcutMonitor {
         }
     }
 
-    private func handleEvent(
+    func handleEvent(
         kind: EventKind,
         keyCode: UInt16,
         modifierFlags: NSEvent.ModifierFlags,

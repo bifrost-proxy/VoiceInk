@@ -12,6 +12,7 @@ class AudioTranscriptionManager: ObservableObject {
 
     @Published var queue: [AudioFileQueueItem] = []
     @Published var isProcessingQueue = false
+    @Published private(set) var hasQueuedWork = false
     @Published var lastCompletedItemId: UUID?
 
     // MARK: - Private
@@ -40,6 +41,7 @@ class AudioTranscriptionManager: ObservableObject {
             let item = AudioFileQueueItem(url: url)
             queue.append(item)
         }
+        refreshQueuedWorkState()
     }
 
     /// Remove a pending item from the queue.
@@ -51,6 +53,7 @@ class AudioTranscriptionManager: ObservableObject {
         guard case .pending = item.status else { return }
 
         queue.remove(at: index)
+        refreshQueuedWorkState()
     }
 
     /// Clear all items from the queue, cancelling any in-progress work.
@@ -58,6 +61,7 @@ class AudioTranscriptionManager: ObservableObject {
         cancelProcessing()
         queue.removeAll()
         lastCompletedItemId = nil
+        refreshQueuedWorkState()
     }
 
     /// Retry a failed item by resetting it to pending and re-enqueuing.
@@ -67,6 +71,7 @@ class AudioTranscriptionManager: ObservableObject {
         else { return }
 
         item.status = .pending
+        refreshQueuedWorkState()
     }
 
     /// Start processing pending items in the queue sequentially.
@@ -86,6 +91,7 @@ class AudioTranscriptionManager: ObservableObject {
 
             if self.processingGeneration == generation {
                 self.isProcessingQueue = false
+                self.refreshQueuedWorkState()
             }
         }
     }
@@ -101,6 +107,7 @@ class AudioTranscriptionManager: ObservableObject {
                 item.status = .pending
             }
         }
+        refreshQueuedWorkState()
     }
 
     var hasPendingItems: Bool {
@@ -108,6 +115,10 @@ class AudioTranscriptionManager: ObservableObject {
             if case .pending = $0.status { return true }
             return false
         }
+    }
+
+    private func refreshQueuedWorkState() {
+        hasQueuedWork = queue.contains { !$0.status.isTerminal }
     }
 
     // MARK: - Private

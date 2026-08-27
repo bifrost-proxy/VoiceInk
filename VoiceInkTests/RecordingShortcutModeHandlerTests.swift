@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Testing
 
@@ -5,6 +6,26 @@ import Testing
 
 @MainActor
 struct RecordingShortcutModeHandlerTests {
+    @Test func replacementMonitorConsumesReleaseForASeededActivePress() {
+        let monitor = ShortcutMonitor()
+        let shortcut = Shortcut.key(keyCode: 12, modifierFlags: [.command])
+        monitor.configureShortcutStates(
+            [.primaryRecording: shortcut],
+            initiallyPressedActions: [.primaryRecording: 5]
+        )
+
+        #expect(monitor.isTrackingPress(for: .primaryRecording))
+        #expect(
+            monitor.handleEvent(
+                kind: .keyUp,
+                keyCode: shortcut.keyCode,
+                modifierFlags: [],
+                eventTime: 5.2
+            )
+        )
+        #expect(!monitor.isTrackingPress(for: .primaryRecording))
+    }
+
     @Test func activeShortcutPressRemainsVisibleUntilKeyUp() async {
         let handler = RecordingShortcutModeHandler(
             canHandleShortcutAction: { true },

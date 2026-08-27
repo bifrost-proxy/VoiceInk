@@ -104,18 +104,18 @@ final class RuntimeRecoveryCoordinator {
         setupLifecycleObservers()
         setupMemoryPressureMonitoring()
         let initialCriticalWork = engine.recordingState != .idle
-            || AudioTranscriptionManager.shared.isProcessingQueue
+            || AudioTranscriptionManager.shared.hasQueuedWork
             || UpdateManager.shared.isBusy
             || engine.assistantSession.isBusy
             || ModelManagementActivity.shared.isBusy
         setupLivenessMonitoring(isCriticalWorkActive: initialCriticalWork)
         let appWork = Publishers.CombineLatest4(
             engine.$recordingState,
-            AudioTranscriptionManager.shared.$isProcessingQueue,
+            AudioTranscriptionManager.shared.$hasQueuedWork,
             UpdateManager.shared.$activity,
             engine.assistantSession.$phase
-        ).map { recordingState, isProcessingAudioFiles, updateActivity, assistantPhase in
-            recordingState != .idle || isProcessingAudioFiles || updateActivity.isBusy
+        ).map { recordingState, hasQueuedAudioFiles, updateActivity, assistantPhase in
+            recordingState != .idle || hasQueuedAudioFiles || updateActivity.isBusy
                     || assistantPhase == .responding || assistantPhase == .sendingFollowUp
         }
         criticalWorkObserver = appWork.combineLatest(ModelManagementActivity.shared.$activeOperationCount)
