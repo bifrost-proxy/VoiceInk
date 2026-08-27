@@ -3,6 +3,12 @@ import SwiftData
 import SwiftUI
 import os
 
+enum RuntimePressureResourceReleasePolicy {
+    static func canRelease(activeOperationCount: Int, isRecordingActive: Bool) -> Bool {
+        activeOperationCount == 0 && !isRecordingActive
+    }
+}
+
 @MainActor
 class TranscriptionServiceRegistry {
     private weak var modelProvider: (any WhisperModelProvider)?
@@ -10,7 +16,9 @@ class TranscriptionServiceRegistry {
     private let modelContext: ModelContext
     private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "TranscriptionServiceRegistry")
     private var modeConfigurationsObserver: NSObjectProtocol?
+    private var recordingStoppedObserver: NSObjectProtocol?
     private var activeOperationCount = 0
+    private var pressureReleaseRequested = false
 
     private(set) lazy var localTranscriptionService = WhisperTranscriptionService(
         modelsDirectory: modelsDirectory,
@@ -35,11 +43,24 @@ class TranscriptionServiceRegistry {
                 await self?.handleModeConfigurationsDidChange()
             }
         }
+        recordingStoppedObserver = NotificationCenter.default.addObserver(
+            forName: .recordingDidStop,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard self?.pressureReleaseRequested == true else { return }
+                await self?.releaseAllLocalModelResourcesForPressure()
+            }
+        }
     }
 
     deinit {
         if let modeConfigurationsObserver {
             NotificationCenter.default.removeObserver(modeConfigurationsObserver)
+        }
+        if let recordingStoppedObserver {
+            NotificationCenter.default.removeObserver(recordingStoppedObserver)
         }
     }
 
@@ -134,6 +155,38 @@ class TranscriptionServiceRegistry {
         }
     }
 
+    /// Memory pressure is an explicit request to relinquish optional cached
+    /// inference state, including models retained because a mode references
+    /// them. A later transcription reloads the selected model on demand.
+    @discardableResult
+    func releaseAllLocalModelResourcesForPressure() async -> Bool {
+        pressureReleaseRequested = true
+        guard RuntimePressureResourceReleasePolicy.canRelease(
+            activeOperationCount: activeOperationCount,
+            isRecordingActive: AudioDeviceManager.shared.isRecordingActive
+        ) else {
+            return false
+        }
+
+        await modelProvider?.releaseAllResources()
+        guard RuntimePressureResourceReleasePolicy.canRelease(
+            activeOperationCount: activeOperationCount,
+            isRecordingActive: AudioDeviceManager.shared.isRecordingActive
+        ) else {
+            return false
+        }
+        await fluidAudioTranscriptionService.cleanup()
+        _ = await sherpaOnnxTranscriptionService.releaseAllResources()
+        await QwenMLXRuntime.shared.stop()
+        pressureReleaseRequested = false
+        logger.notice("Released all idle local model resources under memory pressure")
+        return true
+    }
+
+    func cancelPressureResourceRelease() {
+        pressureReleaseRequested = false
+    }
+
     private func managedSession(_ session: TranscriptionSession) -> TranscriptionSession {
         operationDidStart()
         return ResourceManagedTranscriptionSession(session: session) { [weak self] in
@@ -149,7 +202,12 @@ class TranscriptionServiceRegistry {
         activeOperationCount = max(0, activeOperationCount - 1)
         guard activeOperationCount == 0 else { return }
         Task { @MainActor [weak self] in
-            await self?.releaseUnboundLocalModelResources()
+            guard let self else { return }
+            if self.pressureReleaseRequested {
+                await self.releaseAllLocalModelResourcesForPressure()
+            } else {
+                await self.releaseUnboundLocalModelResources()
+            }
         }
     }
 

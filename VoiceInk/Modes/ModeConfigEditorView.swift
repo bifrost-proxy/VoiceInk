@@ -16,6 +16,7 @@ struct ModeConfigEditorView: View {
     @State private var promptEditorMode: PromptEditorView.Mode?
     @State private var promptEditorID = UUID()
     @State private var didSaveConfiguration = false
+    @State private var protectedEditorWorkID: UUID?
 
     init(mode: ConfigurationMode, modeManager: ModeManager, onDismiss: @escaping () -> Void) {
         self.mode = mode
@@ -50,8 +51,19 @@ struct ModeConfigEditorView: View {
                 )
             }
         }
-        .onAppear(perform: prepareView)
-        .onDisappear(perform: cleanupUnsavedShortcutIfNeeded)
+        .onAppear {
+            if protectedEditorWorkID == nil {
+                protectedEditorWorkID = RuntimeProtectedWorkActivity.shared.begin()
+            }
+            prepareView()
+        }
+        .onDisappear {
+            cleanupUnsavedShortcutIfNeeded()
+            if let protectedEditorWorkID {
+                RuntimeProtectedWorkActivity.shared.end(protectedEditorWorkID)
+                self.protectedEditorWorkID = nil
+            }
+        }
         .onExitCommand(perform: handleExitCommand)
     }
 

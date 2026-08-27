@@ -351,6 +351,11 @@ class WhisperModelManager: ObservableObject {
         loadedWhisperModel = nil
     }
 
+    func releaseAllResources() async {
+        await cleanupResources()
+        loadedWhisperModel = nil
+    }
+
     func clearDownloadedModels() async {
         let operationID = RuntimeProtectedWorkActivity.shared.begin()
         defer { RuntimeProtectedWorkActivity.shared.end(operationID) }

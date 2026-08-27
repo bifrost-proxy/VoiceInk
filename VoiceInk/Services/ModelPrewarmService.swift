@@ -153,12 +153,18 @@ final class ModelPrewarmService: ObservableObject {
         for task in tasksToStop {
             await task.value
         }
-        logger.notice("Model prewarm is quiescent under runtime pressure")
+        let releasedResources = await serviceRegistry.releaseAllLocalModelResourcesForPressure()
+        if releasedResources {
+            logger.notice("Model prewarm is quiescent and idle local model resources were released")
+        } else {
+            logger.notice("Model prewarm is quiescent; resource release deferred for active recording work")
+        }
     }
 
     func resumeAfterRuntimePressure() {
         guard isSuspendedForRuntimePressure else { return }
         isSuspendedForRuntimePressure = false
+        serviceRegistry.cancelPressureResourceRelease()
         logger.notice("Model prewarm runtime-pressure suspension cleared")
     }
 

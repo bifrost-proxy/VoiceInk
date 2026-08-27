@@ -24,7 +24,7 @@ enum RuntimeRecoveryPolicy {
     }
 }
 
-enum RuntimeMemoryPressureLevel: Sendable {
+enum RuntimeMemoryPressureLevel: Equatable, Sendable {
     case normal
     case warning
     case critical
@@ -36,6 +36,19 @@ struct RuntimeMemoryPressurePlan: Equatable, Sendable {
 }
 
 enum RuntimeMemoryPressurePolicy {
+    static func level(for event: DispatchSource.MemoryPressureEvent) -> RuntimeMemoryPressureLevel {
+        // Dispatch sources coalesce transitions. A delivered `.normal` bit is
+        // the recovery edge and must win over stale warning/critical bits that
+        // accumulated before the handler ran.
+        if event.contains(.normal) {
+            return .normal
+        }
+        if event.contains(.critical) {
+            return .critical
+        }
+        return .warning
+    }
+
     static func plan(for level: RuntimeMemoryPressureLevel) -> RuntimeMemoryPressurePlan {
         switch level {
         case .warning, .critical:
@@ -193,14 +206,7 @@ final class RuntimeRecoveryCoordinator {
             logger.notice("Discarded stale runtime memory-pressure transition sequence=\(sequence, privacy: .public)")
             return
         }
-        let level: RuntimeMemoryPressureLevel
-        if event.contains(.critical) {
-            level = .critical
-        } else if event.contains(.warning) {
-            level = .warning
-        } else {
-            level = .normal
-        }
+        let level = RuntimeMemoryPressurePolicy.level(for: event)
         let plan = RuntimeMemoryPressurePolicy.plan(for: level)
         if plan.suspendOptionalWork {
             logger.warning(
@@ -327,6 +333,7 @@ final class MainThreadLivenessMonitor: @unchecked Sendable {
     private let lastTimerTick = ManagedAtomic<UInt64>(0)
     private let isCriticalWorkActive = ManagedAtomic(false)
     private let hasAcknowledgedAppKitEvent = ManagedAtomic(false)
+    private let isAppKitProbeOutstanding = ManagedAtomic(false)
     private let isPermanentlyDisarmed = ManagedAtomic(false)
     private let didReportSoftStall = ManagedAtomic(false)
     private let didHandleHardStall = ManagedAtomic(false)
@@ -384,13 +391,14 @@ final class MainThreadLivenessMonitor: @unchecked Sendable {
     func acknowledgeAppKitEvent(now: UInt64? = nil) {
         lastMainAcknowledgement.store(now ?? clock(), ordering: .releasing)
         hasAcknowledgedAppKitEvent.store(true, ordering: .releasing)
+        isAppKitProbeOutstanding.store(false, ordering: .releasing)
         didReportSoftStall.store(false, ordering: .releasing)
         didHandleHardStall.store(false, ordering: .releasing)
     }
 
     /// Test seam for deterministic fault simulation without blocking the test runner.
-    func simulateTick(now: UInt64) {
-        evaluate(now: now, enqueueMainProbe: false)
+    func simulateTick(now: UInt64, enqueueMainProbe: Bool = false) {
+        evaluate(now: now, enqueueMainProbe: enqueueMainProbe)
     }
 
     private func tick() {
@@ -411,16 +419,12 @@ final class MainThreadLivenessMonitor: @unchecked Sendable {
                 didHandleHardStall.store(false, ordering: .releasing)
                 let criticalWork = isCriticalWorkActive.load(ordering: .acquiring)
                 onClockDiscontinuity(Self.seconds(gap), criticalWork)
-                if enqueueMainProbe {
-                    onProbeRequested()
-                }
+                requestProbeIfNeeded(enqueueMainProbe)
                 return
             }
         }
 
-        if enqueueMainProbe {
-            onProbeRequested()
-        }
+        requestProbeIfNeeded(enqueueMainProbe)
 
         // App construction can legitimately occupy the main actor before
         // AppKit begins dispatching events. Arm hang escalation only after a
@@ -456,6 +460,16 @@ final class MainThreadLivenessMonitor: @unchecked Sendable {
                 didHandleHardStall.store(true, ordering: .releasing)
             }
         }
+    }
+
+    private func requestProbeIfNeeded(_ shouldEnqueue: Bool) {
+        guard shouldEnqueue else { return }
+        guard isAppKitProbeOutstanding.compareExchange(
+            expected: false,
+            desired: true,
+            ordering: .acquiringAndReleasing
+        ).exchanged else { return }
+        onProbeRequested()
     }
 
     private static func nanoseconds(_ interval: TimeInterval) -> UInt64 {

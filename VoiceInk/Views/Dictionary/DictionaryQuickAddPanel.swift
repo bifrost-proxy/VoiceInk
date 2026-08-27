@@ -13,6 +13,7 @@ final class DictionaryQuickAddManager {
     private var panel: DictionaryQuickAddPanel?
     private var hostingController: NSHostingController<AnyView>?
     private var previousApp: NSRunningApplication?
+    private var protectedEditorWorkID: UUID?
 
     var isVisible: Bool { panel?.isVisible == true }
 
@@ -46,14 +47,19 @@ final class DictionaryQuickAddManager {
         newPanel.contentView = controller.view
         hostingController = controller
         panel = newPanel
+        protectedEditorWorkID = RuntimeProtectedWorkActivity.shared.begin()
         newPanel.makeKeyAndOrderFront(nil)
     }
 
     func hide() {
-        guard isVisible else { return }
+        guard panel != nil || protectedEditorWorkID != nil else { return }
         panel?.orderOut(nil)
         panel = nil
         hostingController = nil
+        if let protectedEditorWorkID {
+            RuntimeProtectedWorkActivity.shared.end(protectedEditorWorkID)
+            self.protectedEditorWorkID = nil
+        }
         previousApp?.activate(options: .activateIgnoringOtherApps)
         previousApp = nil
     }

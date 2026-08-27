@@ -271,6 +271,55 @@ struct RuntimeRecoveryTests {
             RuntimeMemoryPressurePolicy.plan(for: .normal)
                 == RuntimeMemoryPressurePlan(suspendOptionalWork: false, performRecovery: true)
         )
+
+        let coalescedRecovery: DispatchSource.MemoryPressureEvent = [.critical, .normal]
+        #expect(RuntimeMemoryPressurePolicy.level(for: coalescedRecovery) == .normal)
+    }
+
+    @Test func pressureResourceReleaseWaitsForRecordingAndModelWorkToFinish() {
+        #expect(
+            RuntimePressureResourceReleasePolicy.canRelease(
+                activeOperationCount: 0,
+                isRecordingActive: false
+            )
+        )
+        #expect(
+            !RuntimePressureResourceReleasePolicy.canRelease(
+                activeOperationCount: 1,
+                isRecordingActive: false
+            )
+        )
+        #expect(
+            !RuntimePressureResourceReleasePolicy.canRelease(
+                activeOperationCount: 0,
+                isRecordingActive: true
+            )
+        )
+    }
+
+    @Test func watchdogKeepsOnlyOneAppKitProbeOutstanding() {
+        let probe = RuntimeRecoveryProbe()
+        let monitor = MainThreadLivenessMonitor(
+            softStallThreshold: 5,
+            hardStallThreshold: 30,
+            clockDiscontinuityThreshold: 1_000,
+            clock: { 1_000_000_000 },
+            onProbeRequested: { probe.recordProbeRequest() },
+            onClockDiscontinuity: { _, _ in },
+            onSoftStall: { _, _ in },
+            onHardStall: { _, _ in false }
+        )
+        monitor.start(interval: 1_000)
+        defer { monitor.stop() }
+        monitor.acknowledgeAppKitEvent(now: 1_000_000_000)
+
+        monitor.simulateTick(now: 2_000_000_000, enqueueMainProbe: true)
+        monitor.simulateTick(now: 3_000_000_000, enqueueMainProbe: true)
+        #expect(probe.probeRequestCount == 1)
+
+        monitor.acknowledgeAppKitEvent(now: 3_500_000_000)
+        monitor.simulateTick(now: 4_000_000_000, enqueueMainProbe: true)
+        #expect(probe.probeRequestCount == 2)
     }
 
     @Test func relaunchHelperIsPreparedWithARecoveryCooldown() throws {
@@ -416,11 +465,13 @@ private final class RuntimeRecoveryProbe: @unchecked Sendable {
     private var storedClockGapCriticalStates: [Bool] = []
     private var storedSoftStalls: [(TimeInterval, Bool)] = []
     private var storedHardStalls: [TimeInterval] = []
+    private var storedProbeRequestCount = 0
 
     var clockGaps: [TimeInterval] { lock.withLock { storedClockGaps } }
     var clockGapCriticalStates: [Bool] { lock.withLock { storedClockGapCriticalStates } }
     var softStalls: [(TimeInterval, Bool)] { lock.withLock { storedSoftStalls } }
     var hardStalls: [TimeInterval] { lock.withLock { storedHardStalls } }
+    var probeRequestCount: Int { lock.withLock { storedProbeRequestCount } }
 
     func recordClockGap(_ duration: TimeInterval, critical: Bool) {
         lock.withLock {
@@ -435,6 +486,10 @@ private final class RuntimeRecoveryProbe: @unchecked Sendable {
 
     func recordHardStall(_ duration: TimeInterval) {
         lock.withLock { storedHardStalls.append(duration) }
+    }
+
+    func recordProbeRequest() {
+        lock.withLock { storedProbeRequestCount += 1 }
     }
 }
 

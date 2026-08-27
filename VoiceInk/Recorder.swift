@@ -207,6 +207,7 @@ class Recorder: NSObject, ObservableObject {
             await playbackController.resumeMedia()
         }
         deviceManager.isRecordingActive = false
+        NotificationCenter.default.post(name: .recordingDidStop, object: nil)
     }
 
     private func muteSystemAudio() {
