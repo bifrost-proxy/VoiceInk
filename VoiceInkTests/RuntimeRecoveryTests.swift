@@ -134,6 +134,19 @@ struct RuntimeRecoveryTests {
         #expect(acknowledged)
     }
 
+    @Test @MainActor func appKitProbeReportsEventCreationFailure() {
+        let eventProbe = AppKitEventProbe(eventFactory: { _ in nil })
+        defer { eventProbe.stop() }
+        var requestFailed = false
+        eventProbe.onRequestFailed = {
+            requestFailed = true
+        }
+
+        eventProbe.requestProbe()
+
+        #expect(requestFailed)
+    }
+
     @Test func watchdogDoesNotEscalateBeforeAppKitDispatchesItsFirstProbe() {
         let probe = RuntimeRecoveryProbe()
         let monitor = MainThreadLivenessMonitor(
@@ -432,6 +445,29 @@ struct RuntimeRecoveryTests {
 
         monitor.acknowledgeAppKitEvent(now: 3_500_000_000)
         monitor.simulateTick(now: 4_000_000_000, enqueueMainProbe: true)
+        #expect(probe.probeRequestCount == 2)
+    }
+
+    @Test func watchdogRetriesAfterAppKitProbeCreationFails() {
+        let probe = RuntimeRecoveryProbe()
+        let monitor = MainThreadLivenessMonitor(
+            softStallThreshold: 5,
+            hardStallThreshold: 30,
+            clockDiscontinuityThreshold: 1_000,
+            clock: { 1_000_000_000 },
+            onProbeRequested: { probe.recordProbeRequest() },
+            onClockDiscontinuity: { _, _ in },
+            onSoftStall: { _, _ in },
+            onHardStall: { _, _ in false }
+        )
+        monitor.start(interval: 1_000)
+        defer { monitor.stop() }
+        monitor.acknowledgeAppKitEvent(now: 1_000_000_000)
+
+        monitor.simulateTick(now: 2_000_000_000, enqueueMainProbe: true)
+        monitor.reportAppKitProbeRequestFailure()
+        monitor.simulateTick(now: 3_000_000_000, enqueueMainProbe: true)
+
         #expect(probe.probeRequestCount == 2)
     }
 

@@ -305,6 +305,9 @@ final class RuntimeRecoveryCoordinator {
         eventProbe.onAcknowledged = { [weak monitor] in
             monitor?.acknowledgeAppKitEvent()
         }
+        eventProbe.onRequestFailed = { [weak monitor] in
+            monitor?.reportAppKitProbeRequestFailure()
+        }
         monitor.setCriticalWorkActive(isCriticalWorkActive)
         monitor.start()
         observers.append(
@@ -431,6 +434,10 @@ final class MainThreadLivenessMonitor: @unchecked Sendable {
         didHandleHardStall.store(false, ordering: .releasing)
     }
 
+    func reportAppKitProbeRequestFailure() {
+        isAppKitProbeOutstanding.store(false, ordering: .releasing)
+    }
+
     /// Test seam for deterministic fault simulation without blocking the test runner.
     func simulateTick(now: UInt64, enqueueMainProbe: Bool = false) {
         evaluate(now: now, enqueueMainProbe: enqueueMainProbe)
@@ -524,9 +531,12 @@ final class AppKitEventProbe {
     static let eventSubtype = Int16(22_089)
     private var monitor: Any?
     private var sequence: Int = 0
+    private let eventFactory: ((Int) -> NSEvent?)?
     var onAcknowledged: (() -> Void)?
+    var onRequestFailed: (() -> Void)?
 
-    init() {
+    init(eventFactory: ((Int) -> NSEvent?)? = nil) {
+        self.eventFactory = eventFactory
         monitor = NSEvent.addLocalMonitorForEvents(matching: .applicationDefined) { [weak self] event in
             self?.handleDispatchedEvent(event) ?? event
         }
@@ -543,17 +553,24 @@ final class AppKitEventProbe {
 
     func requestProbe() {
         sequence &+= 1
-        guard let event = NSEvent.otherEvent(
-            with: .applicationDefined,
-            location: .zero,
-            modifierFlags: [],
-            timestamp: ProcessInfo.processInfo.systemUptime,
-            windowNumber: 0,
-            context: nil,
-            subtype: Self.eventSubtype,
-            data1: sequence,
-            data2: 0
-        ) else {
+        let event: NSEvent?
+        if let eventFactory {
+            event = eventFactory(sequence)
+        } else {
+            event = NSEvent.otherEvent(
+                with: .applicationDefined,
+                location: .zero,
+                modifierFlags: [],
+                timestamp: ProcessInfo.processInfo.systemUptime,
+                windowNumber: 0,
+                context: nil,
+                subtype: Self.eventSubtype,
+                data1: sequence,
+                data2: 0
+            )
+        }
+        guard let event else {
+            onRequestFailed?()
             return
         }
         NSApplication.shared.postEvent(event, atStart: false)
@@ -564,6 +581,7 @@ final class AppKitEventProbe {
         NSEvent.removeMonitor(monitor)
         self.monitor = nil
         onAcknowledged = nil
+        onRequestFailed = nil
     }
 
     deinit {

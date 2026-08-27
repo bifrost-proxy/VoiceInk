@@ -185,6 +185,7 @@ struct CustomTranscriptionModelEditorPanel: View {
     @State private var isSaving = false
     @State private var connectionTest: ConnectionTestState = .idle
     @State private var connectionTestTask: Task<Void, Never>?
+    @State private var protectedEditorWorkID: UUID?
 
     private var isEditing: Bool {
         editingModel != nil
@@ -262,7 +263,19 @@ struct CustomTranscriptionModelEditorPanel: View {
                 primaryAction: saveModel
             )
         }
-        .onAppear(perform: loadModel)
+        .onAppear {
+            if protectedEditorWorkID == nil {
+                protectedEditorWorkID = RuntimeProtectedWorkActivity.shared.begin()
+            }
+            loadModel()
+        }
+        .onDisappear {
+            connectionTestTask?.cancel()
+            if let protectedEditorWorkID {
+                RuntimeProtectedWorkActivity.shared.end(protectedEditorWorkID)
+                self.protectedEditorWorkID = nil
+            }
+        }
         .onChange(of: editingModel?.id) { _, _ in
             loadModel()
         }
@@ -387,6 +400,7 @@ struct CustomEnhancementModelEditorPanel: View {
     @State private var isSaving = false
     @State private var connectionTest: ConnectionTestState = .idle
     @State private var connectionTestTask: Task<Void, Never>?
+    @State private var protectedEditorWorkID: UUID?
 
     private var isEditing: Bool {
         editingProvider != nil
@@ -466,7 +480,19 @@ struct CustomEnhancementModelEditorPanel: View {
                 onPrimary: saveProvider
             )
         }
-        .onAppear(perform: loadProvider)
+        .onAppear {
+            if protectedEditorWorkID == nil {
+                protectedEditorWorkID = RuntimeProtectedWorkActivity.shared.begin()
+            }
+            loadProvider()
+        }
+        .onDisappear {
+            connectionTestTask?.cancel()
+            if let protectedEditorWorkID {
+                RuntimeProtectedWorkActivity.shared.end(protectedEditorWorkID)
+                self.protectedEditorWorkID = nil
+            }
+        }
         .onChange(of: editingProvider?.id) { _, _ in
             loadProvider()
         }
