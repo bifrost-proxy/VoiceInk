@@ -759,6 +759,29 @@ actor CloudSpeechConnectionPool {
 }
 
 @MainActor
+final class CloudSpeechTargetReconciliationQueue {
+    private var pendingTask: Task<Void, Never>?
+
+    func enqueue(_ operation: @MainActor @escaping () async -> Void) {
+        let previousTask = pendingTask
+        pendingTask = Task { @MainActor in
+            await previousTask?.value
+            guard !Task.isCancelled else { return }
+            await operation()
+        }
+    }
+
+    func waitForPending() async {
+        await pendingTask?.value
+    }
+
+    func cancel() {
+        pendingTask?.cancel()
+        pendingTask = nil
+    }
+}
+
+@MainActor
 final class CloudSpeechPreconnectionService: ObservableObject {
     private let transcriptionModelManager: TranscriptionModelManager
     private let pool: CloudSpeechConnectionPool
@@ -772,6 +795,7 @@ final class CloudSpeechPreconnectionService: ObservableObject {
     private var workspaceObservers: [NSObjectProtocol] = []
     private var refreshTask: Task<Void, Never>?
     private var suspensionUpdateTask: Task<Void, Never>?
+    private let targetReconciliationQueue = CloudSpeechTargetReconciliationQueue()
     private var isSleeping = false
     private var isNetworkAvailable = true
     private var isUnderMemoryPressure = false
@@ -791,6 +815,10 @@ final class CloudSpeechPreconnectionService: ObservableObject {
     deinit {
         refreshTask?.cancel()
         suspensionUpdateTask?.cancel()
+        let targetReconciliationQueue = targetReconciliationQueue
+        Task { @MainActor in
+            targetReconciliationQueue.cancel()
+        }
         pathMonitor.cancel()
         observers.forEach(NotificationCenter.default.removeObserver)
         workspaceObservers.forEach(NSWorkspace.shared.notificationCenter.removeObserver)
@@ -951,7 +979,7 @@ final class CloudSpeechPreconnectionService: ObservableObject {
             logger.notice("Cloud speech keep-alive configuration \(summary, privacy: .public)")
         }
 
-        Task { [pool] in
+        targetReconciliationQueue.enqueue { [pool] in
             await pool.reconcile(targets: targets)
         }
     }
@@ -965,22 +993,30 @@ final class CloudSpeechPreconnectionService: ObservableObject {
             resourceIDs.insert(model.name)
         }
 
-        let modelsByName = Dictionary(
-            uniqueKeysWithValues: transcriptionModelManager.allAvailableModels.map { ($0.name, $0) }
-        )
         for configuration in ModeManager.shared.enabledConfigurations where configuration.isRealtimeTranscriptionEnabled {
             guard let modelName = configuration.selectedTranscriptionModelName,
-                let model = modelsByName[modelName],
-                model.provider == .doubaoSpeech
+                let resourceID = Self.doubaoResourceID(
+                    named: modelName,
+                    models: transcriptionModelManager.allAvailableModels
+                )
             else {
                 continue
             }
-            resourceIDs.insert(model.name)
+            resourceIDs.insert(resourceID)
         }
 
         if resourceIDs.isEmpty {
             resourceIDs.insert(DoubaoSpeechProvider.defaultResourceID)
         }
         return resourceIDs.sorted()
+    }
+
+    static func doubaoResourceID(
+        named modelName: String,
+        models: [any TranscriptionModel]
+    ) -> String? {
+        models.first {
+            $0.name == modelName && $0.provider == .doubaoSpeech
+        }?.name
     }
 }

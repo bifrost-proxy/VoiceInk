@@ -499,6 +499,28 @@ struct RuntimeRecoveryTests {
         #expect(probe.probeRequestCount == 2)
     }
 
+    @Test func clockDiscontinuityReplacesAnUndeliveredPreSleepProbe() {
+        let probe = RuntimeRecoveryProbe()
+        let monitor = MainThreadLivenessMonitor(
+            softStallThreshold: 5,
+            hardStallThreshold: 30,
+            clockDiscontinuityThreshold: 8,
+            clock: { 1_000_000_000 },
+            onProbeRequested: { probe.recordProbeRequest() },
+            onClockDiscontinuity: { _, _ in },
+            onSoftStall: { _, _ in },
+            onHardStall: { _, _ in false }
+        )
+        monitor.start(interval: 1_000)
+        defer { monitor.stop() }
+        monitor.acknowledgeAppKitEvent(now: 1_000_000_000)
+
+        monitor.simulateTick(now: 2_000_000_000, enqueueMainProbe: true)
+        monitor.simulateTick(now: 12_000_000_000, enqueueMainProbe: true)
+
+        #expect(probe.probeRequestCount == 2)
+    }
+
     @Test func relaunchHelperIsPreparedWithARecoveryCooldown() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("VoiceInk-RuntimeRecoveryTests-\(UUID().uuidString)", isDirectory: true)

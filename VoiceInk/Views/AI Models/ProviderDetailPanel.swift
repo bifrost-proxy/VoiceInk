@@ -17,6 +17,7 @@ struct ProviderDetailPanel: View {
     @State private var isShowingRemoveAPIKeyConfirmation = false
     @State private var activeDescriptorID = ""
     @State private var arkModel = ""
+    @State private var apiKeyDraftWorkID: UUID?
     @AppStorage(DoubaoSpeechSettings.Keys.enableTwoPassRecognition)
     private var doubaoEnableTwoPassRecognition = DoubaoSpeechSettings.defaults.enableTwoPassRecognition
     @AppStorage(DoubaoSpeechSettings.Keys.enableTextNormalization)
@@ -160,6 +161,12 @@ struct ProviderDetailPanel: View {
         .onAppear(perform: loadSavedAPIKey)
         .onChange(of: descriptor.id) { _, _ in
             resetProviderState()
+        }
+        .onChange(of: apiKey) { _, newValue in
+            updateAPIKeyDraftProtection(newValue)
+        }
+        .onDisappear {
+            endAPIKeyDraftProtection()
         }
     }
 
@@ -1069,6 +1076,7 @@ struct ProviderDetailPanel: View {
         activeDescriptorID = descriptor.id
         verificationSucceeded = isConfigured
         apiKey = ""
+        endAPIKeyDraftProtection()
         isVerifying = false
         isRefreshingOpenRouterModels = false
         verificationMessage = nil
@@ -1077,6 +1085,21 @@ struct ProviderDetailPanel: View {
         arkModel = descriptor.aiProvider == .ark ? aiService.selectedModel(for: .ark) : ""
         normalizeDoubaoNumericSettingsIfNeeded()
         normalizeAliyunSettingsIfNeeded()
+    }
+
+    private func updateAPIKeyDraftProtection(_ value: String) {
+        if value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            endAPIKeyDraftProtection()
+        } else if apiKeyDraftWorkID == nil {
+            apiKeyDraftWorkID = RuntimeProtectedWorkActivity.shared.begin()
+        }
+    }
+
+    private func endAPIKeyDraftProtection() {
+        if let apiKeyDraftWorkID {
+            RuntimeProtectedWorkActivity.shared.end(apiKeyDraftWorkID)
+            self.apiKeyDraftWorkID = nil
+        }
     }
 
     private func normalizeDoubaoNumericSettingsIfNeeded() {

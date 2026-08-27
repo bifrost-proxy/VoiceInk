@@ -6,6 +6,40 @@ import Testing
 
 @MainActor
 struct RecordingShortcutModeHandlerTests {
+    @Test func physicalShortcutStateDistinguishesHeldAndSleepReleasedKeys() {
+        let keyShortcut = Shortcut.key(keyCode: 12, modifierFlags: [.command])
+        #expect(
+            RecordingShortcutManager.isPhysicallyPressed(
+                keyShortcut,
+                keyState: { $0 == 12 },
+                modifierFlags: []
+            )
+        )
+        #expect(
+            !RecordingShortcutManager.isPhysicallyPressed(
+                keyShortcut,
+                keyState: { _ in false },
+                modifierFlags: [.command]
+            )
+        )
+
+        let modifierShortcut = Shortcut.modifierOnly(keyCode: nil, modifierFlags: [.option])
+        #expect(
+            RecordingShortcutManager.isPhysicallyPressed(
+                modifierShortcut,
+                keyState: { _ in false },
+                modifierFlags: [.option]
+            )
+        )
+        #expect(
+            !RecordingShortcutManager.isPhysicallyPressed(
+                modifierShortcut,
+                keyState: { _ in false },
+                modifierFlags: []
+            )
+        )
+    }
+
     @Test func replacementMonitorConsumesReleaseForASeededActivePress() {
         let monitor = ShortcutMonitor()
         let shortcut = Shortcut.key(keyCode: 12, modifierFlags: [.command])

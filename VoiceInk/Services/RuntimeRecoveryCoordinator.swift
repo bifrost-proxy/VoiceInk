@@ -325,15 +325,22 @@ final class RuntimeRecoveryCoordinator {
 
     private func requestRecovery(_ reason: RuntimeRecoveryReason) {
         pendingReasons.insert(reason)
-        recoveryTask?.cancel()
+        guard recoveryTask == nil else { return }
         recoveryTask = Task { @MainActor [weak self] in
             do {
                 try await Task.sleep(for: .milliseconds(500))
             } catch {
                 return
             }
-            await self?.performRecovery()
+            await self?.drainRecoveryRequests()
         }
+    }
+
+    private func drainRecoveryRequests() async {
+        while !pendingReasons.isEmpty {
+            await performRecovery()
+        }
+        recoveryTask = nil
     }
 
     private func performRecovery() async {
@@ -341,7 +348,6 @@ final class RuntimeRecoveryCoordinator {
         recoveryEpoch &+= 1
         let reasons = pendingReasons.map(\.rawValue).sorted().joined(separator: ",")
         pendingReasons.removeAll()
-        recoveryTask = nil
 
         logger.notice(
             "Runtime recovery started epoch=\(self.recoveryEpoch, privacy: .public) reasons=\(reasons, privacy: .public)"
@@ -457,6 +463,7 @@ final class MainThreadLivenessMonitor: @unchecked Sendable {
                 // hang. Give AppKit a fresh acknowledgement window after resume
                 // instead of immediately escalating an hours-long timer gap.
                 lastMainAcknowledgement.store(now, ordering: .releasing)
+                isAppKitProbeOutstanding.store(false, ordering: .releasing)
                 didReportSoftStall.store(false, ordering: .releasing)
                 didHandleHardStall.store(false, ordering: .releasing)
                 let criticalWork = isCriticalWorkActive.load(ordering: .acquiring)

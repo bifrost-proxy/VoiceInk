@@ -590,11 +590,18 @@ class RecordingShortcutManager: ObservableObject {
     /// tap is not sufficient when its Mach port or run-loop source is stale.
     @discardableResult
     func recoverRuntimeMonitoring() async -> Bool {
-        // A push-to-talk key may still be held while the monitor is rebuilt.
-        // Preserve that press so the replacement monitor can consume key-up
-        // and stop the recording normally.
-        preservesShortcutPressStateDuringRecovery = true
+        // Preserve an active press only when the key is still physically down.
+        // A release that occurred while the process was asleep has no key-up
+        // event to replay, so synthesize it before rebuilding the monitors.
+        let activePress = shortcutModeHandler.activePressSnapshot
+        let activeShortcut = activePress.flatMap { ShortcutStore.shortcut(for: $0.action) }
+        preservesShortcutPressStateDuringRecovery = activeShortcut.map {
+            Self.isPhysicallyPressed($0)
+        } ?? false
         defer { preservesShortcutPressStateDuringRecovery = false }
+        if activePress != nil, !preservesShortcutPressStateDuringRecovery {
+            await shortcutModeHandler.handleMonitoringLoss(eventTime: ProcessInfo.processInfo.systemUptime)
+        }
         let succeeded: Bool
         if AXIsProcessTrusted() {
             succeeded = refreshShortcutMonitoringAfterAccessibilityAuthorization()
@@ -606,6 +613,22 @@ class RecordingShortcutManager: ObservableObject {
             "Runtime shortcut monitoring rebuild completed. succeeded=\(succeeded, privacy: .public) accessibilityTrusted=\(AXIsProcessTrusted(), privacy: .public)"
         )
         return succeeded
+    }
+
+    static func isPhysicallyPressed(
+        _ shortcut: Shortcut,
+        keyState: (UInt16) -> Bool = {
+            CGEventSource.keyState(.combinedSessionState, key: CGKeyCode($0))
+        },
+        modifierFlags: NSEvent.ModifierFlags = NSEvent.ModifierFlags(
+            rawValue: UInt(CGEventSource.flagsState(.combinedSessionState).rawValue)
+        )
+    ) -> Bool {
+        if shortcut.isModifierOnly, shortcut.keyCode == UInt16.max {
+            return Shortcut.normalizedModifierFlags(modifierFlags, forKeyCode: nil)
+                .isSuperset(of: shortcut.modifierFlags)
+        }
+        return keyState(shortcut.keyCode)
     }
 
     func refreshForOnboardingStateChange() {

@@ -5,6 +5,42 @@ import Testing
 
 @Suite(.serialized)
 struct CloudSpeechPreconnectionTests {
+    @Test @MainActor func duplicateModelNamesDoNotHideOrTrapDoubaoLookup() {
+        let duplicateName = "apple-speech"
+        let models: [any TranscriptionModel] = [
+            CloudSpeechLookupTestModel(name: duplicateName, provider: .nativeApple),
+            CloudSpeechLookupTestModel(name: duplicateName, provider: .doubaoSpeech),
+        ]
+
+        #expect(
+            CloudSpeechPreconnectionService.doubaoResourceID(
+                named: duplicateName,
+                models: models
+            ) == duplicateName
+        )
+    }
+
+    @Test @MainActor func targetReconciliationsPreserveEnqueueOrder() async {
+        let queue = CloudSpeechTargetReconciliationQueue()
+        let gate = CloudSpeechReconciliationGate()
+        let probe = CloudSpeechReconciliationProbe()
+
+        queue.enqueue {
+            probe.append("first-started")
+            await gate.wait()
+            probe.append("first-finished")
+        }
+        await gate.waitUntilStarted()
+        queue.enqueue {
+            probe.append("second")
+        }
+
+        #expect(probe.values == ["first-started"])
+        await gate.release()
+        await queue.waitForPending()
+        #expect(probe.values == ["first-started", "first-finished", "second"])
+    }
+
     @Test func providerTargetsKeepDoubaoAndAliyunConnectionsStrictlyIsolated() {
         let doubao = CloudSpeechConnectionTarget.doubao(
             apiKey: "doubao-key",
@@ -426,6 +462,55 @@ struct CloudSpeechPreconnectionTests {
             try await Task.sleep(for: .milliseconds(10))
         }
         Issue.record("Timed out waiting for standby connection to become dormant")
+    }
+}
+
+private struct CloudSpeechLookupTestModel: TranscriptionModel {
+    let id = UUID()
+    let name: String
+    let displayName = "Test"
+    let description = "Test"
+    let provider: ModelProvider
+    let isMultilingualModel = false
+    let supportedLanguages = ["en": "English"]
+}
+
+@MainActor
+private final class CloudSpeechReconciliationProbe {
+    private(set) var values: [String] = []
+
+    func append(_ value: String) {
+        values.append(value)
+    }
+}
+
+private actor CloudSpeechReconciliationGate {
+    private var didStart = false
+    private var isReleased = false
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        didStart = true
+        startWaiters.forEach { $0.resume() }
+        startWaiters.removeAll()
+        guard !isReleased else { return }
+        await withCheckedContinuation { continuation in
+            self.continuation = continuation
+        }
+    }
+
+    func waitUntilStarted() async {
+        guard !didStart else { return }
+        await withCheckedContinuation { continuation in
+            startWaiters.append(continuation)
+        }
+    }
+
+    func release() {
+        isReleased = true
+        continuation?.resume()
+        continuation = nil
     }
 }
 
