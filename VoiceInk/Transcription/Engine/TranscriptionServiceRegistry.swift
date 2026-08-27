@@ -18,6 +18,8 @@ final class RuntimePressureOperationCoordinator {
     private var recordingIsActive: (() -> Bool)?
     private var releaseTask: Task<Bool, Never>?
     private var releaseID: UUID?
+    private var resourceReleaseParticipants: [UUID: () async -> Bool] = [:]
+    private var optionalOperationsSuspended = false
 
     var hasActiveOperations: Bool { activeOperationCount > 0 }
     var isReleasingResources: Bool { releaseTask != nil }
@@ -30,6 +32,41 @@ final class RuntimePressureOperationCoordinator {
         guard !Task.isCancelled else { return false }
         activeOperationCount += 1
         return true
+    }
+
+    func beginOptionalOperation() async -> Bool {
+        guard !optionalOperationsSuspended else { return false }
+        return await beginOperation()
+    }
+
+    func suspendOptionalOperations() {
+        optionalOperationsSuspended = true
+    }
+
+    func resumeOptionalOperations() {
+        optionalOperationsSuspended = false
+    }
+
+    func registerResourceReleaseParticipant(
+        id: UUID,
+        operation: @escaping () async -> Bool
+    ) {
+        resourceReleaseParticipants[id] = operation
+    }
+
+    func unregisterResourceReleaseParticipant(id: UUID) {
+        resourceReleaseParticipants[id] = nil
+    }
+
+    func requestRegisteredResourceRelease(
+        recordingIsActive: @escaping () -> Bool
+    ) async -> Bool {
+        await requestRelease(
+            recordingIsActive: recordingIsActive,
+            operation: { [weak self] in
+                await self?.releaseRegisteredResources() ?? false
+            }
+        )
     }
 
     func endOperation() {
@@ -98,6 +135,14 @@ final class RuntimePressureOperationCoordinator {
             recordingIsActive = nil
         }
     }
+
+    private func releaseRegisteredResources() async -> Bool {
+        let operations = Array(resourceReleaseParticipants.values)
+        for operation in operations {
+            guard !Task.isCancelled, await operation() else { return false }
+        }
+        return !Task.isCancelled
+    }
 }
 
 @MainActor
@@ -109,6 +154,7 @@ class TranscriptionServiceRegistry {
     private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "TranscriptionServiceRegistry")
     private var modeConfigurationsObserver: NSObjectProtocol?
     private var recordingStoppedObserver: NSObjectProtocol?
+    private let pressureReleaseParticipantID = UUID()
 
     private(set) lazy var localTranscriptionService = WhisperTranscriptionService(
         modelsDirectory: modelsDirectory,
@@ -143,6 +189,13 @@ class TranscriptionServiceRegistry {
         self.modelsDirectory = modelsDirectory
         self.modelContext = modelContext
         self.pressureOperations = pressureOperations
+        pressureOperations.registerResourceReleaseParticipant(
+            id: pressureReleaseParticipantID,
+            operation: { [weak self] in
+                guard let self else { return true }
+                return await self.performPressureResourceRelease()
+            }
+        )
         modeConfigurationsObserver = NotificationCenter.default.addObserver(
             forName: .modeConfigurationsDidChange,
             object: nil,
@@ -164,6 +217,11 @@ class TranscriptionServiceRegistry {
     }
 
     deinit {
+        let pressureOperations = pressureOperations
+        let pressureReleaseParticipantID = pressureReleaseParticipantID
+        Task { @MainActor in
+            pressureOperations.unregisterResourceReleaseParticipant(id: pressureReleaseParticipantID)
+        }
         if let modeConfigurationsObserver {
             NotificationCenter.default.removeObserver(modeConfigurationsObserver)
         }
@@ -280,12 +338,8 @@ class TranscriptionServiceRegistry {
     /// them. A later transcription reloads the selected model on demand.
     @discardableResult
     func releaseAllLocalModelResourcesForPressure() async -> Bool {
-        await pressureOperations.requestRelease(
-            recordingIsActive: { AudioDeviceManager.shared.isRecordingActive },
-            operation: { [weak self] in
-                guard let self else { return false }
-                return await self.performPressureResourceRelease()
-            }
+        await pressureOperations.requestRegisteredResourceRelease(
+            recordingIsActive: { AudioDeviceManager.shared.isRecordingActive }
         )
     }
 

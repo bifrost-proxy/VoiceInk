@@ -35,7 +35,7 @@ struct LocalModelResourceRetentionTests {
     }
 
     @MainActor
-    @Test func managedSessionReleasesItsResourceLeaseOnceAfterCancellation() {
+    @Test func managedSessionReleasesItsResourceLeaseOnceAfterCancellation() async {
         let baseSession = ResourceRetentionTestSession(result: "unused")
         var finishCount = 0
         let session = ResourceManagedTranscriptionSession(session: baseSession) {
@@ -44,6 +44,10 @@ struct LocalModelResourceRetentionTests {
 
         session.cancel()
         session.cancel()
+
+        for _ in 0..<20 where finishCount == 0 {
+            await Task.yield()
+        }
 
         #expect(baseSession.cancelCount == 2)
         #expect(finishCount == 1)
@@ -67,6 +71,26 @@ struct LocalModelResourceRetentionTests {
 
         await gate.release()
         _ = try await transcriptionTask.value
+        #expect(finishCount == 1)
+    }
+
+    @MainActor
+    @Test func managedSessionRetainsItsLeaseUntilStreamingCancellationFinishes() async {
+        let gate = ResourceRetentionTaskGate()
+        let baseSession = ResourceRetentionTestSession(result: "unused", cancellationGate: gate)
+        var finishCount = 0
+        let session = ResourceManagedTranscriptionSession(session: baseSession) {
+            finishCount += 1
+        }
+
+        session.cancel()
+        await Task.yield()
+        #expect(finishCount == 0)
+
+        await gate.release()
+        for _ in 0..<20 where finishCount == 0 {
+            await Task.yield()
+        }
         #expect(finishCount == 1)
     }
 
@@ -113,15 +137,18 @@ private final class ResourceRetentionTestSession: TranscriptionSession {
     let preparationError: Error?
     private(set) var cancelCount = 0
     let transcriptionGate: ResourceRetentionTaskGate?
+    let cancellationGate: ResourceRetentionTaskGate?
 
     init(
         result: String,
         preparationError: Error? = nil,
-        transcriptionGate: ResourceRetentionTaskGate? = nil
+        transcriptionGate: ResourceRetentionTaskGate? = nil,
+        cancellationGate: ResourceRetentionTaskGate? = nil
     ) {
         self.result = result
         self.preparationError = preparationError
         self.transcriptionGate = transcriptionGate
+        self.cancellationGate = cancellationGate
     }
 
     func prepare(configuration: TranscriptionRuntimeConfiguration) async throws -> ((Data) -> Void)? {
@@ -140,6 +167,12 @@ private final class ResourceRetentionTestSession: TranscriptionSession {
 
     func cancel() {
         cancelCount += 1
+    }
+
+    func waitForCancellation() async {
+        if let cancellationGate {
+            await cancellationGate.wait()
+        }
     }
 }
 

@@ -347,7 +347,14 @@ class RecordingShortcutManager: ObservableObject {
                 ? shortcutModeHandler.activePressSnapshot : nil
         )
         let recorderPanelShortcutsStarted = recorderPanelShortcutManager.refreshAfterAccessibilityAuthorization()
-        return recordingShortcutsStarted && modeShortcutsStarted && recorderPanelShortcutsStarted
+        let allShortcutsStarted = recordingShortcutsStarted && modeShortcutsStarted && recorderPanelShortcutsStarted
+        if !allShortcutsStarted {
+            // Accessibility may still be authorized while one event tap fails
+            // transiently. Reuse the bounded recovery monitor for every
+            // component instead of retrying only a failed primary tap.
+            accessibilityAuthorizationMonitor.start()
+        }
+        return allShortcutsStarted
     }
 
     private func setupMiddleClickMonitoring() {

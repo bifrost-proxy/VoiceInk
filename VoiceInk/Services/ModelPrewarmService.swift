@@ -144,6 +144,7 @@ final class ModelPrewarmService: ObservableObject {
 
     func suspendForRuntimePressure() async {
         isSuspendedForRuntimePressure = true
+        RuntimePressureOperationCoordinator.shared.suspendOptionalOperations()
         let tasksToStop = prewarmTasks.cancelAll()
         await WhisperModelWarmupCoordinator.shared.suspendForRuntimePressure()
         // Some local runtimes perform synchronous inference and cannot observe
@@ -165,6 +166,7 @@ final class ModelPrewarmService: ObservableObject {
     func resumeAfterRuntimePressure() {
         guard isSuspendedForRuntimePressure else { return }
         isSuspendedForRuntimePressure = false
+        RuntimePressureOperationCoordinator.shared.resumeOptionalOperations()
         WhisperModelWarmupCoordinator.shared.resumeAfterRuntimePressure()
         serviceRegistry.cancelPressureResourceRelease()
         logger.notice("Model prewarm runtime-pressure suspension cleared")

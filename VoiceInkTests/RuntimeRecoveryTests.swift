@@ -423,6 +423,34 @@ struct RuntimeRecoveryTests {
         #expect(!coordinator.isReleasingResources)
     }
 
+    @Test @MainActor func pressureCleanupReleasesResourcesFromEveryRegistryParticipant() async {
+        let coordinator = RuntimePressureOperationCoordinator()
+        let probe = OrderedTransitionProbe()
+        let firstID = UUID()
+        let secondID = UUID()
+        coordinator.registerResourceReleaseParticipant(id: firstID) {
+            probe.append("first")
+            return true
+        }
+        coordinator.registerResourceReleaseParticipant(id: secondID) {
+            probe.append("second")
+            return true
+        }
+
+        #expect(await coordinator.requestRegisteredResourceRelease(recordingIsActive: { false }))
+        #expect(Set(probe.values) == ["first", "second"])
+    }
+
+    @Test @MainActor func optionalModelPreparationIsDeferredWhilePressureIsActive() async {
+        let coordinator = RuntimePressureOperationCoordinator()
+        coordinator.suspendOptionalOperations()
+        #expect(!(await coordinator.beginOptionalOperation()))
+
+        coordinator.resumeOptionalOperations()
+        #expect(await coordinator.beginOptionalOperation())
+        coordinator.endOperation()
+    }
+
     @Test func watchdogKeepsOnlyOneAppKitProbeOutstanding() {
         let probe = RuntimeRecoveryProbe()
         let monitor = MainThreadLivenessMonitor(

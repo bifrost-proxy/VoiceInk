@@ -13,6 +13,10 @@ protocol TranscriptionSession: AnyObject {
     /// Cancel the session and clean up resources.
     func cancel()
 
+    /// Waits until asynchronous cancellation cleanup has actually stopped
+    /// using runtime resources.
+    func waitForCancellation() async
+
     /// Records audio discarded before it reached the session's streaming queue.
     func recordDroppedAudioChunks(_ count: Int)
 
@@ -23,6 +27,8 @@ extension TranscriptionSession {
     var performanceSnapshot: TranscriptionPerformanceSnapshot? { nil }
 
     func recordDroppedAudioChunks(_ count: Int) {}
+
+    func waitForCancellation() async {}
 }
 
 @MainActor
@@ -34,6 +40,7 @@ final class ResourceManagedTranscriptionSession: TranscriptionSession {
     private var isPreparingResources = false
     private var isCancelled = false
     private var isTranscribing = false
+    private var cancellationCleanupTask: Task<Void, Never>?
 
     init(session: TranscriptionSession, onFinish: @escaping () -> Void) {
         self.session = session
@@ -85,7 +92,13 @@ final class ResourceManagedTranscriptionSession: TranscriptionSession {
         session.cancel()
         if didPrepareResources {
             if !isTranscribing {
-                finish()
+                if cancellationCleanupTask == nil {
+                    cancellationCleanupTask = Task { @MainActor [weak self, session] in
+                        await session.waitForCancellation()
+                        self?.finish()
+                        self?.cancellationCleanupTask = nil
+                    }
+                }
             }
         } else if !isPreparingResources {
             onPrepare = nil
@@ -412,6 +425,10 @@ final class StreamingTranscriptionSession: TranscriptionSession {
         fallbackTask?.cancel()
         fallbackTask = nil
         streamingService.cancel()
+    }
+
+    func waitForCancellation() async {
+        await streamingService.waitForCancellation()
     }
 
     func recordDroppedAudioChunks(_ count: Int) {

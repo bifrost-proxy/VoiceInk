@@ -31,6 +31,7 @@ struct DashboardContent: View {
     @State private var isSystemInfoCopied = false
     @State private var isEditingDisplayName = false
     @State private var displayNameDraft = ""
+    @State private var displayNameEditorWorkID: UUID?
     @AppStorage("dashboardDisplayName") private var dashboardDisplayName: String = ""
     @FocusState private var isNameFieldFocused: Bool
     @Query(Self.recentTranscriptionsDescriptor()) private var recentTranscriptionCandidates: [Transcription]
@@ -100,6 +101,7 @@ struct DashboardContent: View {
             dashboardStatsTask = nil
             dashboardStatsLoadGeneration += 1
             isDashboardStatsRefreshing = false
+            endDisplayNameEditorProtection()
         }
         .sidePanel(isPresented: $isModelPerformancePanelPresented) {
             ModelPerformancePanel(
@@ -546,6 +548,9 @@ struct DashboardContent: View {
     }
 
     private func beginEditingDisplayName() {
+        if displayNameEditorWorkID == nil {
+            displayNameEditorWorkID = RuntimeProtectedWorkActivity.shared.begin()
+        }
         displayNameDraft = defaultedDisplayName
         isEditingDisplayName = true
         DispatchQueue.main.async {
@@ -560,6 +565,14 @@ struct DashboardContent: View {
 
         if sanitizedDisplayName(dashboardDisplayName).isEmpty {
             dashboardDisplayName = ""
+        }
+        endDisplayNameEditorProtection()
+    }
+
+    private func endDisplayNameEditorProtection() {
+        if let displayNameEditorWorkID {
+            RuntimeProtectedWorkActivity.shared.end(displayNameEditorWorkID)
+            self.displayNameEditorWorkID = nil
         }
     }
 

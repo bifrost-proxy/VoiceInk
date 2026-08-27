@@ -457,6 +457,7 @@ class StreamingTranscriptionService {
     private var provider: StreamingProviderTransport?
     private var sendTask: Task<Void, Never>?
     private var eventConsumerTask: Task<Void, Never>?
+    private var cancellationTask: Task<Void, Never>?
     private let chunkSource = AudioChunkSource()
     private var state: StreamingState = .idle
     private var committedSegments: [String] = []
@@ -511,6 +512,7 @@ class StreamingTranscriptionService {
         onPartialTranscript = nil
         sendTask?.cancel()
         eventConsumerTask?.cancel()
+        cancellationTask?.cancel()
         chunkSource.finish()
         commitSignal?.finish()
     }
@@ -880,18 +882,22 @@ class StreamingTranscriptionService {
         provider = nil
 
         let cancelStartedAt = Date()
-        Task { @MainActor [self] in
+        let cancellationTask = Task { @MainActor [self] in
             if let providerToDisconnect {
-                let disconnected = await disconnectWithinDeadline(providerToDisconnect)
-                if disconnected {
-                    cancelToSocketCloseDuration = Date().timeIntervalSince(cancelStartedAt)
-                }
+                await providerToDisconnect.disconnect()
+                cancelToSocketCloseDuration = Date().timeIntervalSince(cancelStartedAt)
             }
             state = .cancelled
         }
+        self.cancellationTask = cancellationTask
 
         committedSegments = []
         logger.notice("Streaming cancellation requested")
+    }
+
+    func waitForCancellation() async {
+        await cancellationTask?.value
+        cancellationTask = nil
     }
 
     /// Stops a failed transport before complete-file recovery without clearing
