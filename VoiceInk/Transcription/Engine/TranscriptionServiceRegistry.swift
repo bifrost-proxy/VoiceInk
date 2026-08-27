@@ -19,6 +19,8 @@ class TranscriptionServiceRegistry {
     private var recordingStoppedObserver: NSObjectProtocol?
     private var activeOperationCount = 0
     private var pressureReleaseRequested = false
+    private var pressureReleaseTask: Task<Bool, Never>?
+    private var pressureReleaseID: UUID?
 
     private(set) lazy var localTranscriptionService = WhisperTranscriptionService(
         modelsDirectory: modelsDirectory,
@@ -84,6 +86,8 @@ class TranscriptionServiceRegistry {
     func transcribe(
         audioURL: URL, model: any TranscriptionModel, context: TranscriptionRequestContext = .currentDefaults
     ) async throws -> String {
+        await waitForPressureReleaseIfNeeded()
+        try Task.checkCancellation()
         operationDidStart()
         defer { operationDidFinish() }
         let service = service(for: model.provider)
@@ -161,6 +165,9 @@ class TranscriptionServiceRegistry {
     @discardableResult
     func releaseAllLocalModelResourcesForPressure() async -> Bool {
         pressureReleaseRequested = true
+        if let pressureReleaseTask {
+            return await pressureReleaseTask.value
+        }
         guard RuntimePressureResourceReleasePolicy.canRelease(
             activeOperationCount: activeOperationCount,
             isRecordingActive: AudioDeviceManager.shared.isRecordingActive
@@ -168,13 +175,20 @@ class TranscriptionServiceRegistry {
             return false
         }
 
-        await modelProvider?.releaseAllResources()
-        guard RuntimePressureResourceReleasePolicy.canRelease(
-            activeOperationCount: activeOperationCount,
-            isRecordingActive: AudioDeviceManager.shared.isRecordingActive
-        ) else {
-            return false
+        let releaseID = UUID()
+        let releaseTask = Task { @MainActor [weak self] in
+            guard let self else { return false }
+            let released = await self.performPressureResourceRelease()
+            self.finishPressureResourceRelease(id: releaseID)
+            return released
         }
+        pressureReleaseID = releaseID
+        pressureReleaseTask = releaseTask
+        return await releaseTask.value
+    }
+
+    private func performPressureResourceRelease() async -> Bool {
+        await modelProvider?.releaseAllResources()
         await fluidAudioTranscriptionService.cleanup()
         _ = await sherpaOnnxTranscriptionService.releaseAllResources()
         await QwenMLXRuntime.shared.stop()
@@ -183,15 +197,34 @@ class TranscriptionServiceRegistry {
         return true
     }
 
+    private func finishPressureResourceRelease(id: UUID) {
+        guard pressureReleaseID == id else { return }
+        pressureReleaseID = nil
+        pressureReleaseTask = nil
+    }
+
     func cancelPressureResourceRelease() {
         pressureReleaseRequested = false
     }
 
     private func managedSession(_ session: TranscriptionSession) -> TranscriptionSession {
-        operationDidStart()
-        return ResourceManagedTranscriptionSession(session: session) { [weak self] in
-            self?.operationDidFinish()
-        }
+        ResourceManagedTranscriptionSession(
+            session: session,
+            onPrepare: { [weak self] in
+                guard let self else { return false }
+                await self.waitForPressureReleaseIfNeeded()
+                guard !Task.isCancelled else { return false }
+                self.operationDidStart()
+                return true
+            },
+            onFinish: { [weak self] in
+                self?.operationDidFinish()
+            }
+        )
+    }
+
+    private func waitForPressureReleaseIfNeeded() async {
+        await pressureReleaseTask?.value
     }
 
     private func operationDidStart() {

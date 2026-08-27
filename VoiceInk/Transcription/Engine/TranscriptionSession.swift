@@ -28,14 +28,40 @@ extension TranscriptionSession {
 @MainActor
 final class ResourceManagedTranscriptionSession: TranscriptionSession {
     private let session: TranscriptionSession
+    private var onPrepare: (() async -> Bool)?
     private var onFinish: (() -> Void)?
+    private var didPrepareResources = false
+    private var isPreparingResources = false
+    private var isCancelled = false
 
     init(session: TranscriptionSession, onFinish: @escaping () -> Void) {
         self.session = session
         self.onFinish = onFinish
+        self.didPrepareResources = true
+    }
+
+    init(
+        session: TranscriptionSession,
+        onPrepare: @escaping () async -> Bool,
+        onFinish: @escaping () -> Void
+    ) {
+        self.session = session
+        self.onPrepare = onPrepare
+        self.onFinish = onFinish
     }
 
     func prepare(configuration: TranscriptionRuntimeConfiguration) async throws -> ((Data) -> Void)? {
+        if !didPrepareResources {
+            isPreparingResources = true
+            let didStartResources = await onPrepare?() ?? false
+            isPreparingResources = false
+            onPrepare = nil
+            didPrepareResources = didStartResources
+            if isCancelled || Task.isCancelled {
+                finish()
+                throw CancellationError()
+            }
+        }
         do {
             return try await session.prepare(configuration: configuration)
         } catch {
@@ -50,8 +76,14 @@ final class ResourceManagedTranscriptionSession: TranscriptionSession {
     }
 
     func cancel() {
+        isCancelled = true
         session.cancel()
-        finish()
+        if didPrepareResources {
+            finish()
+        } else if !isPreparingResources {
+            onPrepare = nil
+            onFinish = nil
+        }
     }
 
     func recordDroppedAudioChunks(_ count: Int) {
@@ -63,12 +95,18 @@ final class ResourceManagedTranscriptionSession: TranscriptionSession {
     }
 
     private func finish() {
+        guard didPrepareResources else {
+            onPrepare = nil
+            onFinish = nil
+            return
+        }
         let completion = onFinish
         onFinish = nil
         completion?()
     }
 
     deinit {
+        guard didPrepareResources else { return }
         let completion = onFinish
         if let completion {
             Task { @MainActor in completion() }

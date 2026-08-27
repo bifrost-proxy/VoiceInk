@@ -796,7 +796,16 @@ final class RecordingShortcutModeHandler {
         guard let action = activeRecordingShortcutAction,
             let mode = activeRecordingShortcutMode
         else {
-            reset()
+            // Toggle and short-hybrid recordings have already consumed key-up
+            // and intentionally continue hands-free. Losing the event tap must
+            // not erase that state or the next shortcut press cannot stop them.
+            isShortcutPressed = false
+            shortcutPressStartTime = nil
+            activeRecordingShortcutAction = nil
+            activeRecordingShortcutMode = nil
+            activeRecordingModeID = nil
+            activeShortcutCanCancelAccidentalStart = false
+            isBypassingEnhancementForCurrentShortcut = false
             return
         }
         await handleKeyUp(

@@ -69,6 +69,33 @@ struct RuntimeMemoryPressureEventGate {
     }
 }
 
+@MainActor
+final class RuntimeMemoryPressureTransitionQueue {
+    private var eventGate = RuntimeMemoryPressureEventGate()
+    private var tailTask: Task<Void, Never>?
+
+    var latestSequence: UInt64 { eventGate.latestSequence }
+
+    @discardableResult
+    func enqueue(
+        sequence: UInt64,
+        operation: @escaping @MainActor () async -> Void
+    ) -> Bool {
+        guard eventGate.accept(sequence: sequence) else { return false }
+        let previousTask = tailTask
+        tailTask = Task { @MainActor [weak self] in
+            await previousTask?.value
+            guard self?.latestSequence == sequence else { return }
+            await operation()
+        }
+        return true
+    }
+
+    func waitForIdle() async {
+        await tailTask?.value
+    }
+}
+
 /// Tracks non-persisted work such as model management, warm-up, standalone
 /// retranscription, and re-enhancement that a hard-stall relaunch must not interrupt.
 @MainActor
@@ -112,7 +139,7 @@ final class RuntimeRecoveryCoordinator {
     private var recoveryEpoch: UInt64 = 0
     private var memoryPressureSource: (any DispatchSourceMemoryPressure)?
     private let memoryPressureEventSequence = ManagedAtomic<UInt64>(0)
-    private var memoryPressureEventGate = RuntimeMemoryPressureEventGate()
+    private let memoryPressureTransitions = RuntimeMemoryPressureTransitionQueue()
     private var livenessMonitor: MainThreadLivenessMonitor?
     private var appKitEventProbe: AppKitEventProbe?
 
@@ -191,21 +218,29 @@ final class RuntimeRecoveryCoordinator {
             guard let self else { return }
             let sequence = self.memoryPressureEventSequence.wrappingIncrementThenLoad(ordering: .relaxed)
             Task { @MainActor [weak self] in
-                await self?.handleMemoryPressure(data, sequence: sequence)
+                self?.enqueueMemoryPressure(data, sequence: sequence)
             }
         }
         source.resume()
         memoryPressureSource = source
     }
 
-    private func handleMemoryPressure(
+    private func enqueueMemoryPressure(
         _ event: DispatchSource.MemoryPressureEvent,
         sequence: UInt64
-    ) async {
-        guard memoryPressureEventGate.accept(sequence: sequence) else {
+    ) {
+        guard memoryPressureTransitions.enqueue(
+            sequence: sequence,
+            operation: { [weak self] in
+                await self?.handleMemoryPressure(event)
+            }
+        ) else {
             logger.notice("Discarded stale runtime memory-pressure transition sequence=\(sequence, privacy: .public)")
             return
         }
+    }
+
+    private func handleMemoryPressure(_ event: DispatchSource.MemoryPressureEvent) async {
         let level = RuntimeMemoryPressurePolicy.level(for: event)
         let plan = RuntimeMemoryPressurePolicy.plan(for: level)
         if plan.suspendOptionalWork {

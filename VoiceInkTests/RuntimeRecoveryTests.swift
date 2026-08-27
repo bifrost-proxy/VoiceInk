@@ -297,6 +297,27 @@ struct RuntimeRecoveryTests {
         )
     }
 
+    @Test @MainActor func memoryPressureTransitionsSerializeAcrossSuspensionAwait() async {
+        let queue = RuntimeMemoryPressureTransitionQueue()
+        let gate = NonCooperativeTaskGate()
+        let probe = OrderedTransitionProbe()
+
+        #expect(queue.enqueue(sequence: 1) {
+            probe.append("warning-start")
+            await gate.wait()
+            probe.append("warning-finished")
+        })
+        await Task.yield()
+        #expect(queue.enqueue(sequence: 2) {
+            probe.append("normal")
+        })
+        #expect(probe.values == ["warning-start"])
+
+        await gate.release()
+        await queue.waitForIdle()
+        #expect(probe.values == ["warning-start", "warning-finished", "normal"])
+    }
+
     @Test func watchdogKeepsOnlyOneAppKitProbeOutstanding() {
         let probe = RuntimeRecoveryProbe()
         let monitor = MainThreadLivenessMonitor(
@@ -513,4 +534,13 @@ private actor NonCooperativeTaskGate {
 
 private final class LivenessMonitorBox: @unchecked Sendable {
     weak var monitor: MainThreadLivenessMonitor?
+}
+
+@MainActor
+private final class OrderedTransitionProbe {
+    private(set) var values: [String] = []
+
+    func append(_ value: String) {
+        values.append(value)
+    }
 }

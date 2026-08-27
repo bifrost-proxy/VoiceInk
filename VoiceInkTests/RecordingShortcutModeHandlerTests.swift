@@ -78,6 +78,33 @@ struct RecordingShortcutModeHandlerTests {
         #expect(recordingState == .idle)
     }
 
+    @Test func monitoringLossPreservesHandsFreeToggleState() async throws {
+        var recordingState: RecordingState = .idle
+        var toggleCount = 0
+        let handler = RecordingShortcutModeHandler(
+            canHandleShortcutAction: { true },
+            isRecorderVisible: { recordingState != .idle },
+            recordingState: { recordingState },
+            toggleRecorderPanel: { _ in
+                toggleCount += 1
+                recordingState = recordingState == .idle ? .recording : .idle
+            },
+            cancelRecording: {},
+            cancelEnhancementAndPasteOriginal: {}
+        )
+
+        await handler.handleKeyDown(action: .primaryRecording, eventTime: 5, mode: .toggle)
+        await handler.handleKeyUp(action: .primaryRecording, eventTime: 5.1, mode: .toggle)
+        #expect(recordingState == .recording)
+
+        await handler.handleMonitoringLoss(eventTime: 6)
+        try await Task.sleep(for: .milliseconds(510))
+        await handler.handleKeyDown(action: .primaryRecording, eventTime: 7, mode: .toggle)
+
+        #expect(toggleCount == 2)
+        #expect(recordingState == .idle)
+    }
+
     @Test func enhancementShortcutBypassesPolishWithoutStartingAnotherRecording() async {
         var recordingState: RecordingState = .enhancing
         var toggleCount = 0
