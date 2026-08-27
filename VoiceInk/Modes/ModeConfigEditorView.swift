@@ -17,6 +17,7 @@ struct ModeConfigEditorView: View {
     @State private var promptEditorID = UUID()
     @State private var didSaveConfiguration = false
     @State private var protectedEditorWorkID: UUID?
+    @State private var savedDraft: ModeConfigDraft?
 
     init(mode: ConfigurationMode, modeManager: ModeManager, onDismiss: @escaping () -> Void) {
         self.mode = mode
@@ -52,18 +53,15 @@ struct ModeConfigEditorView: View {
             }
         }
         .onAppear {
-            if protectedEditorWorkID == nil {
-                protectedEditorWorkID = RuntimeProtectedWorkActivity.shared.begin()
-            }
             prepareView()
+            savedDraft = draft
+            updateDraftProtection()
         }
         .onDisappear {
             cleanupUnsavedShortcutIfNeeded()
-            if let protectedEditorWorkID {
-                RuntimeProtectedWorkActivity.shared.end(protectedEditorWorkID)
-                self.protectedEditorWorkID = nil
-            }
+            endDraftProtection()
         }
+        .onChange(of: draft) { _, _ in updateDraftProtection() }
         .onExitCommand(perform: handleExitCommand)
     }
 
@@ -142,6 +140,8 @@ struct ModeConfigEditorView: View {
         }
 
         didSaveConfiguration = true
+        savedDraft = draft
+        updateDraftProtection()
         onDismiss()
     }
 
@@ -162,5 +162,25 @@ struct ModeConfigEditorView: View {
         }
 
         ShortcutStore.removeShortcutStorage(for: .mode(draft.id))
+    }
+
+    private func updateDraftProtection() {
+        let isDirty = savedDraft.map { $0 != draft } ?? false
+        let shouldProtect = RuntimeCriticalWorkPolicy.editorIsProtected(
+            isDirty: isDirty,
+            isOperationActive: false
+        )
+        if shouldProtect, protectedEditorWorkID == nil {
+            protectedEditorWorkID = RuntimeProtectedWorkActivity.shared.begin()
+        } else if !shouldProtect {
+            endDraftProtection()
+        }
+    }
+
+    private func endDraftProtection() {
+        if let protectedEditorWorkID {
+            RuntimeProtectedWorkActivity.shared.end(protectedEditorWorkID)
+        }
+        protectedEditorWorkID = nil
     }
 }

@@ -1,6 +1,6 @@
 import Foundation
 
-struct ModeConfigDraft {
+struct ModeConfigDraft: Equatable {
     var id: UUID
     var name: String
     var icon: ModeIcon

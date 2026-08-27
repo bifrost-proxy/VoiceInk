@@ -746,6 +746,24 @@ struct RuntimeRecoveryTests {
         #expect(try await readTask.value == Data("{\"ok\":true}".utf8))
     }
 
+    @Test func qwenBlockingRequestWriteDoesNotOccupyTheCallingActor() async {
+        let writeStarted = QwenReadStartSignal()
+        let writeGate = DispatchSemaphore(value: 0)
+        let writer = QwenMLXBlockingRequestWriter(
+            writeOperation: { _ in writeGate.wait() },
+            onWriteStart: { writeStarted.signal() }
+        )
+        let probe = QwenWriteIsolationProbe(writer: writer)
+        let writeTask = Task { await probe.writeRequest() }
+
+        await writeStarted.wait()
+        await probe.ping()
+        #expect(await probe.pingCount == 1)
+
+        writeGate.signal()
+        await writeTask.value
+    }
+
     @Test func testProcessesNeverPrepareAnAutomaticRelaunch() {
         let plan = RuntimeRecoveryRelauncher.prepareIfAllowed(
             environment: ["XCTestConfigurationFilePath": "/tmp/test.xctestconfiguration"]
@@ -962,6 +980,19 @@ struct RuntimeRecoveryTests {
         #expect(!(await probe.didStopRuntime))
     }
 
+    @Test func sealedQwenCancellationIgnoresALateStopRequest() async {
+        let probe = QwenLateStopProbe()
+        let coordinator = QwenMLXCancellationStopCoordinator {
+            await probe.recordStop()
+        }
+
+        await coordinator.sealAndWaitForStopIfRequested()
+        coordinator.requestStop()
+        await Task.yield()
+
+        #expect(!(await probe.didStop))
+    }
+
     @Test @MainActor func ollamaServerDraftSuppressesRelaunchUntilSaved() {
         let savedURL = "http://localhost:11434"
         #expect(
@@ -971,6 +1002,12 @@ struct RuntimeRecoveryTests {
             )
         )
         #expect(!RuntimeCriticalWorkPolicy.textDraftIsProtected(savedURL, savedValue: savedURL))
+    }
+
+    @Test func editorsProtectOnlyDirtyOrInFlightWork() {
+        #expect(!RuntimeCriticalWorkPolicy.editorIsProtected(isDirty: false, isOperationActive: false))
+        #expect(RuntimeCriticalWorkPolicy.editorIsProtected(isDirty: true, isOperationActive: false))
+        #expect(RuntimeCriticalWorkPolicy.editorIsProtected(isDirty: false, isOperationActive: true))
     }
 }
 
@@ -1112,6 +1149,31 @@ private actor QwenReadIsolationProbe {
 
     func ping() {
         pingCount += 1
+    }
+}
+
+private actor QwenWriteIsolationProbe {
+    private let writer: QwenMLXBlockingRequestWriter
+    private(set) var pingCount = 0
+
+    init(writer: QwenMLXBlockingRequestWriter) {
+        self.writer = writer
+    }
+
+    func writeRequest() async {
+        await QwenMLXRuntime.writeRequestOffActor(writer, data: Data(repeating: 0, count: 1024))
+    }
+
+    func ping() {
+        pingCount += 1
+    }
+}
+
+private actor QwenLateStopProbe {
+    private(set) var didStop = false
+
+    func recordStop() {
+        didStop = true
     }
 }
 

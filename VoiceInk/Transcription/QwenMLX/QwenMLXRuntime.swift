@@ -39,6 +39,29 @@ final class QwenMLXBlockingResponseReader: @unchecked Sendable {
     }
 }
 
+final class QwenMLXBlockingRequestWriter: @unchecked Sendable {
+    private let writeOperation: @Sendable (Data) -> Void
+    private let onWriteStart: (@Sendable () -> Void)?
+
+    init(standardInput: FileHandle, onWriteStart: (@Sendable () -> Void)? = nil) {
+        writeOperation = { standardInput.write($0) }
+        self.onWriteStart = onWriteStart
+    }
+
+    init(
+        writeOperation: @escaping @Sendable (Data) -> Void,
+        onWriteStart: (@Sendable () -> Void)? = nil
+    ) {
+        self.writeOperation = writeOperation
+        self.onWriteStart = onWriteStart
+    }
+
+    func write(_ data: Data) {
+        onWriteStart?()
+        writeOperation(data)
+    }
+}
+
 struct QwenMLXStreamSnapshot: Sendable, Equatable {
     let text: String
     let stableText: String
@@ -56,10 +79,10 @@ enum QwenMLXCancellationBridge {
         return try await withTaskCancellationHandler {
             do {
                 let result = try await operation()
-                await stopCoordinator.waitForStopIfRequested()
+                await stopCoordinator.sealAndWaitForStopIfRequested()
                 return result
             } catch {
-                await stopCoordinator.waitForStopIfRequested()
+                await stopCoordinator.sealAndWaitForStopIfRequested()
                 throw error
             }
         } onCancel: {
@@ -70,10 +93,11 @@ enum QwenMLXCancellationBridge {
     }
 }
 
-private final class QwenMLXCancellationStopCoordinator: @unchecked Sendable {
+final class QwenMLXCancellationStopCoordinator: @unchecked Sendable {
     private let lock = NSLock()
     private let stopRuntime: @Sendable () async -> Void
     private var stopTask: Task<Void, Never>?
+    private var isSealed = false
 
     init(stopRuntime: @escaping @Sendable () async -> Void) {
         self.stopRuntime = stopRuntime
@@ -82,19 +106,19 @@ private final class QwenMLXCancellationStopCoordinator: @unchecked Sendable {
     func requestStop() {
         lock.lock()
         defer { lock.unlock() }
-        guard stopTask == nil else { return }
+        guard !isSealed, stopTask == nil else { return }
         stopTask = Task { await stopRuntime() }
     }
 
-    func waitForStopIfRequested() async {
-        await currentStopTask()?.value
+    func sealAndWaitForStopIfRequested() async {
+        await sealAndTakeStopTask()?.value
     }
 
-    private func currentStopTask() -> Task<Void, Never>? {
+    private func sealAndTakeStopTask() -> Task<Void, Never>? {
         lock.lock()
         defer { lock.unlock() }
-        let task = stopTask
-        return task
+        isSealed = true
+        return stopTask
     }
 }
 
@@ -150,6 +174,7 @@ actor QwenMLXRuntime {
     private var process: Process?
     private var standardInput: FileHandle?
     private var standardOutput: FileHandle?
+    private var requestWriter: QwenMLXBlockingRequestWriter?
     private var responseReader: QwenMLXBlockingResponseReader?
     private var requestID = 0
     private var activeResponseRequestID: Int?
@@ -228,10 +253,8 @@ actor QwenMLXRuntime {
 
     func cancelStreaming(gracePeriod: Duration = shutdownGracePeriod) async {
         guard process?.isRunning == true else { return }
-        // Cancellation is deliberately write-only. A wedged bridge may never
-        // answer on stdout, so request cancellation and then reuse the bounded
-        // shutdown path to guarantee that the actor becomes usable again.
-        _ = try? writeRequest(["command": "cancel"])
+        // Reuse the bounded process shutdown. A separate cancel write could
+        // itself fill behind a wedged stdin consumer and delay recovery.
         await stop(gracePeriod: gracePeriod)
     }
 
@@ -260,10 +283,12 @@ actor QwenMLXRuntime {
         }
 
         isStopping = true
-        // Shutdown is deliberately write-only. Waiting for the bridge's
-        // stdout response can block forever precisely when pressure recovery
-        // needs to reclaim it.
-        _ = try? writeRequest(["command": "shutdown"])
+        // Do not await the graceful write before starting the deadline: stdin
+        // may be full when the bridge is wedged. Closing the pipe below releases
+        // both this detached writer and any detached response reader.
+        let gracefulWriteTask = Task {
+            _ = try? await self.writeRequest(["command": "shutdown"])
+        }
 
         let task = Task {
             let exitedGracefully = await Self.waitForExit(process, timeout: gracePeriod)
@@ -274,6 +299,7 @@ actor QwenMLXRuntime {
                 try? standardOutput?.close()
                 _ = await Self.terminateAndWait(process, timeout: gracePeriod)
             }
+            await gracefulWriteTask.value
             clearRuntimeState()
             isStopping = false
         }
@@ -322,6 +348,7 @@ actor QwenMLXRuntime {
         self.process = process
         standardInput = inputPipe.fileHandleForWriting
         standardOutput = outputPipe.fileHandleForReading
+        requestWriter = QwenMLXBlockingRequestWriter(standardInput: inputPipe.fileHandleForWriting)
         responseReader = QwenMLXBlockingResponseReader(
             standardOutput: outputPipe.fileHandleForReading,
             process: process
@@ -344,7 +371,7 @@ actor QwenMLXRuntime {
             throw QwenMLXRuntimeError.notRunning
         }
 
-        let sentRequestID = try writeRequest(payload)
+        let sentRequestID = try await writeRequest(payload)
         activeResponseRequestID = sentRequestID
         defer {
             if activeResponseRequestID == sentRequestID {
@@ -373,17 +400,23 @@ actor QwenMLXRuntime {
         }.value
     }
 
+    static func writeRequestOffActor(_ writer: QwenMLXBlockingRequestWriter, data: Data) async {
+        await Task.detached(priority: .userInitiated) {
+            writer.write(data)
+        }.value
+    }
+
     @discardableResult
-    private func writeRequest(_ payload: [String: Any]) throws -> Int {
-        guard let process, process.isRunning, let standardInput else {
+    private func writeRequest(_ payload: [String: Any]) async throws -> Int {
+        guard let process, process.isRunning, let requestWriter else {
             throw QwenMLXRuntimeError.notRunning
         }
         requestID += 1
         var message = payload
         message["id"] = requestID
-        let encoded = try JSONSerialization.data(withJSONObject: message)
-        standardInput.write(encoded)
-        standardInput.write(Data([0x0A]))
+        var encoded = try JSONSerialization.data(withJSONObject: message)
+        encoded.append(0x0A)
+        await Self.writeRequestOffActor(requestWriter, data: encoded)
         return requestID
     }
 
@@ -444,6 +477,7 @@ actor QwenMLXRuntime {
         process = nil
         standardInput = nil
         standardOutput = nil
+        requestWriter = nil
         responseReader = nil
         activeResponseRequestID = nil
         loadedModelPath = nil

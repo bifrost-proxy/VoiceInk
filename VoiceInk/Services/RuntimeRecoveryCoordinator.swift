@@ -151,6 +151,10 @@ enum RuntimeCriticalWorkPolicy {
         }
         return !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
+
+    static func editorIsProtected(isDirty: Bool, isOperationActive: Bool) -> Bool {
+        isDirty || isOperationActive
+    }
 }
 
 /// Coordinates recovery of process-local resources that can become stale when
