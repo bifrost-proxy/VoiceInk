@@ -1,5 +1,42 @@
 import Foundation
 
+final class QwenMLXBlockingResponseReader: @unchecked Sendable {
+    private let standardOutput: FileHandle
+    private let process: Process
+    private let onReadStart: (@Sendable () -> Void)?
+    private var readBuffer = Data()
+
+    init(
+        standardOutput: FileHandle,
+        process: Process,
+        onReadStart: (@Sendable () -> Void)? = nil
+    ) {
+        self.standardOutput = standardOutput
+        self.process = process
+        self.onReadStart = onReadStart
+    }
+
+    func readLine() throws -> Data {
+        onReadStart?()
+        while true {
+            if let newlineIndex = readBuffer.firstIndex(of: 0x0A) {
+                let line = readBuffer[..<newlineIndex]
+                readBuffer.removeSubrange(...newlineIndex)
+                return Data(line)
+            }
+
+            // `readData(ofLength:)` may wait for the full requested byte count
+            // on a pipe. The bridge emits one short JSON object per request, so
+            // consume whatever is currently available and split it ourselves.
+            let chunk = standardOutput.availableData
+            guard !chunk.isEmpty else {
+                throw QwenMLXRuntimeError.processExited(process.terminationStatus)
+            }
+            readBuffer.append(chunk)
+        }
+    }
+}
+
 struct QwenMLXStreamSnapshot: Sendable, Equatable {
     let text: String
     let stableText: String
@@ -14,8 +51,9 @@ actor QwenMLXRuntime {
     private var process: Process?
     private var standardInput: FileHandle?
     private var standardOutput: FileHandle?
-    private var readBuffer = Data()
+    private var responseReader: QwenMLXBlockingResponseReader?
     private var requestID = 0
+    private var activeResponseRequestID: Int?
     private var loadedModelPath: String?
     private var backendDescription: String?
     private var isStopping = false
@@ -24,7 +62,10 @@ actor QwenMLXRuntime {
     static let shutdownGracePeriod: Duration = .milliseconds(500)
     static let shutdownPollInterval: Duration = .milliseconds(25)
 
-    func load(model: QwenMLXModel) throws -> String {
+    func load(model: QwenMLXModel) async throws -> String {
+        guard activeResponseRequestID == nil else {
+            throw QwenMLXRuntimeError.requestInProgress
+        }
         guard !isStopping else { throw QwenMLXRuntimeError.notRunning }
         let modelPath = QwenMLXPaths.modelDirectory(for: model).path
         if process?.isRunning == true, loadedModelPath == modelPath,
@@ -35,7 +76,7 @@ actor QwenMLXRuntime {
 
         stopImmediately()
         try launchProcess()
-        let response = try request([
+        let response = try await request([
             "command": "load",
             "model_path": modelPath,
         ])
@@ -54,8 +95,8 @@ actor QwenMLXRuntime {
         context: String?,
         chunkSizeSeconds: Double = 1.0,
         maxContextSeconds: Double = 30.0
-    ) throws -> QwenMLXStreamSnapshot {
-        let response = try request([
+    ) async throws -> QwenMLXStreamSnapshot {
+        let response = try await request([
             "command": "start",
             "language": language ?? "auto",
             "context": context ?? "",
@@ -67,16 +108,16 @@ actor QwenMLXRuntime {
         return try Self.snapshot(from: response)
     }
 
-    func feedAudio(_ pcm16Data: Data) throws -> QwenMLXStreamSnapshot {
-        let response = try request([
+    func feedAudio(_ pcm16Data: Data) async throws -> QwenMLXStreamSnapshot {
+        let response = try await request([
             "command": "audio",
             "pcm16_base64": pcm16Data.base64EncodedString(),
         ])
         return try Self.snapshot(from: response)
     }
 
-    func finishStreaming() throws -> QwenMLXStreamSnapshot {
-        let response = try request(["command": "finish"])
+    func finishStreaming() async throws -> QwenMLXStreamSnapshot {
+        let response = try await request(["command": "finish"])
         return try Self.snapshot(from: response)
     }
 
@@ -89,8 +130,8 @@ actor QwenMLXRuntime {
         await stop(gracePeriod: gracePeriod)
     }
 
-    func transcribe(audioURL: URL, language: String?, context: String?) throws -> String {
-        let response = try request([
+    func transcribe(audioURL: URL, language: String?, context: String?) async throws -> String {
+        let response = try await request([
             "command": "transcribe",
             "audio_path": audioURL.path,
             "language": language ?? "auto",
@@ -169,17 +210,31 @@ actor QwenMLXRuntime {
         self.process = process
         standardInput = inputPipe.fileHandleForWriting
         standardOutput = outputPipe.fileHandleForReading
-        readBuffer.removeAll(keepingCapacity: true)
+        responseReader = QwenMLXBlockingResponseReader(
+            standardOutput: outputPipe.fileHandleForReading,
+            process: process
+        )
     }
 
-    private func request(_ payload: [String: Any]) throws -> [String: Any] {
-        guard !isStopping, let process, process.isRunning, standardOutput != nil else {
+    private func request(_ payload: [String: Any]) async throws -> [String: Any] {
+        guard !isStopping, let process, process.isRunning, let responseReader else {
             throw QwenMLXRuntimeError.notRunning
+        }
+        guard activeResponseRequestID == nil else {
+            throw QwenMLXRuntimeError.requestInProgress
         }
 
         let sentRequestID = try writeRequest(payload)
-
-        let line = try readLine()
+        activeResponseRequestID = sentRequestID
+        defer {
+            if activeResponseRequestID == sentRequestID {
+                activeResponseRequestID = nil
+            }
+        }
+        // The pipe read must not occupy this actor. If the bridge wedges, actor
+        // reentrancy lets cancelStreaming()/stop() start their bounded shutdown
+        // and close the pipe, which in turn releases this detached read.
+        let line = try await Self.readResponseOffActor(responseReader)
         guard let response = try JSONSerialization.jsonObject(with: line) as? [String: Any] else {
             throw QwenMLXRuntimeError.invalidResponse("Response is not a JSON object")
         }
@@ -190,6 +245,12 @@ actor QwenMLXRuntime {
             throw QwenMLXRuntimeError.engineError(response["error"] as? String ?? "Unknown MLX error")
         }
         return response
+    }
+
+    static func readResponseOffActor(_ reader: QwenMLXBlockingResponseReader) async throws -> Data {
+        try await Task.detached(priority: .userInitiated) {
+            try reader.readLine()
+        }.value
     }
 
     @discardableResult
@@ -213,28 +274,6 @@ actor QwenMLXRuntime {
             try? await Task.sleep(for: shutdownPollInterval)
         }
         return !process.isRunning
-    }
-
-    private func readLine() throws -> Data {
-        while true {
-            if let newlineIndex = readBuffer.firstIndex(of: 0x0A) {
-                let line = readBuffer[..<newlineIndex]
-                readBuffer.removeSubrange(...newlineIndex)
-                return Data(line)
-            }
-
-            guard let standardOutput else { throw QwenMLXRuntimeError.notRunning }
-            // `readData(ofLength:)` may wait for the full requested byte count
-            // on a pipe. The bridge emits one short JSON object per request, so
-            // consume whatever is currently available and split it ourselves.
-            let chunk = standardOutput.availableData
-            guard !chunk.isEmpty else {
-                let status = process?.terminationStatus ?? -1
-                stopImmediately()
-                throw QwenMLXRuntimeError.processExited(status)
-            }
-            readBuffer.append(chunk)
-        }
     }
 
     private static func snapshot(from response: [String: Any]) throws -> QwenMLXStreamSnapshot {
@@ -271,7 +310,8 @@ actor QwenMLXRuntime {
         process = nil
         standardInput = nil
         standardOutput = nil
-        readBuffer.removeAll(keepingCapacity: false)
+        responseReader = nil
+        activeResponseRequestID = nil
         loadedModelPath = nil
         backendDescription = nil
     }
@@ -281,6 +321,7 @@ enum QwenMLXRuntimeError: LocalizedError {
     case runtimeNotInstalled
     case runnerMissing
     case notRunning
+    case requestInProgress
     case gpuUnavailable(String)
     case processExited(Int32)
     case invalidResponse(String)
@@ -294,6 +335,8 @@ enum QwenMLXRuntimeError: LocalizedError {
             return "VoiceInk 缺少 Qwen MLX 运行脚本"
         case .notRunning:
             return "Qwen MLX 运行时未启动"
+        case .requestInProgress:
+            return "Qwen MLX 运行时正在处理另一个请求"
         case .gpuUnavailable(let backend):
             return "Qwen MLX 未能启用 Metal GPU（当前后端：\(backend)）"
         case .processExited(let status):

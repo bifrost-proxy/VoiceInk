@@ -110,6 +110,7 @@ class CursorPaster {
         }
     }
 
+    @MainActor
     private static func scheduleClipboardRestore(
         _ savedContents: ClipboardSnapshot,
         expectedText: String,
@@ -121,8 +122,7 @@ class CursorPaster {
             minimumClipboardRestoreDelay
         )
 
-        Task { @MainActor in
-            await wait(delay)
+        scheduleProtectedClipboardRestoration(after: delay) {
             guard pasteboardStillOwnedByPasteSession(pasteboard, expectedText: expectedText, sessionID: sessionID)
             else {
                 return
@@ -131,6 +131,20 @@ class CursorPaster {
             if !savedContents.isEmpty {
                 pasteboard.writeObjects(pasteboardItems(from: savedContents))
             }
+        }
+    }
+
+    @MainActor
+    @discardableResult
+    static func scheduleProtectedClipboardRestoration(
+        after delay: TimeInterval,
+        operation: @escaping @MainActor () -> Void
+    ) -> Task<Void, Never> {
+        let protectedWorkID = RuntimeProtectedWorkActivity.shared.begin()
+        return Task { @MainActor in
+            defer { RuntimeProtectedWorkActivity.shared.end(protectedWorkID) }
+            await wait(delay)
+            operation()
         }
     }
 

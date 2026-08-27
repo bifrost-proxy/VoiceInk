@@ -338,8 +338,10 @@ struct RuntimeRecoveryTests {
                 == RuntimeMemoryPressurePlan(suspendOptionalWork: false, performRecovery: true)
         )
 
-        let coalescedRecovery: DispatchSource.MemoryPressureEvent = [.critical, .normal]
-        #expect(RuntimeMemoryPressurePolicy.level(for: coalescedRecovery) == .normal)
+        let coalescedCritical: DispatchSource.MemoryPressureEvent = [.critical, .normal]
+        #expect(RuntimeMemoryPressurePolicy.level(for: coalescedCritical) == .critical)
+        let coalescedWarning: DispatchSource.MemoryPressureEvent = [.warning, .normal]
+        #expect(RuntimeMemoryPressurePolicy.level(for: coalescedWarning) == .warning)
     }
 
     @Test func pressureResourceReleaseWaitsForRecordingAndModelWorkToFinish() {
@@ -663,6 +665,38 @@ struct RuntimeRecoveryTests {
         #expect(elapsed < .seconds(1))
     }
 
+    @Test func qwenBlockingResponseReadDoesNotOccupyTheCallingActor() async throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        process.arguments = ["10"]
+        try process.run()
+        defer {
+            if process.isRunning {
+                process.terminate()
+            }
+        }
+
+        let pipe = Pipe()
+        let readStarted = QwenReadStartSignal()
+        let reader = QwenMLXBlockingResponseReader(
+            standardOutput: pipe.fileHandleForReading,
+            process: process,
+            onReadStart: { readStarted.signal() }
+        )
+        let probe = QwenReadIsolationProbe(reader: reader)
+        let readTask = Task {
+            try await probe.readResponse()
+        }
+
+        await readStarted.wait()
+        await probe.ping()
+        #expect(await probe.pingCount == 1)
+
+        let response = Data("{\"ok\":true}\n".utf8)
+        pipe.fileHandleForWriting.write(response)
+        #expect(try await readTask.value == Data("{\"ok\":true}".utf8))
+    }
+
     @Test func testProcessesNeverPrepareAnAutomaticRelaunch() {
         let plan = RuntimeRecoveryRelauncher.prepareIfAllowed(
             environment: ["XCTestConfigurationFilePath": "/tmp/test.xctestconfiguration"]
@@ -819,6 +853,56 @@ private actor NonCooperativeTaskGate {
         isReleased = true
         continuation?.resume()
         continuation = nil
+    }
+}
+
+private actor QwenReadIsolationProbe {
+    private let reader: QwenMLXBlockingResponseReader
+    private(set) var pingCount = 0
+
+    init(reader: QwenMLXBlockingResponseReader) {
+        self.reader = reader
+    }
+
+    func readResponse() async throws -> Data {
+        try await QwenMLXRuntime.readResponseOffActor(reader)
+    }
+
+    func ping() {
+        pingCount += 1
+    }
+}
+
+private final class QwenReadStartSignal: @unchecked Sendable {
+    private let lock = NSLock()
+    private var didSignal = false
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    func signal() {
+        let continuation = lock.withLock { () -> CheckedContinuation<Void, Never>? in
+            didSignal = true
+            defer { self.continuation = nil }
+            return self.continuation
+        }
+        continuation?.resume()
+    }
+
+    func wait() async {
+        if lock.withLock({ didSignal }) {
+            return
+        }
+        await withCheckedContinuation { continuation in
+            let shouldResume = lock.withLock { () -> Bool in
+                if didSignal {
+                    return true
+                }
+                self.continuation = continuation
+                return false
+            }
+            if shouldResume {
+                continuation.resume()
+            }
+        }
     }
 }
 

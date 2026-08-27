@@ -34,6 +34,19 @@ private final class PasteCommandGate {
 
 @MainActor
 struct TranscriptionDeliveryTests {
+    @Test func delayedClipboardRestorationRemainsProtectedUntilCompletion() async {
+        var didRestore = false
+        let task = CursorPaster.scheduleProtectedClipboardRestoration(after: 0.01) {
+            didRestore = true
+        }
+
+        #expect(RuntimeProtectedWorkActivity.shared.isBusy)
+        #expect(!didRestore)
+        await task.value
+        #expect(didRestore)
+        #expect(!RuntimeProtectedWorkActivity.shared.isBusy)
+    }
+
     @Test func failedPasteCommandSkipsClipboardRestoration() {
         #expect(CursorPaster.shouldRestoreClipboard(after: .commandPosted))
         #expect(!CursorPaster.shouldRestoreClipboard(after: .commandNotPosted))

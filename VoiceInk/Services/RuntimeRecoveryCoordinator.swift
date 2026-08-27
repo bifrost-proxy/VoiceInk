@@ -37,14 +37,17 @@ struct RuntimeMemoryPressurePlan: Equatable, Sendable {
 
 enum RuntimeMemoryPressurePolicy {
     static func level(for event: DispatchSource.MemoryPressureEvent) -> RuntimeMemoryPressureLevel {
-        // Dispatch sources coalesce transitions. A delivered `.normal` bit is
-        // the recovery edge and must win over stale warning/critical bits that
-        // accumulated before the handler ran.
-        if event.contains(.normal) {
-            return .normal
-        }
+        // Dispatch sources may coalesce unordered transitions. Never resume
+        // optional work while a warning or critical bit is present; a later,
+        // unambiguous `.normal` delivery will perform recovery safely.
         if event.contains(.critical) {
             return .critical
+        }
+        if event.contains(.warning) {
+            return .warning
+        }
+        if event.contains(.normal) {
+            return .normal
         }
         return .warning
     }
