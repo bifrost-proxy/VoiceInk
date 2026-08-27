@@ -47,6 +47,19 @@ struct QwenMLXStreamSnapshot: Sendable, Equatable {
     let rewriteEvents: Int
 }
 
+enum QwenMLXCancellationBridge {
+    static func run<T>(
+        operation: () async throws -> T,
+        stopRuntime: @escaping @Sendable () async -> Void
+    ) async rethrows -> T {
+        try await withTaskCancellationHandler(operation: operation) {
+            // The bridge may ignore Swift cancellation while blocked on stdout.
+            // Stop it independently so the admitted operation can return.
+            Task { await stopRuntime() }
+        }
+    }
+}
+
 /// Serializes bridge requests without occupying the runtime actor. Shutdown is
 /// intentionally kept outside this queue so a wedged response can still be
 /// interrupted by closing the bridge pipes.
@@ -114,28 +127,34 @@ actor QwenMLXRuntime {
     func load(model: QwenMLXModel) async throws -> String {
         try await requestAdmission.acquire()
         defer { requestAdmission.release() }
-        guard !isStopping else { throw QwenMLXRuntimeError.notRunning }
-        let modelPath = QwenMLXPaths.modelDirectory(for: model).path
-        if process?.isRunning == true, loadedModelPath == modelPath,
-            let backendDescription
-        {
-            return backendDescription
-        }
+        // Install cancellation recovery only after admission so cancelling a
+        // queued caller cannot stop another caller's active bridge request.
+        return try await QwenMLXCancellationBridge.run {
+            guard !isStopping else { throw QwenMLXRuntimeError.notRunning }
+            let modelPath = QwenMLXPaths.modelDirectory(for: model).path
+            if process?.isRunning == true, loadedModelPath == modelPath,
+                let backendDescription
+            {
+                return backendDescription
+            }
 
-        await stop()
-        try launchProcess()
-        let response = try await requestWhileAdmitted([
-            "command": "load",
-            "model_path": modelPath,
-        ])
-        let backend = response["backend"] as? String ?? "unknown"
-        guard backend.localizedCaseInsensitiveContains("gpu") else {
             await stop()
-            throw QwenMLXRuntimeError.gpuUnavailable(backend)
+            try launchProcess()
+            let response = try await requestWhileAdmitted([
+                "command": "load",
+                "model_path": modelPath,
+            ])
+            let backend = response["backend"] as? String ?? "unknown"
+            guard backend.localizedCaseInsensitiveContains("gpu") else {
+                await stop()
+                throw QwenMLXRuntimeError.gpuUnavailable(backend)
+            }
+            loadedModelPath = modelPath
+            backendDescription = backend
+            return backend
+        } stopRuntime: {
+            await self.stop()
         }
-        loadedModelPath = modelPath
-        backendDescription = backend
-        return backend
     }
 
     func beginStreaming(
@@ -274,7 +293,12 @@ actor QwenMLXRuntime {
     private func performRequest(_ payload: [String: Any]) async throws -> [String: Any] {
         try await requestAdmission.acquire()
         defer { requestAdmission.release() }
-        return try await requestWhileAdmitted(payload)
+        // See load(model:): queued cancellation must not interrupt the owner.
+        return try await QwenMLXCancellationBridge.run {
+            try await requestWhileAdmitted(payload)
+        } stopRuntime: {
+            await self.stop()
+        }
     }
 
     private func requestWhileAdmitted(_ payload: [String: Any]) async throws -> [String: Any] {

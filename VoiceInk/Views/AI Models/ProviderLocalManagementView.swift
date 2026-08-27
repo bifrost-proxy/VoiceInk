@@ -9,6 +9,7 @@ struct LocalEnhancementProviderManagementView: View {
     @State private var ollamaBaseURL = UserDefaults.standard.string(forKey: "ollamaBaseURL") ?? "http://localhost:11434"
     @State private var selectedOllamaModel = UserDefaults.standard.string(forKey: "ollamaSelectedModel") ?? "mistral"
     @State private var ollamaUserRefreshError: String?
+    @State private var ollamaDraftWorkID: UUID?
     @State private var localCLICommandTemplate = ""
     @State private var localCLITimeoutSeconds = LocalCLIService.defaultTimeoutSeconds
     @State private var isSyncingLocalCLIState = false
@@ -54,6 +55,10 @@ struct LocalEnhancementProviderManagementView: View {
         .onAppear {
             selectedOllamaModel = aiService.selectedModel(for: .ollama)
             syncLocalCLIStateFromService()
+            updateOllamaDraftProtection()
+        }
+        .onDisappear {
+            endOllamaDraftProtection()
         }
     }
 
@@ -92,11 +97,13 @@ struct LocalEnhancementProviderManagementView: View {
                         .disabled(aiService.isOllamaRefreshing)
                         .onChange(of: ollamaBaseURL) { _, _ in
                             ollamaUserRefreshError = nil
+                            updateOllamaDraftProtection()
                         }
 
                     Button {
                         ollamaUserRefreshError = nil
                         aiService.updateOllamaBaseURL(ollamaBaseURL)
+                        updateOllamaDraftProtection()
                         checkOllamaConnectionFromUserAction()
                     } label: {
                         if aiService.isOllamaRefreshing {
@@ -227,6 +234,26 @@ struct LocalEnhancementProviderManagementView: View {
                 aiService.selectModel(firstModel, for: .ollama)
             }
         }
+    }
+
+    private func updateOllamaDraftProtection() {
+        let savedURL = UserDefaults.standard.string(forKey: "ollamaBaseURL") ?? "http://localhost:11434"
+        let shouldProtect = RuntimeCriticalWorkPolicy.textDraftIsProtected(
+            ollamaBaseURL,
+            savedValue: savedURL
+        )
+        if shouldProtect, ollamaDraftWorkID == nil {
+            ollamaDraftWorkID = RuntimeProtectedWorkActivity.shared.begin()
+        } else if !shouldProtect {
+            endOllamaDraftProtection()
+        }
+    }
+
+    private func endOllamaDraftProtection() {
+        if let ollamaDraftWorkID {
+            RuntimeProtectedWorkActivity.shared.end(ollamaDraftWorkID)
+        }
+        ollamaDraftWorkID = nil
     }
 
     private func syncLocalCLIStateFromService() {

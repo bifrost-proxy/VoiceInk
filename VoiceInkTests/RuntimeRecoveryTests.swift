@@ -905,6 +905,87 @@ struct RuntimeRecoveryTests {
 
         #expect(!activity.isBusy)
     }
+
+    @Test func qwenCancellationStopsNonCooperativeBridgeWork() async throws {
+        let probe = QwenCancellationStopProbe()
+        let operation = Task {
+            await QwenMLXCancellationBridge.run {
+                await probe.runNonCooperativeOperation()
+            } stopRuntime: {
+                await probe.stopRuntime()
+            }
+        }
+
+        await probe.waitUntilStarted()
+        operation.cancel()
+        await operation.value
+
+        #expect(await probe.didStopRuntime)
+    }
+
+    @Test func queuedQwenCancellationDoesNotStopTheAdmittedRequest() async throws {
+        let admission = QwenMLXRequestAdmissionQueue()
+        let probe = QwenCancellationStopProbe()
+        try await admission.acquire()
+
+        let queuedOperation = Task {
+            try await admission.acquire()
+            defer { admission.release() }
+            await QwenMLXCancellationBridge.run {
+                await probe.runNonCooperativeOperation()
+            } stopRuntime: {
+                await probe.stopRuntime()
+            }
+        }
+
+        queuedOperation.cancel()
+        await Task.yield()
+        #expect(!(await probe.didStopRuntime))
+
+        admission.release()
+        _ = await queuedOperation.result
+        #expect(!(await probe.didStopRuntime))
+    }
+
+    @Test @MainActor func ollamaServerDraftSuppressesRelaunchUntilSaved() {
+        let savedURL = "http://localhost:11434"
+        #expect(
+            RuntimeCriticalWorkPolicy.textDraftIsProtected(
+                "http://192.168.1.10:11434",
+                savedValue: savedURL
+            )
+        )
+        #expect(!RuntimeCriticalWorkPolicy.textDraftIsProtected(savedURL, savedValue: savedURL))
+    }
+}
+
+private actor QwenCancellationStopProbe {
+    private var startContinuation: CheckedContinuation<Void, Never>?
+    private var operationContinuation: CheckedContinuation<Void, Never>?
+    private var hasStarted = false
+    private(set) var didStopRuntime = false
+
+    func runNonCooperativeOperation() async {
+        hasStarted = true
+        startContinuation?.resume()
+        startContinuation = nil
+        await withCheckedContinuation { continuation in
+            operationContinuation = continuation
+        }
+    }
+
+    func waitUntilStarted() async {
+        if hasStarted { return }
+        await withCheckedContinuation { continuation in
+            startContinuation = continuation
+        }
+    }
+
+    func stopRuntime() {
+        didStopRuntime = true
+        operationContinuation?.resume()
+        operationContinuation = nil
+    }
 }
 
 private final class QwenRequestAdmissionProbe: @unchecked Sendable {
