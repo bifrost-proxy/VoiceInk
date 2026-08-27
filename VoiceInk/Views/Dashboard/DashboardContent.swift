@@ -521,6 +521,7 @@ struct DashboardContent: View {
             },
             set: { newValue in
                 displayNameDraft = String(newValue.prefix(32))
+                updateDisplayNameEditorProtection(String(newValue.prefix(32)))
             }
         )
     }
@@ -548,11 +549,9 @@ struct DashboardContent: View {
     }
 
     private func beginEditingDisplayName() {
-        if displayNameEditorWorkID == nil {
-            displayNameEditorWorkID = RuntimeProtectedWorkActivity.shared.begin()
-        }
         displayNameDraft = defaultedDisplayName
         isEditingDisplayName = true
+        updateDisplayNameEditorProtection(displayNameDraft)
         DispatchQueue.main.async {
             isNameFieldFocused = true
         }
@@ -573,6 +572,18 @@ struct DashboardContent: View {
         if let displayNameEditorWorkID {
             RuntimeProtectedWorkActivity.shared.end(displayNameEditorWorkID)
             self.displayNameEditorWorkID = nil
+        }
+    }
+
+    private func updateDisplayNameEditorProtection(_ draft: String) {
+        let shouldProtect = RuntimeCriticalWorkPolicy.textDraftIsProtected(
+            draft,
+            savedValue: defaultedDisplayName
+        )
+        if shouldProtect, displayNameEditorWorkID == nil {
+            displayNameEditorWorkID = RuntimeProtectedWorkActivity.shared.begin()
+        } else if !shouldProtect {
+            endDisplayNameEditorProtection()
         }
     }
 

@@ -9,10 +9,17 @@ struct RecordingShortcutModeHandlerTests {
     @Test func physicalShortcutStateDistinguishesHeldAndSleepReleasedKeys() {
         let keyShortcut = Shortcut.key(keyCode: 12, modifierFlags: [.command])
         #expect(
-            RecordingShortcutManager.isPhysicallyPressed(
+            !RecordingShortcutManager.isPhysicallyPressed(
                 keyShortcut,
                 keyState: { $0 == 12 },
                 modifierFlags: []
+            )
+        )
+        #expect(
+            RecordingShortcutManager.isPhysicallyPressed(
+                keyShortcut,
+                keyState: { $0 == 12 },
+                modifierFlags: [.command]
             )
         )
         #expect(

@@ -650,7 +650,9 @@ class RecordingShortcutManager: ObservableObject {
             return Shortcut.normalizedModifierFlags(modifierFlags, forKeyCode: nil)
                 .isSuperset(of: shortcut.modifierFlags)
         }
-        return keyState(shortcut.keyCode)
+        let hasRequiredModifiers = Shortcut.normalizedModifierFlags(modifierFlags, forKeyCode: nil)
+            .isSuperset(of: shortcut.modifierFlags)
+        return keyState(shortcut.keyCode) && hasRequiredModifiers
     }
 
     func refreshForOnboardingStateChange() {
