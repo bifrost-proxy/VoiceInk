@@ -582,7 +582,7 @@ class RecordingShortcutManager: ObservableObject {
     /// app or restarts an event-related service. Re-enabling an existing event
     /// tap is not sufficient when its Mach port or run-loop source is stale.
     @discardableResult
-    func recoverRuntimeMonitoring() -> Bool {
+    func recoverRuntimeMonitoring() async -> Bool {
         // A push-to-talk key may still be held while the monitor is rebuilt.
         // Preserve that press so the replacement monitor can consume key-up
         // and stop the recording normally.
@@ -593,6 +593,7 @@ class RecordingShortcutManager: ObservableObject {
             succeeded = refreshShortcutMonitoringAfterAccessibilityAuthorization()
         } else {
             succeeded = refreshShortcutMonitoring()
+            await shortcutModeHandler.handleMonitoringLoss(eventTime: ProcessInfo.processInfo.systemUptime)
         }
         logger.notice(
             "Runtime shortcut monitoring rebuild completed. succeeded=\(succeeded, privacy: .public) accessibilityTrusted=\(AXIsProcessTrusted(), privacy: .public)"
@@ -640,6 +641,8 @@ final class RecordingShortcutModeHandler {
     private var isHandsFreeRecording = false
     private var isShortcutPressed = false
     private var activeRecordingShortcutAction: ShortcutAction?
+    private var activeRecordingShortcutMode: RecordingShortcutManager.Mode?
+    private var activeRecordingModeID: UUID?
     private var interruptedRecordingActions = Set<ShortcutAction>()
     private var activeShortcutCanCancelAccidentalStart = false
     private var isBypassingEnhancementForCurrentShortcut = false
@@ -669,6 +672,8 @@ final class RecordingShortcutModeHandler {
         shortcutPressStartTime = nil
         isHandsFreeRecording = false
         activeRecordingShortcutAction = nil
+        activeRecordingShortcutMode = nil
+        activeRecordingModeID = nil
         interruptedRecordingActions.removeAll()
         activeShortcutCanCancelAccidentalStart = false
         isBypassingEnhancementForCurrentShortcut = false
@@ -709,6 +714,8 @@ final class RecordingShortcutModeHandler {
         }
         isShortcutPressed = true
         activeRecordingShortcutAction = action
+        activeRecordingShortcutMode = mode
+        activeRecordingModeID = modeId
         activeShortcutCanCancelAccidentalStart = canCurrentShortcutPressCancelAccidentalStart
         lastShortcutPressTime = Date()
         shortcutPressStartTime = eventTime
@@ -750,6 +757,8 @@ final class RecordingShortcutModeHandler {
         guard isShortcutPressed, activeRecordingShortcutAction == action else { return }
         isShortcutPressed = false
         activeRecordingShortcutAction = nil
+        activeRecordingShortcutMode = nil
+        activeRecordingModeID = nil
         activeShortcutCanCancelAccidentalStart = false
 
         if isBypassingEnhancementForCurrentShortcut {
@@ -781,6 +790,21 @@ final class RecordingShortcutModeHandler {
         }
 
         shortcutPressStartTime = nil
+    }
+
+    func handleMonitoringLoss(eventTime: TimeInterval) async {
+        guard let action = activeRecordingShortcutAction,
+            let mode = activeRecordingShortcutMode
+        else {
+            reset()
+            return
+        }
+        await handleKeyUp(
+            action: action,
+            eventTime: eventTime,
+            mode: mode,
+            modeId: activeRecordingModeID
+        )
     }
 
     func handleInterruption(action: ShortcutAction) async {

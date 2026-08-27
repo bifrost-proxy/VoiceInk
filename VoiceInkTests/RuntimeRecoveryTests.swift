@@ -15,8 +15,9 @@ struct RuntimeRecoveryTests {
             clock: { 1_000_000_000 },
             onClockDiscontinuity: { probe.recordClockGap($0, critical: $1) },
             onSoftStall: { duration, critical in probe.recordSoftStall(duration, critical: critical) },
-            onHardStall: {
-                probe.recordHardStall($0)
+            onHardStall: { duration, shouldProceed in
+                guard shouldProceed() else { return false }
+                probe.recordHardStall(duration)
                 return true
             }
         )
@@ -47,8 +48,9 @@ struct RuntimeRecoveryTests {
             clock: { 1_000_000_000 },
             onClockDiscontinuity: { probe.recordClockGap($0, critical: $1) },
             onSoftStall: { duration, critical in probe.recordSoftStall(duration, critical: critical) },
-            onHardStall: {
-                probe.recordHardStall($0)
+            onHardStall: { duration, shouldProceed in
+                guard shouldProceed() else { return false }
+                probe.recordHardStall(duration)
                 return true
             }
         )
@@ -71,8 +73,9 @@ struct RuntimeRecoveryTests {
             clock: { 1_000_000_000 },
             onClockDiscontinuity: { probe.recordClockGap($0, critical: $1) },
             onSoftStall: { duration, critical in probe.recordSoftStall(duration, critical: critical) },
-            onHardStall: {
-                probe.recordHardStall($0)
+            onHardStall: { duration, shouldProceed in
+                guard shouldProceed() else { return false }
+                probe.recordHardStall(duration)
                 return true
             }
         )
@@ -140,8 +143,9 @@ struct RuntimeRecoveryTests {
             clock: { 1_000_000_000 },
             onClockDiscontinuity: { probe.recordClockGap($0, critical: $1) },
             onSoftStall: { duration, critical in probe.recordSoftStall(duration, critical: critical) },
-            onHardStall: {
-                probe.recordHardStall($0)
+            onHardStall: { duration, shouldProceed in
+                guard shouldProceed() else { return false }
+                probe.recordHardStall(duration)
                 return true
             }
         )
@@ -155,6 +159,55 @@ struct RuntimeRecoveryTests {
         monitor.acknowledgeAppKitEvent(now: 40_000_000_000)
         monitor.simulateTick(now: 71_000_000_000)
         #expect(probe.hardStalls.count == 1)
+    }
+
+    @Test func terminationPermanentlyDisarmsTheWatchdog() {
+        let probe = RuntimeRecoveryProbe()
+        let monitor = MainThreadLivenessMonitor(
+            softStallThreshold: 5,
+            hardStallThreshold: 30,
+            clockDiscontinuityThreshold: 1_000,
+            clock: { 1_000_000_000 },
+            onClockDiscontinuity: { probe.recordClockGap($0, critical: $1) },
+            onSoftStall: { duration, critical in probe.recordSoftStall(duration, critical: critical) },
+            onHardStall: { duration, _ in
+                probe.recordHardStall(duration)
+                return true
+            }
+        )
+        monitor.start(interval: 1_000)
+        monitor.acknowledgeAppKitEvent(now: 1_000_000_000)
+        monitor.disarmPermanently()
+
+        monitor.simulateTick(now: 40_000_000_000)
+        #expect(probe.softStalls.isEmpty)
+        #expect(probe.hardStalls.isEmpty)
+    }
+
+    @Test func hardRecoveryRevalidatesTheLatestAppKitAcknowledgement() {
+        let probe = RuntimeRecoveryProbe()
+        let monitorBox = LivenessMonitorBox()
+        let monitor = MainThreadLivenessMonitor(
+            softStallThreshold: 5,
+            hardStallThreshold: 30,
+            clockDiscontinuityThreshold: 1_000,
+            clock: { 1_000_000_000 },
+            onClockDiscontinuity: { probe.recordClockGap($0, critical: $1) },
+            onSoftStall: { duration, critical in probe.recordSoftStall(duration, critical: critical) },
+            onHardStall: { duration, shouldProceed in
+                monitorBox.monitor?.acknowledgeAppKitEvent(now: 31_000_000_000)
+                guard shouldProceed() else { return false }
+                probe.recordHardStall(duration)
+                return true
+            }
+        )
+        monitorBox.monitor = monitor
+        monitor.start(interval: 1_000)
+        defer { monitor.stop() }
+        monitor.acknowledgeAppKitEvent(now: 1_000_000_000)
+
+        monitor.simulateTick(now: 31_000_000_000)
+        #expect(probe.hardStalls.isEmpty)
     }
 
     @Test func hardRecoveryPolicyProtectsRecordingAndTranscriptionWork() {
@@ -181,7 +234,8 @@ struct RuntimeRecoveryTests {
             clock: { 1_000_000_000 },
             onClockDiscontinuity: { probe.recordClockGap($0, critical: $1) },
             onSoftStall: { duration, critical in probe.recordSoftStall(duration, critical: critical) },
-            onHardStall: { duration in
+            onHardStall: { duration, shouldProceed in
+                guard shouldProceed() else { return false }
                 probe.recordHardStall(duration)
                 return probe.hardStalls.count > 1
             }
@@ -256,7 +310,7 @@ struct RuntimeRecoveryTests {
         #expect(plan?.helperURL == nil)
     }
 
-    @Test func failedHelperLaunchClearsTheCooldownMarker() throws {
+    @Test func missingHelperPreventsExitAndClearsTheCooldownMarker() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("VoiceInk-RuntimeRecoveryFailureTests-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -269,7 +323,8 @@ struct RuntimeRecoveryTests {
             )
         )
 
-        #expect(!plan.launchAndExit(processExecutableURL: root.appendingPathComponent("missing-shell")))
+        try FileManager.default.removeItem(at: plan.helperURL)
+        #expect(!plan.launchAndExit())
         #expect(!FileManager.default.fileExists(atPath: plan.markerURL.path))
         #expect(plan.canRelaunch())
     }
@@ -325,7 +380,7 @@ struct RuntimeRecoveryTests {
             clock: { 1_000_000_000 },
             onClockDiscontinuity: { probe.recordClockGap($0, critical: $1) },
             onSoftStall: { _, _ in },
-            onHardStall: { _ in true }
+            onHardStall: { _, shouldProceed in shouldProceed() }
         )
         monitor.start(interval: 1_000)
         defer { monitor.stop() }
@@ -399,4 +454,8 @@ private actor NonCooperativeTaskGate {
         continuation?.resume()
         continuation = nil
     }
+}
+
+private final class LivenessMonitorBox: @unchecked Sendable {
+    weak var monitor: MainThreadLivenessMonitor?
 }

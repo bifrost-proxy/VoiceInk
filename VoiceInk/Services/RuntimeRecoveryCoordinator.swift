@@ -166,17 +166,6 @@ final class RuntimeRecoveryCoordinator {
             )
         }
 
-        observers.append(
-            NotificationCenter.default.addObserver(
-                forName: NSApplication.willTerminateNotification,
-                object: nil,
-                queue: .main
-            ) { [weak self] _ in
-                Task { @MainActor [weak self] in
-                    self?.livenessMonitor?.stop()
-                }
-            }
-        )
     }
 
     private func setupMemoryPressureMonitoring() {
@@ -259,15 +248,15 @@ final class RuntimeRecoveryCoordinator {
                     isCriticalWorkActive: criticalWork
                 )
             },
-            onHardStall: { duration in
-                let canRelaunch = relaunchPlan?.canRelaunch() == true
+            onHardStall: { duration, shouldProceed in
+                let canRelaunch = shouldProceed() && relaunchPlan?.canRelaunch() == true
                 RuntimeRecoveryDiagnostics.record(
                     kind: canRelaunch ? "automaticRelaunch" : "hardStallRelaunchUnavailable",
                     duration: duration,
                     isCriticalWorkActive: false
                 )
                 if canRelaunch {
-                    return relaunchPlan?.launchAndExit() ?? false
+                    return relaunchPlan?.launchAndExit(shouldProceed: shouldProceed) ?? false
                 }
                 return false
             }
@@ -277,6 +266,15 @@ final class RuntimeRecoveryCoordinator {
         }
         monitor.setCriticalWorkActive(isCriticalWorkActive)
         monitor.start()
+        observers.append(
+            NotificationCenter.default.addObserver(
+                forName: NSApplication.willTerminateNotification,
+                object: nil,
+                queue: .main
+            ) { [weak monitor] _ in
+                monitor?.disarmPermanently()
+            }
+        )
         livenessMonitor = monitor
         appKitEventProbe = eventProbe
     }
@@ -290,11 +288,11 @@ final class RuntimeRecoveryCoordinator {
             } catch {
                 return
             }
-            self?.performRecovery()
+            await self?.performRecovery()
         }
     }
 
-    private func performRecovery() {
+    private func performRecovery() async {
         guard !pendingReasons.isEmpty else { return }
         recoveryEpoch &+= 1
         let reasons = pendingReasons.map(\.rawValue).sorted().joined(separator: ",")
@@ -304,7 +302,7 @@ final class RuntimeRecoveryCoordinator {
         logger.notice(
             "Runtime recovery started epoch=\(self.recoveryEpoch, privacy: .public) reasons=\(reasons, privacy: .public)"
         )
-        let shortcutsRecovered = recordingShortcutManager.recoverRuntimeMonitoring()
+        let shortcutsRecovered = await recordingShortcutManager.recoverRuntimeMonitoring()
         cloudSpeechPreconnectionService.recoverAfterRuntimeInterruption()
         AppShortcuts.updateAppShortcutParameters()
         prewarmService.recoverAfterRuntimeInterruption()
@@ -324,11 +322,12 @@ final class MainThreadLivenessMonitor: @unchecked Sendable {
     private let onProbeRequested: @Sendable () -> Void
     private let onClockDiscontinuity: @Sendable (TimeInterval, Bool) -> Void
     private let onSoftStall: @Sendable (TimeInterval, Bool) -> Void
-    private let onHardStall: @Sendable (TimeInterval) -> Bool
+    private let onHardStall: @Sendable (TimeInterval, @escaping @Sendable () -> Bool) -> Bool
     private let lastMainAcknowledgement = ManagedAtomic<UInt64>(0)
     private let lastTimerTick = ManagedAtomic<UInt64>(0)
     private let isCriticalWorkActive = ManagedAtomic(false)
     private let hasAcknowledgedAppKitEvent = ManagedAtomic(false)
+    private let isPermanentlyDisarmed = ManagedAtomic(false)
     private let didReportSoftStall = ManagedAtomic(false)
     private let didHandleHardStall = ManagedAtomic(false)
     private let queue = DispatchQueue(label: "com.prakashjoshipax.voiceink.main-thread-watchdog", qos: .utility)
@@ -342,7 +341,7 @@ final class MainThreadLivenessMonitor: @unchecked Sendable {
         onProbeRequested: @escaping @Sendable () -> Void = {},
         onClockDiscontinuity: @escaping @Sendable (TimeInterval, Bool) -> Void,
         onSoftStall: @escaping @Sendable (TimeInterval, Bool) -> Void,
-        onHardStall: @escaping @Sendable (TimeInterval) -> Bool
+        onHardStall: @escaping @Sendable (TimeInterval, @escaping @Sendable () -> Bool) -> Bool
     ) {
         self.softStallNanoseconds = Self.nanoseconds(softStallThreshold)
         self.hardStallNanoseconds = Self.nanoseconds(hardStallThreshold)
@@ -373,6 +372,11 @@ final class MainThreadLivenessMonitor: @unchecked Sendable {
         timer = nil
     }
 
+    func disarmPermanently() {
+        isPermanentlyDisarmed.store(true, ordering: .releasing)
+        stop()
+    }
+
     func setCriticalWorkActive(_ active: Bool) {
         isCriticalWorkActive.store(active, ordering: .releasing)
     }
@@ -394,6 +398,7 @@ final class MainThreadLivenessMonitor: @unchecked Sendable {
     }
 
     private func evaluate(now: UInt64, enqueueMainProbe: Bool) {
+        guard !isPermanentlyDisarmed.load(ordering: .acquiring) else { return }
         let previousTick = lastTimerTick.exchange(now, ordering: .acquiringAndReleasing)
         if previousTick > 0 {
             let gap = now &- previousTick
@@ -441,7 +446,13 @@ final class MainThreadLivenessMonitor: @unchecked Sendable {
             isCriticalWorkActive: criticalWork
         ), !didHandleHardStall.load(ordering: .acquiring)
         {
-            if onHardStall(Self.seconds(stall)) {
+            let shouldProceed: @Sendable () -> Bool = { [weak self] in
+                guard let self else { return false }
+                return !self.isPermanentlyDisarmed.load(ordering: .acquiring)
+                    && !self.isCriticalWorkActive.load(ordering: .acquiring)
+                    && self.lastMainAcknowledgement.load(ordering: .acquiring) == lastAcknowledgement
+            }
+            if shouldProceed(), onHardStall(Self.seconds(stall), shouldProceed) {
                 didHandleHardStall.store(true, ordering: .releasing)
             }
         }
@@ -581,20 +592,29 @@ struct RuntimeRecoveryRelaunchPlan: Sendable {
     }
 
     func launchAndExit(
-        processExecutableURL: URL = URL(fileURLWithPath: "/bin/zsh")
+        processExecutableURL: URL? = nil,
+        shouldProceed: @escaping @Sendable () -> Bool = { true }
     ) -> Bool {
-        guard canRelaunch() else { return false }
+        guard canRelaunch(), shouldProceed() else { return false }
         do {
             try Data(Date().ISO8601Format().utf8).write(to: markerURL, options: .atomic)
             let process = Process()
-            process.executableURL = processExecutableURL
+            process.executableURL = processExecutableURL ?? helperURL
             process.arguments = [
-                helperURL.path,
                 String(ProcessInfo.processInfo.processIdentifier),
                 appURL.path,
                 logURL.path,
             ]
+            guard shouldProceed() else {
+                try? FileManager.default.removeItem(at: markerURL)
+                return false
+            }
             try process.run()
+            guard shouldProceed() else {
+                process.terminate()
+                try? FileManager.default.removeItem(at: markerURL)
+                return false
+            }
             Darwin._exit(70)
         } catch {
             // A failed spawn did not relaunch anything. Remove the marker so

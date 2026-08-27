@@ -51,6 +51,33 @@ struct RecordingShortcutModeHandlerTests {
         #expect(!handler.hasActivePress)
     }
 
+    @Test func monitoringLossSynthesizesReleaseForAHeldPushToTalkPress() async {
+        var recordingState: RecordingState = .recording
+        var toggleCount = 0
+        let handler = RecordingShortcutModeHandler(
+            canHandleShortcutAction: { true },
+            isRecorderVisible: { true },
+            recordingState: { recordingState },
+            toggleRecorderPanel: { _ in
+                toggleCount += 1
+                recordingState = .idle
+            },
+            cancelRecording: {},
+            cancelEnhancementAndPasteOriginal: {}
+        )
+
+        await handler.handleKeyDown(
+            action: .primaryRecording,
+            eventTime: 5,
+            mode: .pushToTalk
+        )
+        await handler.handleMonitoringLoss(eventTime: 6)
+
+        #expect(!handler.hasActivePress)
+        #expect(toggleCount == 1)
+        #expect(recordingState == .idle)
+    }
+
     @Test func enhancementShortcutBypassesPolishWithoutStartingAnotherRecording() async {
         var recordingState: RecordingState = .enhancing
         var toggleCount = 0
