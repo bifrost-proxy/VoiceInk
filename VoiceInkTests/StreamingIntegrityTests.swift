@@ -391,6 +391,52 @@ struct StreamingIntegrityTests {
     }
 
     @MainActor
+    @Test func sessionCancellationWaitsForNonCooperativeStreamingStartup() async throws {
+        let startupGate = StreamingStartupGate()
+        let provider = GatedStartupProvider(gate: startupGate)
+        let service = try makeService(provider: provider)
+        let session = StreamingTranscriptionSession(
+            streamingService: service,
+            fallbackService: IntegrityFallbackService()
+        )
+        let model = IntegrityTestModel(provider: .fluidAudio)
+        let mode = ModeConfig(
+            name: "Startup cancellation",
+            isAIEnhancementEnabled: false,
+            selectedTranscriptionModelName: model.name,
+            isRealtimeTranscriptionEnabled: true
+        )
+        _ = try await session.prepare(
+            configuration: TranscriptionRuntimeConfiguration(
+                mode: mode,
+                model: model,
+                language: "auto",
+                isRealtimeEnabled: true
+            )
+        )
+        for _ in 0..<100 where !(await startupGate.didStart) {
+            await Task.yield()
+        }
+
+        session.cancel()
+        let completion = StreamingCancellationCompletion()
+        let waiter = Task { @MainActor in
+            await session.waitForCancellation()
+            await completion.finish()
+        }
+        await Task.yield()
+
+        #expect(await startupGate.didStart)
+        #expect(!(await startupGate.didFinish))
+        #expect(!(await completion.didFinish))
+
+        await startupGate.release()
+        await waiter.value
+        #expect(await startupGate.didFinish)
+        #expect(await completion.didFinish)
+    }
+
+    @MainActor
     @Test func normalCleanupPreservesTimedOutDisconnectBarrier() async throws {
         let gate = StreamingDisconnectGate()
         let provider = GatedDisconnectProvider(gate: gate)
@@ -488,6 +534,69 @@ private final class GatedDisconnectProvider: StreamingTranscriptionProvider {
     func disconnect() async {
         await gate.wait()
         continuation.finish()
+    }
+}
+
+private actor StreamingStartupGate {
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var isReleased = false
+    private(set) var didStart = false
+    private(set) var didFinish = false
+
+    func wait() async {
+        didStart = true
+        if !isReleased {
+            await withCheckedContinuation { continuation = $0 }
+        }
+        didFinish = true
+    }
+
+    func release() {
+        isReleased = true
+        continuation?.resume()
+        continuation = nil
+    }
+}
+
+private actor StreamingCancellationCompletion {
+    private(set) var didFinish = false
+
+    func finish() {
+        didFinish = true
+    }
+}
+
+private final class GatedStartupProvider: StreamingTranscriptionProvider {
+    private let gate: StreamingStartupGate
+    private let continuation: AsyncStream<StreamingTranscriptionEvent>.Continuation
+    let transcriptionEvents: AsyncStream<StreamingTranscriptionEvent>
+
+    init(gate: StreamingStartupGate) {
+        self.gate = gate
+        let pair = AsyncStream.makeStream(of: StreamingTranscriptionEvent.self)
+        transcriptionEvents = pair.stream
+        continuation = pair.continuation
+    }
+
+    func connect(model _: any TranscriptionModel, language _: String?) async throws {
+        await gate.wait()
+    }
+
+    func sendAudioChunk(_: Data) async throws {}
+    func commit() async throws {}
+
+    func disconnect() async {
+        continuation.finish()
+    }
+}
+
+private struct IntegrityFallbackService: TranscriptionService {
+    func transcribe(
+        audioURL _: URL,
+        model _: any TranscriptionModel,
+        context _: TranscriptionRequestContext
+    ) async throws -> String {
+        "fallback"
     }
 }
 

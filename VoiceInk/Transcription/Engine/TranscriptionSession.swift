@@ -200,6 +200,7 @@ final class StreamingTranscriptionSession: TranscriptionSession {
     private(set) var lastResolution: Resolution?
     private var startupTask: Task<Void, Never>?
     private var startupTaskID: UUID?
+    private var startupCleanupTasks: [UUID: Task<Void, Never>] = [:]
     private var fallbackDuration: TimeInterval?
     private var fallbackErrorDescription: String?
     private var fallbackTask: Task<String, Error>?
@@ -233,7 +234,7 @@ final class StreamingTranscriptionSession: TranscriptionSession {
             service?.sendAudioChunk(data)
         }
 
-        startupTask?.cancel()
+        cancelAndRetainStartupTask()
         let taskID = UUID()
         startupTaskID = taskID
         startupTask = Task { [weak self] in
@@ -243,6 +244,7 @@ final class StreamingTranscriptionSession: TranscriptionSession {
                     self.startupTask = nil
                     self.startupTaskID = nil
                 }
+                self.startupCleanupTasks.removeValue(forKey: taskID)
             }
             guard !Task.isCancelled else { return }
 
@@ -296,8 +298,7 @@ final class StreamingTranscriptionSession: TranscriptionSession {
             if !startedInTime {
                 logger.warning("Streaming startup exceeded the reliability deadline; retrying the complete audio file")
                 streamingFailed = true
-                startupTaskID = nil
-                self.startupTask = nil
+                cancelAndRetainStartupTask()
             }
         }
 
@@ -329,15 +330,11 @@ final class StreamingTranscriptionSession: TranscriptionSession {
             } catch {
                 lastResolution = .batchFallbackAfterStreamingError
                 logger.error("❌ Streaming failed, falling back to batch: \(error, privacy: .public)")
-                startupTask?.cancel()
-                startupTask = nil
-                startupTaskID = nil
+                cancelAndRetainStartupTask()
             }
         } else {
             lastResolution = .batchFallbackAfterStartupFailure
-            startupTask?.cancel()
-            startupTask = nil
-            startupTaskID = nil
+            cancelAndRetainStartupTask()
         }
 
         await streamingService.stopTransportForCompleteFileRecovery()
@@ -428,16 +425,30 @@ final class StreamingTranscriptionSession: TranscriptionSession {
 
     func cancel() {
         isCancelled = true
-        startupTask?.cancel()
-        startupTask = nil
-        startupTaskID = nil
+        cancelAndRetainStartupTask()
         fallbackTask?.cancel()
         fallbackTask = nil
         streamingService.cancel()
     }
 
     func waitForCancellation() async {
+        let startupTasks = Array(startupCleanupTasks.values)
+        for startupTask in startupTasks {
+            await startupTask.value
+        }
+        startupCleanupTasks.removeAll()
         await streamingService.waitForCancellation()
+    }
+
+    private func cancelAndRetainStartupTask() {
+        guard let startupTask else {
+            startupTaskID = nil
+            return
+        }
+        startupTask.cancel()
+        startupCleanupTasks[startupTaskID ?? UUID()] = startupTask
+        self.startupTask = nil
+        startupTaskID = nil
     }
 
     func recordDroppedAudioChunks(_ count: Int) {
