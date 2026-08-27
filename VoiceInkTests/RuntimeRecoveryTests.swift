@@ -42,6 +42,23 @@ struct RuntimeRecoveryTests {
         #expect(!activity.isBusy)
     }
 
+    @Test @MainActor func protectedAsyncOperationEndsItsLeaseAfterCompletion() async {
+        let activity = RuntimeProtectedWorkActivity.shared
+        let gate = NonCooperativeTaskGate()
+        let task = Task { @MainActor in
+            await activity.performProtected {
+                await gate.wait()
+            }
+        }
+        await Task.yield()
+
+        #expect(activity.isBusy)
+
+        await gate.release()
+        await task.value
+        #expect(!activity.isBusy)
+    }
+
     @Test func livenessMonitorReportsSoftStallOnceAndRelaunchesOnlyWhenIdle() {
         let probe = RuntimeRecoveryProbe()
         let monitor = MainThreadLivenessMonitor(
@@ -344,6 +361,17 @@ struct RuntimeRecoveryTests {
                 isRecordingActive: true
             )
         )
+    }
+
+    @Test func onlyLocalModelProvidersCoordinateRuntimePressure() {
+        let localProviders: Set<ModelProvider> = [.whisper, .fluidAudio, .sherpaOnnx, .qwenMlx]
+
+        for provider in ModelProvider.allCases {
+            #expect(
+                RuntimePressureOperationPolicy.coordinatesLocalRuntime(for: provider)
+                    == localProviders.contains(provider)
+            )
+        }
     }
 
     @Test @MainActor func memoryPressureTransitionsSerializeAcrossSuspensionAwait() async {

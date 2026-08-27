@@ -80,11 +80,14 @@ final class ResourceManagedTranscriptionSession: TranscriptionSession {
 
     func transcribe(audioURL: URL) async throws -> String {
         isTranscribing = true
-        defer {
-            isTranscribing = false
-            finish()
+        do {
+            let result = try await session.transcribe(audioURL: audioURL)
+            await finishTranscription()
+            return result
+        } catch {
+            await finishTranscription()
+            throw error
         }
-        return try await session.transcribe(audioURL: audioURL)
     }
 
     func cancel() {
@@ -112,6 +115,14 @@ final class ResourceManagedTranscriptionSession: TranscriptionSession {
 
     var performanceSnapshot: TranscriptionPerformanceSnapshot? {
         session.performanceSnapshot
+    }
+
+    private func finishTranscription() async {
+        if isCancelled {
+            await session.waitForCancellation()
+        }
+        isTranscribing = false
+        finish()
     }
 
     private func finish() {

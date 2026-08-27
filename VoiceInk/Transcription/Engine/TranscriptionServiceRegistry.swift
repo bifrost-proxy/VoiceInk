@@ -9,6 +9,17 @@ enum RuntimePressureResourceReleasePolicy {
     }
 }
 
+enum RuntimePressureOperationPolicy {
+    static func coordinatesLocalRuntime(for provider: ModelProvider) -> Bool {
+        switch provider {
+        case .whisper, .fluidAudio, .sherpaOnnx, .qwenMlx:
+            return true
+        default:
+            return false
+        }
+    }
+}
+
 @MainActor
 final class RuntimePressureOperationCoordinator {
     static let shared = RuntimePressureOperationCoordinator()
@@ -255,8 +266,15 @@ class TranscriptionServiceRegistry {
     func transcribe(
         audioURL: URL, model: any TranscriptionModel, context: TranscriptionRequestContext = .currentDefaults
     ) async throws -> String {
-        guard await pressureOperations.beginOperation() else { throw CancellationError() }
-        defer { operationDidFinish() }
+        let coordinatesLocalRuntime = RuntimePressureOperationPolicy.coordinatesLocalRuntime(for: model.provider)
+        if coordinatesLocalRuntime {
+            guard await pressureOperations.beginOperation() else { throw CancellationError() }
+        }
+        defer {
+            if coordinatesLocalRuntime {
+                operationDidFinish()
+            }
+        }
         let service = service(for: model.provider)
         logger.debug(
             "Transcribing with \(model.displayName, privacy: .public) using \(String(describing: type(of: service)), privacy: .public)"
@@ -289,10 +307,14 @@ class TranscriptionServiceRegistry {
             )
             let fallback = service(for: model.provider)
             return managedSession(
-                StreamingTranscriptionSession(streamingService: streamingService, fallbackService: fallback)
+                StreamingTranscriptionSession(streamingService: streamingService, fallbackService: fallback),
+                coordinatesLocalRuntime: RuntimePressureOperationPolicy.coordinatesLocalRuntime(for: model.provider)
             )
         } else {
-            return managedSession(FileTranscriptionSession(service: service(for: model.provider)))
+            return managedSession(
+                FileTranscriptionSession(service: service(for: model.provider)),
+                coordinatesLocalRuntime: RuntimePressureOperationPolicy.coordinatesLocalRuntime(for: model.provider)
+            )
         }
     }
 
@@ -366,8 +388,12 @@ class TranscriptionServiceRegistry {
         pressureOperations.cancelPendingRelease()
     }
 
-    private func managedSession(_ session: TranscriptionSession) -> TranscriptionSession {
-        ResourceManagedTranscriptionSession(
+    private func managedSession(
+        _ session: TranscriptionSession,
+        coordinatesLocalRuntime: Bool
+    ) -> TranscriptionSession {
+        guard coordinatesLocalRuntime else { return session }
+        return ResourceManagedTranscriptionSession(
             session: session,
             onPrepare: { [weak self] in
                 guard let self else { return false }

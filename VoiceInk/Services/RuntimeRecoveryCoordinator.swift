@@ -121,6 +121,14 @@ final class RuntimeProtectedWorkActivity: ObservableObject {
         activeOperations.remove(operationID)
         activeOperationCount = activeOperations.count
     }
+
+    func performProtected<T>(
+        _ operation: @MainActor () async throws -> T
+    ) async rethrows -> T {
+        let operationID = begin()
+        defer { end(operationID) }
+        return try await operation()
+    }
 }
 
 enum RuntimeCriticalWorkPolicy {
