@@ -18,8 +18,14 @@ actor QwenMLXRuntime {
     private var requestID = 0
     private var loadedModelPath: String?
     private var backendDescription: String?
+    private var isStopping = false
+    private var shutdownTask: Task<Void, Never>?
+
+    static let shutdownGracePeriod: Duration = .milliseconds(500)
+    static let shutdownPollInterval: Duration = .milliseconds(25)
 
     func load(model: QwenMLXModel) throws -> String {
+        guard !isStopping else { throw QwenMLXRuntimeError.notRunning }
         let modelPath = QwenMLXPaths.modelDirectory(for: model).path
         if process?.isRunning == true, loadedModelPath == modelPath,
             let backendDescription
@@ -92,23 +98,43 @@ actor QwenMLXRuntime {
         return text
     }
 
-    func stop() {
-        if process?.isRunning == true {
-            _ = try? request(["command": "shutdown"])
+    func stop(gracePeriod: Duration = shutdownGracePeriod) async {
+        if let shutdownTask {
+            await shutdownTask.value
+            return
         }
-        stopImmediately()
+
+        guard let process, process.isRunning else {
+            stopImmediately()
+            return
+        }
+
+        isStopping = true
+        // Shutdown is deliberately write-only. Waiting for the bridge's
+        // stdout response can block forever precisely when pressure recovery
+        // needs to reclaim it.
+        _ = try? writeRequest(["command": "shutdown"])
+
+        let task = Task {
+            _ = await Self.waitForExit(process, timeout: gracePeriod)
+            stopImmediately()
+            isStopping = false
+        }
+        shutdownTask = task
+        await task.value
+        shutdownTask = nil
     }
 
-    func stopIfLoaded(model: QwenMLXModel) {
+    func stopIfLoaded(model: QwenMLXModel) async {
         guard loadedModelPath == QwenMLXPaths.modelDirectory(for: model).path else { return }
-        stop()
+        await stop()
     }
 
-    func releaseResourcesIfUnbound(boundModelNames: Set<String>) -> String? {
+    func releaseResourcesIfUnbound(boundModelNames: Set<String>) async -> String? {
         guard let loadedModelPath else { return nil }
         let loadedModelName = URL(fileURLWithPath: loadedModelPath).lastPathComponent
         guard !boundModelNames.contains(loadedModelName) else { return nil }
-        stop()
+        await stop()
         return loadedModelName
     }
 
@@ -143,28 +169,46 @@ actor QwenMLXRuntime {
     }
 
     private func request(_ payload: [String: Any]) throws -> [String: Any] {
-        guard let process, process.isRunning, let standardInput, standardOutput != nil else {
+        guard !isStopping, let process, process.isRunning, standardOutput != nil else {
             throw QwenMLXRuntimeError.notRunning
         }
 
-        requestID += 1
-        var message = payload
-        message["id"] = requestID
-        let encoded = try JSONSerialization.data(withJSONObject: message)
-        standardInput.write(encoded)
-        standardInput.write(Data([0x0A]))
+        let sentRequestID = try writeRequest(payload)
 
         let line = try readLine()
         guard let response = try JSONSerialization.jsonObject(with: line) as? [String: Any] else {
             throw QwenMLXRuntimeError.invalidResponse("Response is not a JSON object")
         }
-        guard (response["id"] as? Int) == requestID else {
+        guard (response["id"] as? Int) == sentRequestID else {
             throw QwenMLXRuntimeError.invalidResponse("Response ID does not match request")
         }
         guard response["ok"] as? Bool == true else {
             throw QwenMLXRuntimeError.engineError(response["error"] as? String ?? "Unknown MLX error")
         }
         return response
+    }
+
+    @discardableResult
+    private func writeRequest(_ payload: [String: Any]) throws -> Int {
+        guard let process, process.isRunning, let standardInput else {
+            throw QwenMLXRuntimeError.notRunning
+        }
+        requestID += 1
+        var message = payload
+        message["id"] = requestID
+        let encoded = try JSONSerialization.data(withJSONObject: message)
+        standardInput.write(encoded)
+        standardInput.write(Data([0x0A]))
+        return requestID
+    }
+
+    static func waitForExit(_ process: Process, timeout: Duration) async -> Bool {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
+        while process.isRunning, clock.now < deadline, !Task.isCancelled {
+            try? await Task.sleep(for: shutdownPollInterval)
+        }
+        return !process.isRunning
     }
 
     private func readLine() throws -> Data {

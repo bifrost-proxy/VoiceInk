@@ -127,6 +127,12 @@ enum RuntimeCriticalWorkPolicy {
     static func assistantSessionIsProtected(_ phase: AssistantPhase) -> Bool {
         phase != .inactive
     }
+
+    static func apiKeyDraftIsProtected(_ draft: String, savedKey: String?) -> Bool {
+        let trimmedDraft = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedDraft.isEmpty else { return false }
+        return trimmedDraft != savedKey?.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 }
 
 /// Coordinates recovery of process-local resources that can become stale when
@@ -684,6 +690,7 @@ struct RuntimeRecoveryRelaunchPlan: Sendable {
                 String(ProcessInfo.processInfo.processIdentifier),
                 appURL.path,
                 logURL.path,
+                markerURL.path,
             ]
             guard shouldProceed() else {
                 try? FileManager.default.removeItem(at: markerURL)
@@ -764,15 +771,23 @@ enum RuntimeRecoveryRelauncher {
         old_pid="$1"
         app_path="$2"
         log_file="$3"
+        marker_path="$4"
         exec >>"$log_file" 2>&1
 
         for attempt in {1..100}; do
           if ! /bin/kill -0 "$old_pid" 2>/dev/null; then
-            /usr/bin/open -n "$app_path"
-            exit $?
+            for launch_attempt in {1..20}; do
+              if /usr/bin/open -n "$app_path"; then
+                exit 0
+              fi
+              /bin/sleep 0.25
+            done
+            /bin/rm -f -- "$marker_path"
+            exit 1
           fi
           /bin/sleep 0.1
         done
+        /bin/rm -f -- "$marker_path"
         exit 1
         """
 }

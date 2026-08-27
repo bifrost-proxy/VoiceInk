@@ -14,6 +14,13 @@ struct RuntimeRecoveryTests {
         #expect(RuntimeCriticalWorkPolicy.assistantSessionIsProtected(.failed("retry available")))
     }
 
+    @Test func onlyUnsavedAPIKeyDraftsRequireRelaunchProtection() {
+        #expect(!RuntimeCriticalWorkPolicy.apiKeyDraftIsProtected("", savedKey: nil))
+        #expect(!RuntimeCriticalWorkPolicy.apiKeyDraftIsProtected("  saved-key  ", savedKey: "saved-key"))
+        #expect(RuntimeCriticalWorkPolicy.apiKeyDraftIsProtected("new-key", savedKey: nil))
+        #expect(RuntimeCriticalWorkPolicy.apiKeyDraftIsProtected("new-key", savedKey: "saved-key"))
+    }
+
     @Test @MainActor func asyncRestorationRemainsProtectedUntilItCompletes() async {
         let activity = RuntimeProtectedWorkActivity.shared
         let gate = NonCooperativeTaskGate()
@@ -586,6 +593,8 @@ struct RuntimeRecoveryTests {
         )
         #expect(FileManager.default.isExecutableFile(atPath: plan.helperURL.path))
         #expect(RuntimeRecoveryRelauncher.helperScript.contains("/usr/bin/open -n \"$app_path\""))
+        #expect(RuntimeRecoveryRelauncher.helperScript.contains("for launch_attempt in {1..20}"))
+        #expect(RuntimeRecoveryRelauncher.helperScript.contains("/bin/rm -f -- \"$marker_path\""))
         let syntaxCheck = Process()
         syntaxCheck.executableURL = URL(fileURLWithPath: "/bin/zsh")
         syntaxCheck.arguments = ["-n", plan.helperURL.path]
@@ -596,6 +605,26 @@ struct RuntimeRecoveryTests {
         try Data("recent".utf8).write(to: plan.markerURL, options: .atomic)
         #expect(!plan.canRelaunch(now: Date()))
         #expect(plan.canRelaunch(now: Date().addingTimeInterval(RuntimeRecoveryRelauncher.cooldown + 1)))
+    }
+
+    @Test func qwenShutdownWaitIsBoundedWhenTheBridgeDoesNotExit() async throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        process.arguments = ["10"]
+        try process.run()
+        defer {
+            if process.isRunning {
+                process.terminate()
+            }
+        }
+
+        let clock = ContinuousClock()
+        let startedAt = clock.now
+        let exited = await QwenMLXRuntime.waitForExit(process, timeout: .milliseconds(100))
+        let elapsed = startedAt.duration(to: clock.now)
+
+        #expect(!exited)
+        #expect(elapsed < .seconds(1))
     }
 
     @Test func testProcessesNeverPrepareAnAutomaticRelaunch() {
