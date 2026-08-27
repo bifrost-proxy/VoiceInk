@@ -451,6 +451,32 @@ struct RuntimeRecoveryTests {
         coordinator.endOperation()
     }
 
+    @Test @MainActor func optionalModelPreparationRechecksPressureAfterWaitingForRelease() async {
+        let coordinator = RuntimePressureOperationCoordinator()
+        let gate = NonCooperativeTaskGate()
+        let releaseTask = Task { @MainActor in
+            await coordinator.requestRelease(
+                recordingIsActive: { false },
+                operation: {
+                    await gate.wait()
+                    return true
+                }
+            )
+        }
+        await Task.yield()
+        let optionalTask = Task { @MainActor in
+            await coordinator.beginOptionalOperation()
+        }
+        await Task.yield()
+
+        coordinator.suspendOptionalOperations()
+        await gate.release()
+
+        #expect(await releaseTask.value)
+        #expect(!(await optionalTask.value))
+        #expect(!coordinator.hasActiveOperations)
+    }
+
     @Test func watchdogKeepsOnlyOneAppKitProbeOutstanding() {
         let probe = RuntimeRecoveryProbe()
         let monitor = MainThreadLivenessMonitor(

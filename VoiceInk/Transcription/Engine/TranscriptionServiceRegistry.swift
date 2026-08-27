@@ -36,7 +36,12 @@ final class RuntimePressureOperationCoordinator {
 
     func beginOptionalOperation() async -> Bool {
         guard !optionalOperationsSuspended else { return false }
-        return await beginOperation()
+        guard await beginOperation() else { return false }
+        guard !optionalOperationsSuspended else {
+            endOperation()
+            return false
+        }
+        return true
     }
 
     func suspendOptionalOperations() {

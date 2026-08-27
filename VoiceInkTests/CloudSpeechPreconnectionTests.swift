@@ -263,6 +263,33 @@ struct CloudSpeechPreconnectionTests {
         await pool.shutdown()
     }
 
+    @Test func connectionClosedBeforeOpenCompletionIsNeverPublishedAsReady() async throws {
+        let connector = ImmediatelyClosingCloudSpeechConnector()
+        let pool = CloudSpeechConnectionPool(
+            connector: connector,
+            circuitBreakerFailureCount: 1,
+            circuitBreakerDelay: .seconds(5 * 60)
+        )
+        let target = CloudSpeechConnectionTarget.aliyun(
+            apiKey: "test-key",
+            endpoint: URL(string: "wss://example.com/api-ws/v1/inference")!
+        )
+
+        await pool.reconcile(targets: [target])
+        for _ in 0..<100 {
+            let snapshot = await pool.snapshot()
+            if snapshot.retryingKeys.contains(target.key) {
+                #expect(snapshot.readyKeys.isEmpty)
+                #expect(snapshot.failureCounts[target.key] == 1)
+                await pool.shutdown()
+                return
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        Issue.record("Timed out waiting for immediately closed connection retry")
+        await pool.shutdown()
+    }
+
     @Test func runtimeRecoveryInvalidatesAndRebuildsActiveStandbyConnections() async throws {
         let connector = FakeCloudSpeechConnector()
         let pool = CloudSpeechConnectionPool(connector: connector)
@@ -561,6 +588,20 @@ private actor FakeCloudSpeechConnector: CloudSpeechWebSocketConnecting {
     ) async throws -> any CloudSpeechWebSocketConnection {
         let connection = FakeCloudSpeechConnection(onClosed: onClosed)
         connections.append(connection)
+        return connection
+    }
+}
+
+private actor ImmediatelyClosingCloudSpeechConnector: CloudSpeechWebSocketConnecting {
+    func open(
+        target _: CloudSpeechConnectionTarget,
+        onClosed: (@Sendable (Error?) -> Void)?
+    ) async throws -> any CloudSpeechWebSocketConnection {
+        let connection = FakeCloudSpeechConnection(onClosed: onClosed)
+        connection.close()
+        for _ in 0..<5 {
+            await Task.yield()
+        }
         return connection
     }
 }

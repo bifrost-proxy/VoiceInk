@@ -313,6 +313,7 @@ actor CloudSpeechConnectionPool {
     private struct ReadyConnection: Sendable {
         let connection: any CloudSpeechWebSocketConnection
         let openedAt: ContinuousClock.Instant
+        let attemptID: UUID
     }
 
     struct Snapshot: Sendable {
@@ -339,6 +340,7 @@ actor CloudSpeechConnectionPool {
     private var generations: [CloudSpeechConnectionKey: UUID] = [:]
     private var readyConnections: [CloudSpeechConnectionKey: ReadyConnection] = [:]
     private var connectTasks: [CloudSpeechConnectionKey: Task<Void, Never>] = [:]
+    private var connectingAttemptIDs: [CloudSpeechConnectionKey: UUID] = [:]
     private var retryTasks: [CloudSpeechConnectionKey: Task<Void, Never>] = [:]
     private var healthTasks: [CloudSpeechConnectionKey: Task<Void, Never>] = [:]
     private var idleTasks: [CloudSpeechConnectionKey: Task<Void, Never>] = [:]
@@ -524,6 +526,8 @@ actor CloudSpeechConnectionPool {
 
         let generation = generations[key] ?? UUID()
         generations[key] = generation
+        let attemptID = UUID()
+        connectingAttemptIDs[key] = attemptID
         let connector = connector
         let attempt = (failureCounts[key] ?? 0) + 1
         let startedAt = Date()
@@ -537,7 +541,12 @@ actor CloudSpeechConnectionPool {
                     target: target,
                     onClosed: { [weak self] error in
                         Task {
-                            await self?.connectionClosed(for: key, generation: generation, error: error)
+                            await self?.connectionClosed(
+                                for: key,
+                                generation: generation,
+                                attemptID: attemptID,
+                                error: error
+                            )
                         }
                     }
                 )
@@ -545,6 +554,7 @@ actor CloudSpeechConnectionPool {
                     connection,
                     for: key,
                     generation: generation,
+                    attemptID: attemptID,
                     attempt: attempt,
                     elapsed: Date().timeIntervalSince(startedAt)
                 )
@@ -552,6 +562,7 @@ actor CloudSpeechConnectionPool {
                 await self.connectionFailed(
                     for: key,
                     generation: generation,
+                    attemptID: attemptID,
                     attempt: attempt,
                     elapsed: Date().timeIntervalSince(startedAt),
                     error: error
@@ -564,19 +575,35 @@ actor CloudSpeechConnectionPool {
         _ connection: any CloudSpeechWebSocketConnection,
         for key: CloudSpeechConnectionKey,
         generation: UUID,
+        attemptID: UUID,
         attempt: Int,
         elapsed: TimeInterval
     ) {
-        guard generations[key] == generation, targets[key] != nil, !isSuspended, !isShuttingDown else {
+        guard generations[key] == generation,
+            connectingAttemptIDs[key] == attemptID,
+            targets[key] != nil,
+            !isSuspended,
+            !isShuttingDown
+        else {
             connection.close()
             return
         }
 
         connectTasks[key] = nil
+        connectingAttemptIDs[key] = nil
         retryTasks.removeValue(forKey: key)?.cancel()
         readyConnections[key]?.connection.close()
-        readyConnections[key] = ReadyConnection(connection: connection, openedAt: clock.now)
-        startHealthChecks(for: key, generation: generation, connection: connection)
+        readyConnections[key] = ReadyConnection(
+            connection: connection,
+            openedAt: clock.now,
+            attemptID: attemptID
+        )
+        startHealthChecks(
+            for: key,
+            generation: generation,
+            attemptID: attemptID,
+            connection: connection
+        )
         logger.notice(
             "Cloud speech keep-alive connect ready attempt=\(attempt, privacy: .public) elapsed=\(elapsed, format: .fixed(precision: 3), privacy: .public)s \(key.diagnosticLabel, privacy: .public)"
         )
@@ -585,12 +612,19 @@ actor CloudSpeechConnectionPool {
     private func connectionFailed(
         for key: CloudSpeechConnectionKey,
         generation: UUID,
+        attemptID: UUID,
         attempt: Int,
         elapsed: TimeInterval,
         error: Error
     ) {
-        guard generations[key] == generation, targets[key] != nil, !isSuspended, !isShuttingDown else { return }
+        guard generations[key] == generation,
+            connectingAttemptIDs[key] == attemptID,
+            targets[key] != nil,
+            !isSuspended,
+            !isShuttingDown
+        else { return }
         connectTasks[key] = nil
+        connectingAttemptIDs[key] = nil
         logger.warning(
             "Cloud speech keep-alive connect failed attempt=\(attempt, privacy: .public) elapsed=\(elapsed, format: .fixed(precision: 3), privacy: .public)s \(key.diagnosticLabel, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
         )
@@ -600,13 +634,22 @@ actor CloudSpeechConnectionPool {
     private func connectionClosed(
         for key: CloudSpeechConnectionKey,
         generation: UUID,
+        attemptID: UUID,
         source: String = "transportCallback",
         error: Error?
     ) {
         guard generations[key] == generation, targets[key] != nil, !isSuspended, !isShuttingDown else { return }
-        readyConnections.removeValue(forKey: key)?.connection.close()
+        let isConnectingAttempt = connectingAttemptIDs[key] == attemptID
+        let isReadyAttempt = readyConnections[key]?.attemptID == attemptID
+        guard isConnectingAttempt || isReadyAttempt else { return }
+        if isReadyAttempt {
+            readyConnections.removeValue(forKey: key)?.connection.close()
+        }
         healthTasks.removeValue(forKey: key)?.cancel()
-        connectTasks[key] = nil
+        if isConnectingAttempt {
+            connectTasks[key] = nil
+            connectingAttemptIDs[key] = nil
+        }
         let errorDescription = error?.localizedDescription ?? "none"
         logger.notice(
             "Cloud speech keep-alive standby closed source=\(source, privacy: .public) \(key.diagnosticLabel, privacy: .public) error=\(errorDescription, privacy: .public)"
@@ -617,6 +660,7 @@ actor CloudSpeechConnectionPool {
     private func startHealthChecks(
         for key: CloudSpeechConnectionKey,
         generation: UUID,
+        attemptID: UUID,
         connection: any CloudSpeechWebSocketConnection
     ) {
         healthTasks[key]?.cancel()
@@ -627,11 +671,16 @@ actor CloudSpeechConnectionPool {
                 guard !Task.isCancelled else { return }
                 do {
                     try await connection.ping(timeout: healthCheckTimeout)
-                    await self?.connectionHealthCheckSucceeded(for: key, generation: generation)
+                    await self?.connectionHealthCheckSucceeded(
+                        for: key,
+                        generation: generation,
+                        attemptID: attemptID
+                    )
                 } catch {
                     await self?.connectionClosed(
                         for: key,
                         generation: generation,
+                        attemptID: attemptID,
                         source: "healthCheck",
                         error: error
                     )
@@ -641,8 +690,14 @@ actor CloudSpeechConnectionPool {
         }
     }
 
-    private func connectionHealthCheckSucceeded(for key: CloudSpeechConnectionKey, generation: UUID) {
-        guard generations[key] == generation, readyConnections[key] != nil else { return }
+    private func connectionHealthCheckSucceeded(
+        for key: CloudSpeechConnectionKey,
+        generation: UUID,
+        attemptID: UUID
+    ) {
+        guard generations[key] == generation,
+            readyConnections[key]?.attemptID == attemptID
+        else { return }
         if failureCounts[key, default: 0] > 0 {
             logger.notice(
                 "Cloud speech keep-alive failure history cleared after a successful health check \(key.diagnosticLabel, privacy: .public)"
@@ -720,6 +775,7 @@ actor CloudSpeechConnectionPool {
         }
         readyConnections.removeValue(forKey: key)?.connection.close()
         connectTasks.removeValue(forKey: key)?.cancel()
+        connectingAttemptIDs[key] = nil
         if !keepsScheduledRetry {
             retryTasks.removeValue(forKey: key)?.cancel()
         }
