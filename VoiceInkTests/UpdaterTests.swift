@@ -104,6 +104,25 @@ struct UpdaterTests {
         #expect(!UpdateActivity.idle.isBusy)
     }
 
+    @Test func downloadProgressIsCoalescedToVisiblePercentageChanges() {
+        var coalescer = UpdateProgressCoalescer()
+        var emitted: [UpdatePreparationProgress] = []
+
+        for value in 0...10_000 {
+            if let progress = coalescer.coalesce(.downloading(Double(value) / 10_000)) {
+                emitted.append(progress)
+            }
+        }
+
+        #expect(emitted.count == 101)
+        #expect(emitted.first == .downloading(0))
+        #expect(emitted.last == .downloading(1))
+        #expect(coalescer.coalesce(.downloading(nil)) == nil)
+        #expect(coalescer.coalesce(.verifying) == .verifying)
+        #expect(coalescer.coalesce(.verifying) == nil)
+        #expect(coalescer.coalesce(.preparing) == .preparing)
+    }
+
     @Test func automaticUpdateChecksDefaultOnWithoutOverridingAnExplicitChoice() {
         let suiteName = "UpdaterTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!

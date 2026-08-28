@@ -70,10 +70,6 @@ final class UpdateManager: ObservableObject {
         Self.menuAction(activity: activity, availableRelease: availableRelease)
     }
 
-    var showsMenuBarUpdateBadge: Bool {
-        availableRelease != nil
-    }
-
     var statusText: String {
         switch activity {
         case .idle:
@@ -205,25 +201,63 @@ final class UpdateManager: ObservableObject {
     }
 
     private func apply(_ progress: UpdatePreparationProgress) {
+        let nextActivity: UpdateActivity
         switch progress {
         case .downloading(let fraction):
-            activity = .downloading(progress: fraction)
+            nextActivity = .downloading(progress: fraction)
         case .verifying:
-            activity = .verifying
+            nextActivity = .verifying
         case .preparing:
-            activity = .preparing
+            nextActivity = .preparing
         }
+
+        guard activity != nextActivity else { return }
+        activity = nextActivity
+    }
+}
+
+/// Limits download UI invalidations to the same whole-percent precision shown to the user.
+struct UpdateProgressCoalescer {
+    private var lastEmitted: UpdatePreparationProgress?
+
+    mutating func coalesce(_ progress: UpdatePreparationProgress) -> UpdatePreparationProgress? {
+        let coalesced: UpdatePreparationProgress
+
+        switch progress {
+        case .downloading(nil):
+            if case .downloading(.some) = lastEmitted {
+                return nil
+            }
+            coalesced = progress
+        case .downloading(let fraction?):
+            let clamped = min(max(fraction, 0), 1)
+            let percentage = Int((clamped * 100).rounded())
+            coalesced = .downloading(Double(percentage) / 100)
+        case .verifying, .preparing:
+            coalesced = progress
+        }
+
+        guard coalesced != lastEmitted else { return nil }
+        lastEmitted = coalesced
+        return coalesced
     }
 }
 
 private final class UpdateProgressRelay: @unchecked Sendable {
     private let handler: @MainActor @Sendable (UpdatePreparationProgress) -> Void
+    private let lock = NSLock()
+    private var coalescer = UpdateProgressCoalescer()
 
     init(handler: @escaping @MainActor @Sendable (UpdatePreparationProgress) -> Void) {
         self.handler = handler
     }
 
     func send(_ progress: UpdatePreparationProgress) {
-        Task { @MainActor [handler] in handler(progress) }
+        lock.withLock {
+            guard let coalesced = coalescer.coalesce(progress) else { return }
+            DispatchQueue.main.async { [handler] in
+                handler(coalesced)
+            }
+        }
     }
 }
