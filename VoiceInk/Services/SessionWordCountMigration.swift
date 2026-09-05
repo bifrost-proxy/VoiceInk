@@ -13,8 +13,13 @@ enum SessionWordCountMigration {
     }
 
     @discardableResult
-    static func update(_ metric: SessionMetric, from transcription: Transcription) -> Bool {
-        guard (metric.wordCountVersion ?? 1) < WordCounter.currentVersion,
+    static func update(
+        _ metric: SessionMetric, from transcription: Transcription,
+        recountCurrentVersion: Bool = false
+    ) -> Bool {
+        let version = metric.wordCountVersion ?? 1
+        guard version < WordCounter.currentVersion
+                || (recountCurrentVersion && version == WordCounter.currentVersion),
             metric.transcriptionId == transcription.id,
             transcription.transcriptionStatus == TranscriptionStatus.completed.rawValue
         else { return false }
@@ -29,12 +34,19 @@ enum SessionWordCountMigration {
         }
         // Retention may leave an empty shell. Do not erase its historical count.
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
-        metric.wordCount = WordCounter.count(in: text)
+        let count = WordCounter.count(in: text)
+        guard metric.wordCount != count || metric.wordCountVersion != WordCounter.currentVersion else {
+            return false
+        }
+        metric.wordCount = count
         metric.wordCountVersion = WordCounter.currentVersion
         return true
     }
 
-    static func backfill(in context: ModelContext) throws -> [UUID] {
+    static func backfill(
+        in context: ModelContext,
+        didSaveBatch: ([UUID]) throws -> Void = { _ in }
+    ) throws -> [UUID] {
         var updatedIDs: [UUID] = []
         var offset = 0
         // Page over all rows so updating a version cannot shift the fetch offsets.
@@ -47,37 +59,48 @@ enum SessionWordCountMigration {
             descriptor.fetchLimit = 500
             let metrics = try context.fetch(descriptor)
             guard !metrics.isEmpty else { break }
-            var changed = false
-            for metric in metrics where (metric.wordCountVersion ?? 1) < WordCounter.currentVersion
-            {
-                let id = metric.transcriptionId
-                var transcriptionDescriptor = FetchDescriptor<Transcription>(
-                    predicate: #Predicate { $0.id == id && $0.transcriptionStatus == "completed" })
-                transcriptionDescriptor.fetchLimit = 1
-                if let transcription = try context.fetch(transcriptionDescriptor).first,
-                    update(metric, from: transcription)
-                {
-                    updatedIDs.append(id)
-                    changed = true
+            let legacyMetrics = metrics.filter { ($0.wordCountVersion ?? 1) < WordCounter.currentVersion }
+            let ids = legacyMetrics.map(\.transcriptionId)
+            if !ids.isEmpty {
+                let transcriptions = try context.fetch(FetchDescriptor<Transcription>(
+                    predicate: #Predicate { ids.contains($0.id) && $0.transcriptionStatus == "completed" }))
+                let transcriptionsByID = Dictionary(grouping: transcriptions, by: \.id)
+                var batchIDs: [UUID] = []
+                for metric in legacyMetrics {
+                    if let transcription = transcriptionsByID[metric.transcriptionId]?.first,
+                        update(metric, from: transcription)
+                    {
+                        batchIDs.append(metric.transcriptionId)
+                    }
+                }
+                if !batchIDs.isEmpty {
+                    try context.save()
+                    updatedIDs.append(contentsOf: batchIDs)
+                    // Report only durable changes, even if a later page fails.
+                    try didSaveBatch(batchIDs)
                 }
             }
-            if changed { try context.save() }
             offset += metrics.count
         }
         return updatedIDs
     }
 
     @MainActor
+    @discardableResult
     static func run(modelContainer: ModelContainer) async -> Bool {
         let result = await Task.detached(priority: .utility) {
             () -> (ids: [UUID], succeeded: Bool) in
+            var committedIDs: [UUID] = []
             do {
-                return (try backfill(in: ModelContext(modelContainer)), true)
+                _ = try backfill(in: ModelContext(modelContainer)) { ids in
+                    committedIDs.append(contentsOf: ids)
+                }
+                return (committedIDs, true)
             } catch {
                 Logger(subsystem: "com.prakashjoshipax.voiceink", category: "WordCountMigration")
                     .error(
                         "Word-count backfill will retry on next launch: \(error, privacy: .public)")
-                return ([], false)
+                return (committedIDs, false)
             }
         }.value
         // Also invalidate after a partially saved migration; no completion flag blocks retries.

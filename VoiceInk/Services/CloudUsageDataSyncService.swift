@@ -1144,7 +1144,9 @@ final class CloudUsageDataSyncService: ObservableObject {
                 let transcription = Self.preferredTranscription(in: transcriptionsByID[recordID] ?? [])
             else { continue }
             for metric in metricsByTranscriptionID[recordID] ?? [] {
-                if SessionWordCountMigration.update(metric, from: transcription) { changed = true }
+                if SessionWordCountMigration.update(metric, from: transcription, recountCurrentVersion: true) {
+                    changed = true
+                }
             }
         }
         if changed {

@@ -110,6 +110,55 @@ struct SessionWordCountMigrationTests {
         #expect(roundTrip.wordCountVersion == 2)
     }
 
+    @MainActor
+    @Test func interruptedBackfillReportsCommittedPageAndRetriesRemainingRows() throws {
+        let container = try ModelContainer(
+            for: Transcription.self, SessionMetric.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true))
+        let context = ModelContext(container)
+        for _ in 0..<501 {
+            let transcription = Transcription(text: "中国四大名著", duration: 4)
+            transcription.transcriptionStatus = "completed"
+            context.insert(transcription)
+            context.insert(makeMetric(transcription.id, count: 2))
+        }
+        try context.save()
+        var committedIDs: [UUID] = []
+        do {
+            _ = try SessionWordCountMigration.backfill(in: context) { ids in
+                committedIDs.append(contentsOf: ids)
+                throw NSError(domain: "InterruptedAfterCommittedPage", code: 1)
+            }
+            Issue.record("Expected the backfill to stop after the first committed page")
+        } catch {
+            #expect((error as NSError).domain == "InterruptedAfterCommittedPage")
+        }
+        #expect(Set(committedIDs).count == 500)
+        let persisted = try ModelContext(container).fetch(FetchDescriptor<SessionMetric>())
+        #expect(persisted.filter { $0.wordCountVersion == 2 && $0.wordCount == 6 }.count == 500)
+        let remainingIDs = try SessionWordCountMigration.backfill(in: context)
+        #expect(remainingIDs.count == 1)
+        #expect(Set(committedIDs).isDisjoint(with: remainingIDs))
+        #expect(try SessionWordCountMigration.backfill(in: context).isEmpty)
+    }
+
+    @Test func changedTextRecountsCurrentVersionButPreservesFutureCounts() {
+        let transcription = Transcription(text: "中国名著", duration: 4)
+        transcription.transcriptionStatus = "completed"
+        let metric = makeMetric(transcription.id, count: 2)
+        #expect(SessionWordCountMigration.update(metric, from: transcription))
+        transcription.enhancedText = "中国四大名著"
+        transcription.enhancementDuration = 0.5
+        #expect(!SessionWordCountMigration.update(metric, from: transcription))
+        #expect(SessionWordCountMigration.update(metric, from: transcription, recountCurrentVersion: true))
+        #expect(metric.wordCount == 6)
+        #expect(!SessionWordCountMigration.update(metric, from: transcription, recountCurrentVersion: true))
+        metric.wordCountVersion = 99
+        transcription.enhancedText = "中国"
+        #expect(!SessionWordCountMigration.update(metric, from: transcription, recountCurrentVersion: true))
+        #expect(metric.wordCount == 6)
+    }
+
     private func makeMetric(_ id: UUID, count: Int) -> SessionMetric {
         SessionMetric(
             transcriptionId: id, wordCount: count, audioDuration: 4,

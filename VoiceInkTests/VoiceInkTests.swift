@@ -2266,6 +2266,23 @@ struct VoiceInkTests {
         #expect(refreshed.wordCountVersion == 2)
         #expect(refreshed.modeName == "Older peer update")
         #expect(try receiver.mainContext.fetchCount(FetchDescriptor<SessionMetric>()) == 1)
+        // Re-enhancement changes text while the older peer retains its old count.
+        record.enhancedText = "中国四大古典文学名著"
+        record.enhancementDuration = 0.5
+        metric.wordCount = 2
+        metric.wordCountVersion = nil
+        try source.mainContext.save()
+        let beforeTextUpdate = try #require(sourceService.lastSyncedAt)
+        sourceService.recordDidChange(record.id)
+        sourceService.syncNow()
+        try await waitForUsageSync(sourceService, after: beforeTextUpdate)
+        let beforeTextImport = try #require(receiverService.lastSyncedAt)
+        receiverService.syncNow()
+        try await waitForUsageSync(receiverService, after: beforeTextImport)
+        let recounted = try #require(ModelContext(receiver).fetch(FetchDescriptor<SessionMetric>()).first)
+        #expect(recounted.wordCount == 10)
+        #expect(recounted.wordCountVersion == 2)
+
     }
 
     @MainActor
