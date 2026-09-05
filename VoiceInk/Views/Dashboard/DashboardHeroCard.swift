@@ -11,13 +11,17 @@ struct DashboardHeroCard: View {
     private static let headlineFont: Font = .system(size: 23, weight: .bold, design: .rounded)
     private static let highlightedHeadlineFont: Font = .system(size: 30, weight: .black, design: .rounded)
 
+    var localizationBundle: Bundle = .main
     let headline: DashboardHeroHeadline
     let subtext: String
+    var benchmarkProgress: String? = nil
+    var benchmarkHelp: String = ""
     let actionTitle: LocalizedStringKey
     let actionIcon: String
     let actionHelp: String
     let actionAccessibilityLabel: String
     let onViewInsights: () -> Void
+    @State private var isBenchmarkExplanationPresented = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -49,10 +53,39 @@ struct DashboardHeroCard: View {
             headlineText
                 .frame(maxWidth: 720, alignment: .leading)
 
-            Text(subtext)
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(DashboardMomentumBackground.subtext)
-                .frame(maxWidth: 620, alignment: .leading)
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(subtext)
+                    .font(.system(size: 15, weight: .semibold))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("dashboard.benchmark.summary")
+                if !benchmarkHelp.isEmpty {
+                    Button { isBenchmarkExplanationPresented.toggle() } label: {
+                        Image(systemName: "info.circle")
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(Text("About this estimate"))
+                    .help(benchmarkHelp)
+                    .popover(isPresented: $isBenchmarkExplanationPresented) {
+                        Text(benchmarkHelp)
+                            .font(.system(size: 13))
+                            .fixedSize(horizontal: false, vertical: true)
+                            .padding(16)
+                            .frame(width: 340)
+                    }
+                }
+            }
+            .foregroundStyle(DashboardMomentumBackground.subtext)
+            .frame(maxWidth: 620, alignment: .leading)
+
+            if let benchmarkProgress {
+                Text(benchmarkProgress)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(DashboardMomentumBackground.subtext)
+                    .frame(maxWidth: 620, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .help(benchmarkHelp)
+                    .accessibilityIdentifier("dashboard.benchmark.next")
+            }
         }
     }
 
@@ -66,14 +99,14 @@ struct DashboardHeroCard: View {
 
         switch headline {
         case .calculatingProgress:
-            highlightedValue = String(localized: "VoiceInk progress")
-            text = AttributedString(localized: "Calculating \(highlightedValue).")
+            highlightedValue = String(localized: "VoiceInk progress", bundle: localizationBundle)
+            text = AttributedString(localized: "Calculating \(highlightedValue).", bundle: localizationBundle)
         case .startRecordingProgress:
-            highlightedValue = String(localized: "VoiceInk progress")
-            text = AttributedString(localized: "Start recording to build \(highlightedValue).")
+            highlightedValue = String(localized: "VoiceInk progress", bundle: localizationBundle)
+            text = AttributedString(localized: "Start recording to build \(highlightedValue).", bundle: localizationBundle)
         case .savedTime(let value):
             highlightedValue = value
-            text = AttributedString(localized: "You have saved \(highlightedValue) with VoiceInk")
+            text = AttributedString(localized: "You have saved \(highlightedValue) with VoiceInk", bundle: localizationBundle)
         }
 
         text.font = Self.headlineFont

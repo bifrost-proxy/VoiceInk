@@ -55,6 +55,7 @@ final class CloudUsageDataSyncService: ObservableObject {
         let timestamp: Date
         let source: String?
         let wordCount: Int
+        var wordCountVersion: Int? = nil
         let audioDuration: TimeInterval
         let transcriptionModelName: String?
         let transcriptionDuration: TimeInterval?
@@ -778,6 +779,15 @@ final class CloudUsageDataSyncService: ObservableObject {
             pending.formUnion(allIDs)
             persistIDs(pending, forKey: Self.pendingRecordIDsKey)
         }
+        // Recover count changes saved before their notification was delivered.
+        // The local-only outbox flag is saved atomically with the new count.
+        let unsynchronizedCounts = try modelContext.fetch(FetchDescriptor<SessionMetric>(
+            predicate: #Predicate { $0.wordCountNeedsSync == true }))
+        if !unsynchronizedCounts.isEmpty {
+            var pending = loadIDs(forKey: Self.pendingRecordIDsKey)
+            pending.formUnion(unsynchronizedCounts.map(\.transcriptionId))
+            persistIDs(pending, forKey: Self.pendingRecordIDsKey)
+        }
         let didScanLegacyUsage = try migrateLegacyUsageIfNeeded()
         let knownOperationIDs = Set(appliedOperationIDs.values.flatMap { $0 })
         let loaded = try loadRegister(
@@ -882,6 +892,7 @@ final class CloudUsageDataSyncService: ObservableObject {
         var allMutations: [VoiceInkSyncMutation] = []
         var transcriptionsByKey: [String: Transcription] = [:]
         var metricsByKey: [String: SessionMetric] = [:]
+        var acknowledgedCountMetrics: [SessionMetric] = []
 
         for recordID in recordIDs.sorted(by: { $0.uuidString < $1.uuidString }) {
             guard let transcription = transcriptionByID[recordID] else { continue }
@@ -928,6 +939,12 @@ final class CloudUsageDataSyncService: ObservableObject {
                         supersededOperationIDs: isBootstrap ? [] : appliedOperationIDs[key] ?? []
                     ))
                     metricsByKey[key] = metric
+                    acknowledgedCountMetrics.append(contentsOf:
+                        (metricsByRecord[recordID] ?? []).filter { $0.id == metric.id && $0.wordCountNeedsSync == true })
+                } else if register.selectedCandidate(for: key, deleteWins: true)?.mutation.value == data {
+                    // A prior export may have committed before its local acknowledgement.
+                    acknowledgedCountMetrics.append(contentsOf:
+                        (metricsByRecord[recordID] ?? []).filter { $0.id == metric.id && $0.wordCountNeedsSync == true })
                 }
             }
 
@@ -937,7 +954,11 @@ final class CloudUsageDataSyncService: ObservableObject {
                 transcriptionsByKey[transcriptionKey] = transcription
             }
         }
-        guard !allMutations.isEmpty else { return [] }
+        guard !allMutations.isEmpty else {
+            for metric in acknowledgedCountMetrics { metric.wordCountNeedsSync = false }
+            if modelContext.hasChanges { try modelContext.save() }
+            return []
+        }
         let batches = try syncCore.appendChunked(allMutations, domain: .usage)
         for batch in batches {
             for mutation in batch.mutations {
@@ -952,6 +973,7 @@ final class CloudUsageDataSyncService: ObservableObject {
                 }
             }
         }
+        for metric in acknowledgedCountMetrics { metric.wordCountNeedsSync = false }
         try modelContext.save()
         return batches
     }
@@ -1128,9 +1150,26 @@ final class CloudUsageDataSyncService: ObservableObject {
             metric.syncOriginDeviceID = candidate.envelope.authorDeviceID
             metric.syncModifiedAt = candidate.envelope.createdAt
             metric.syncRevisionID = candidate.envelope.operationID
+            if let transcription = Self.preferredTranscription(in: transcriptionsByID[ids.recordID] ?? []) {
+                SessionWordCountMigration.update(metric, from: transcription)
+            }
             changed = true
         }
 
+        // Text can arrive after a legacy metric. Correct it without waiting for
+        // another metric mutation or another application launch.
+        let metricsByTranscriptionID = Dictionary(
+            grouping: metricsByLogicalID.values.flatMap { $0 }, by: \.transcriptionId)
+        for key in effectiveAffectedKeys where key.hasPrefix("transcription/") {
+            guard let recordID = Self.recordID(fromTranscriptionKey: key),
+                let transcription = Self.preferredTranscription(in: transcriptionsByID[recordID] ?? [])
+            else { continue }
+            for metric in metricsByTranscriptionID[recordID] ?? [] {
+                if SessionWordCountMigration.update(metric, from: transcription, recountCurrentVersion: true) {
+                    changed = true
+                }
+            }
+        }
         if changed {
             try modelContext.save()
         }
@@ -1196,7 +1235,7 @@ final class CloudUsageDataSyncService: ObservableObject {
     /// Historical imports did not enforce uniqueness for business UUIDs. Keep
     /// every physical row intact, but deterministically choose the most complete
     /// row whenever the sync protocol needs one logical value.
-    private nonisolated static func preferredTranscription(
+    nonisolated static func preferredTranscription(
         in values: [Transcription]
     ) -> Transcription? {
         values.max { lhs, rhs in
@@ -1943,7 +1982,7 @@ final class CloudUsageDataSyncService: ObservableObject {
     nonisolated private static func payload(from metric: SessionMetric) -> MetricPayload {
         MetricPayload(
             id: metric.id, transcriptionId: metric.transcriptionId, timestamp: metric.timestamp, source: metric.source,
-            wordCount: metric.wordCount, audioDuration: metric.audioDuration,
+            wordCount: metric.wordCount, wordCountVersion: metric.wordCountVersion, audioDuration: metric.audioDuration,
             transcriptionModelName: metric.transcriptionModelName, transcriptionDuration: metric.transcriptionDuration,
             speedFactor: metric.speedFactor, modeName: metric.modeName,
             aiEnhancementModelName: metric.aiEnhancementModelName, enhancementDuration: metric.enhancementDuration,
@@ -1974,7 +2013,9 @@ final class CloudUsageDataSyncService: ObservableObject {
         metric.transcriptionId = payload.transcriptionId
         metric.timestamp = payload.timestamp
         metric.source = payload.source
-        metric.wordCount = payload.wordCount
+        // An older app can re-export a metric without the additive version field.
+        // Keep corrected counts when its payload would downgrade their convention.
+        SessionWordCountMigration.applySyncedCount(payload.wordCount, version: payload.wordCountVersion, to: metric)
         metric.audioDuration = payload.audioDuration
         metric.transcriptionModelName = payload.transcriptionModelName
         metric.transcriptionDuration = payload.transcriptionDuration

@@ -2211,6 +2211,99 @@ struct VoiceInkTests {
     }
 
     @MainActor
+    @Test func chineseCountsSurviveLegacyCloudSyncRoundTrips() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("VoiceInkCountSync-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sourceSuite = "VoiceInkTests.CountSource.\(UUID())"
+        let receiverSuite = "VoiceInkTests.CountReceiver.\(UUID())"
+        let sourceDefaults = try #require(UserDefaults(suiteName: sourceSuite))
+        let receiverDefaults = try #require(UserDefaults(suiteName: receiverSuite))
+        defer {
+            sourceDefaults.removePersistentDomain(forName: sourceSuite)
+            receiverDefaults.removePersistentDomain(forName: receiverSuite)
+        }
+        sourceDefaults.set(true, forKey: CloudSyncSettingsKeys.usageDataSyncEnabled)
+        receiverDefaults.set(true, forKey: CloudSyncSettingsKeys.usageDataSyncEnabled)
+        let schema = Schema([Transcription.self, SessionMetric.self])
+        let source = try ModelContainer(for: schema, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
+        let receiver = try ModelContainer(for: schema, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
+        let record = Transcription(text: "中国四大名著", duration: 4)
+        record.transcriptionStatus = "completed"
+        let metric = SessionMetric(transcriptionId: record.id, wordCount: 2, audioDuration: 4,
+            transcriptionModelName: nil, transcriptionDuration: nil, speedFactor: nil,
+            modeName: nil, aiEnhancementModelName: nil, enhancementDuration: nil)
+        source.mainContext.insert(record)
+        source.mainContext.insert(metric)
+        try source.mainContext.save()
+        let sourceService = CloudUsageDataSyncService(defaults: sourceDefaults, iCloudDriveRootURL: root)
+        let receiverService = CloudUsageDataSyncService(defaults: receiverDefaults, iCloudDriveRootURL: root)
+        defer {
+            sourceService.setEnabled(false)
+            receiverService.setEnabled(false)
+        }
+        sourceService.start(modelContext: source.mainContext)
+        try await waitForUsageSync(sourceService)
+        receiverService.start(modelContext: receiver.mainContext)
+        try await waitForUsageSync(receiverService)
+        let received = try #require(receiver.mainContext.fetch(FetchDescriptor<SessionMetric>()).first)
+        #expect(received.wordCount == 6)
+        #expect(received.wordCountVersion == 2)
+        // Simulate a pre-upgrade peer re-exporting a changed metric without a version.
+        metric.wordCount = 2
+        metric.wordCountVersion = nil
+        metric.modeName = "Older peer update"
+        try source.mainContext.save()
+        let sourceDate = try #require(sourceService.lastSyncedAt)
+        sourceService.recordDidChange(record.id)
+        sourceService.syncNow()
+        try await waitForUsageSync(sourceService, after: sourceDate)
+        let receiverDate = try #require(receiverService.lastSyncedAt)
+        receiverService.syncNow()
+        try await waitForUsageSync(receiverService, after: receiverDate)
+        let refreshed = try #require(ModelContext(receiver).fetch(FetchDescriptor<SessionMetric>()).first)
+        #expect(refreshed.wordCount == 6)
+        #expect(refreshed.wordCountVersion == 2)
+        #expect(refreshed.modeName == "Older peer update")
+        #expect(try receiver.mainContext.fetchCount(FetchDescriptor<SessionMetric>()) == 1)
+        // Re-enhancement changes text while the older peer retains its old count.
+        record.enhancedText = "中国四大古典文学名著"
+        record.enhancementDuration = 0.5
+        metric.wordCount = 2
+        metric.wordCountVersion = nil
+        try source.mainContext.save()
+        let beforeTextUpdate = try #require(sourceService.lastSyncedAt)
+        sourceService.recordDidChange(record.id)
+        sourceService.syncNow()
+        try await waitForUsageSync(sourceService, after: beforeTextUpdate)
+        let beforeTextImport = try #require(receiverService.lastSyncedAt)
+        receiverService.syncNow()
+        try await waitForUsageSync(receiverService, after: beforeTextImport)
+        let recounted = try #require(ModelContext(receiver).fetch(FetchDescriptor<SessionMetric>()).first)
+        #expect(recounted.wordCount == 10)
+        #expect(recounted.wordCountVersion == 2)
+
+        // Simulate process exit after a saved backfill but before its notification.
+        sourceService.setEnabled(false)
+        metric.wordCount = 2
+        metric.wordCountVersion = nil
+        try source.mainContext.save()
+        _ = try SessionWordCountMigration.backfill(in: source.mainContext)
+        #expect(metric.wordCountNeedsSync == true)
+        sourceDefaults.set(true, forKey: CloudSyncSettingsKeys.usageDataSyncEnabled)
+        let restarted = CloudUsageDataSyncService(defaults: sourceDefaults, iCloudDriveRootURL: root)
+        defer { restarted.setEnabled(false) }
+        restarted.start(modelContext: source.mainContext)
+        try await waitForUsageSync(restarted)
+        let recovered = try #require(ModelContext(source).fetch(FetchDescriptor<SessionMetric>()).first)
+        #expect(recovered.wordCount == 10)
+        #expect(recovered.wordCountVersion == 2)
+        #expect(recovered.syncRevisionID != nil)
+        #expect(recovered.wordCountNeedsSync == false)
+
+    }
+
+    @MainActor
     private func waitForUsageSync(_ service: CloudUsageDataSyncService) async throws {
         let timeout = Date().addingTimeInterval(20)
         while service.lastSyncedAt == nil && Date() < timeout {

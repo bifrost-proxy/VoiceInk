@@ -36,7 +36,8 @@ final class DashboardStatsSnapshotStore: @unchecked Sendable {
 
     // Version 2 invalidates snapshots that may have been saved before the initial
     // SessionMetric migration completed, leaving existing local history at zero.
-    private static let currentVersion = 2
+    // Version 3 uses Han-character counts and records retained legacy estimates.
+    private static let currentVersion = 3
     private static let staleDefaultsKey = "dashboardStatsSnapshotStale"
     private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "DashboardStatsSnapshotStore")
     private let fileManager: FileManager

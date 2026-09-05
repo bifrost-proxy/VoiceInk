@@ -186,7 +186,7 @@ class TranscriptionPipeline {
                 let shortEnhancementWordThreshold = savedThreshold > 0 ? savedThreshold : 3
                 let shouldSkipEnhancement =
                     !shouldRespondInRecorder && isSkipShortEnhancementEnabled
-                    && WordCounter.count(in: text) <= shortEnhancementWordThreshold
+                    && WordCounter.segmentedWordCount(in: text) <= shortEnhancementWordThreshold
 
                 let enhancementIsConfigured = resolvedEnhancementConfiguration.map { configuration in
                     enhancementService?.isConfigured(for: configuration) == true
