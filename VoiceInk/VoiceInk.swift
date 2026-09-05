@@ -214,7 +214,9 @@ struct VoiceInkApp: App {
         let mainContext = resolvedContainer.mainContext
         Task { @MainActor in
             await statsMigrationTask?.value
-            TranscriptionAutoCleanupService.shared.startMonitoring(modelContext: mainContext)
+            if await SessionWordCountMigration.run(modelContainer: resolvedContainer) {
+                TranscriptionAutoCleanupService.shared.startMonitoring(modelContext: mainContext)
+            }
 
             let tokenBackfillTask = SessionMetricMigrationService.shared.runEnhancementTokenBackfillIfNeeded(
                 modelContainer: resolvedContainer)

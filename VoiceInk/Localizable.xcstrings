@@ -379,6 +379,30 @@
         }
       }
     },
+    "%@ complete sets of the Four Great Classical Novels" : {
+      "comment" : "Chinese literary milestone. Counts use Han characters and non-Han words; book lengths are approximate. Keep positional placeholders.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ complete sets of the Four Great Classical Novels"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ 整套四大名著"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ vollständige Sammlungen der vier klassischen Romane Chinas"
+          }
+        }
+      }
+    },
     "%@ connection verified." : {
       "localizations" : {
         "de" : {
@@ -470,7 +494,7 @@
         "de" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "%@ Wörter"
+            "value" : "%@ Wörter / Schriftzeichen"
           }
         },
         "zh-Hans" : {
@@ -478,8 +502,15 @@
             "state" : "translated",
             "value" : "%@ 字"
           }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ words / characters"
+          }
         }
-      }
+      },
+      "extractionState" : "manual"
     },
     "%@," : {
       "comment" : "A greeting text that is followed by a user's name. The argument is the string “Good morning”, the value of the localized string key “Good afternoon”, the value of the localized string key “Good evening” or the value of the localized string key “Hi”.",
@@ -4154,6 +4185,30 @@
         }
       }
     },
+    "Call to Arms" : {
+      "comment" : "Chinese literary milestone. Counts use Han characters and non-Han words; book lengths are approximate. Keep positional placeholders.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Call to Arms"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "《呐喊》"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aufruf zum Kampf"
+          }
+        }
+      }
+    },
     "Cancel" : {
       "localizations" : {
         "de" : {
@@ -4342,6 +4397,30 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "正在检查此 Apple Speech 语言是否已下载。"
+          }
+        }
+      }
+    },
+    "Chinese characters count individually; English counts by word. Literary lengths are approximate Chinese-original benchmarks, not translation lengths. Saved time assumes 40 words / characters per minute minus recording time." : {
+      "comment" : "Chinese literary milestone. Counts use Han characters and non-Han words; book lengths are approximate. Keep positional placeholders.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Chinese characters count individually; English counts by word. Literary lengths are approximate Chinese-original benchmarks, not translation lengths. Saved time assumes 40 words / characters per minute minus recording time."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "汉字逐字计数，英文按词计数。作品篇幅采用中文原作的近似值，不代表译本长度。节省时间按每分钟输入 40 字／词减去录音时长估算。"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Chinesische Schriftzeichen werden einzeln, englische Texte nach Wörtern gezählt. Die literarischen Vergleichswerte nähern den Umfang der chinesischen Originale an, nicht den der Übersetzungen. Die Zeitersparnis basiert auf 40 Wörtern / Schriftzeichen pro Minute abzüglich der Aufnahmezeit."
           }
         }
       }
@@ -6039,6 +6118,54 @@
         }
       }
     },
+    "Dictated %@ words / characters — roughly the length of %@." : {
+      "comment" : "Chinese literary milestone. Counts use Han characters and non-Han words; book lengths are approximate. Keep positional placeholders.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dictated %@ words / characters — roughly the length of %@."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "累计听写 %1$@字，篇幅约相当于%2$@。"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ Wörter / Schriftzeichen diktiert – ungefähr der Umfang von %2$@."
+          }
+        }
+      }
+    },
+    "Dictated %@ words / characters. Your first literary milestone is ahead." : {
+      "comment" : "Chinese literary milestone. Counts use Han characters and non-Han words; book lengths are approximate. Keep positional placeholders.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dictated %@ words / characters. Your first literary milestone is ahead."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "累计听写 %@字，即将解锁第一个文学里程碑。"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ Wörter / Schriftzeichen diktiert. Dein erster literarischer Meilenstein wartet."
+          }
+        }
+      }
+    },
     "Dictated %@, %@ words from %@." : {
       "comment" : "Dashboard benchmark sentence. The first argument is the formatted dictated word count, the second is the remaining word count, and the third is the benchmark title.",
       "isCommentAutoGenerated" : true,
@@ -6129,6 +6256,30 @@
         }
       }
     },
+    "Dictated 1 word / character. Your first literary milestone is ahead." : {
+      "comment" : "Chinese literary milestone. Counts use Han characters and non-Han words; book lengths are approximate. Keep positional placeholders.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dictated 1 word / character. Your first literary milestone is ahead."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "累计听写 1字，即将解锁第一个文学里程碑。"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "1 Wort / Schriftzeichen diktiert. Dein erster literarischer Meilenstein wartet."
+          }
+        }
+      }
+    },
     "Dictated words chart" : {
       "comment" : "A label for a chart that shows the number of words dictated over a period of time.",
       "isCommentAutoGenerated" : true,
@@ -6136,7 +6287,7 @@
         "de" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Diagramm der diktierten Wörter"
+            "value" : "Diagramm der diktierten Wörter / Schriftzeichen"
           }
         },
         "zh-Hans" : {
@@ -6144,8 +6295,15 @@
             "state" : "translated",
             "value" : "听写字数图表"
           }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dictated words / characters chart"
+          }
         }
-      }
+      },
+      "extractionState" : "manual"
     },
     "Dictation" : {
       "extractionState" : "manual",
@@ -6577,6 +6735,30 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "正在下载…"
+          }
+        }
+      }
+    },
+    "Dream of the Red Chamber" : {
+      "comment" : "Chinese literary milestone. Counts use Han characters and non-Han words; book lengths are approximate. Keep positional placeholders.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dream of the Red Chamber"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "《红楼梦》"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Der Traum der Roten Kammer"
           }
         }
       }
@@ -8238,6 +8420,30 @@
         }
       }
     },
+    "Fortress Besieged" : {
+      "comment" : "Chinese literary milestone. Counts use Han characters and non-Han words; book lengths are approximate. Keep positional placeholders.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fortress Besieged"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "《围城》"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Die umzingelte Festung"
+          }
+        }
+      }
+    },
     "Free updates" : {
       "localizations" : {
         "de" : {
@@ -9079,6 +9285,30 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "加入 Discord"
+          }
+        }
+      }
+    },
+    "Journey to the West" : {
+      "comment" : "Chinese literary milestone. Counts use Han characters and non-Han words; book lengths are approximate. Keep positional placeholders.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Journey to the West"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "《西游记》"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Die Reise nach Westen"
           }
         }
       }
@@ -10851,6 +11081,30 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "下一步"
+          }
+        }
+      }
+    },
+    "Next: %@ · %@ complete" : {
+      "comment" : "Chinese literary milestone. Counts use Han characters and non-Han words; book lengths are approximate. Keep positional placeholders.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Next: %@ · %@ complete"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "下一站：%1$@ · 已完成 %2$@"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nächstes Ziel: %1$@ · %2$@ erreicht"
           }
         }
       }
@@ -14277,6 +14531,54 @@
         }
       }
     },
+    "Rickshaw Boy" : {
+      "comment" : "Chinese literary milestone. Counts use Han characters and non-Han words; book lengths are approximate. Keep positional placeholders.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rickshaw Boy"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "《骆驼祥子》"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Rickschakuli"
+          }
+        }
+      }
+    },
+    "Romance of the Three Kingdoms" : {
+      "comment" : "Chinese literary milestone. Counts use Han characters and non-Han words; book lengths are approximate. Keep positional placeholders.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Romance of the Three Kingdoms"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "《三国演义》"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Die Geschichte der Drei Reiche"
+          }
+        }
+      }
+    },
     "Run Cleanup Now" : {
       "localizations" : {
         "de" : {
@@ -15483,6 +15785,30 @@
         }
       }
     },
+    "Some older sessions no longer have retained text. Their original counts are preserved, so totals include estimates." : {
+      "comment" : "Chinese literary milestone. Counts use Han characters and non-Han words; book lengths are approximate. Keep positional placeholders.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Some older sessions no longer have retained text. Their original counts are preserved, so totals include estimates."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "部分历史记录的原文已清理，保留其原有计数，因此累计数据包含估算值。"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bei einigen älteren Sitzungen ist der Text nicht mehr vorhanden. Ihre ursprünglichen Zählwerte bleiben erhalten; die Summen enthalten daher Schätzwerte."
+          }
+        }
+      }
+    },
     "Sort alphabetically" : {
       "localizations" : {
         "de" : {
@@ -16329,6 +16655,30 @@
         }
       }
     },
+    "The True Story of Ah Q" : {
+      "comment" : "Chinese literary milestone. Counts use Han characters and non-Han words; book lengths are approximate. Keep positional placeholders.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The True Story of Ah Q"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "《阿Q正传》"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Die wahre Geschichte des Ah Q"
+          }
+        }
+      }
+    },
     "The app '%@' is already configured in the '%@' mode." : {
       "localizations" : {
         "de" : {
@@ -16421,6 +16771,30 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "下载的 Core ML 模型压缩包可能已损坏。请尝试删除该模型后重新下载。请检查可用磁盘空间。"
+          }
+        }
+      }
+    },
+    "The Art of War" : {
+      "comment" : "Chinese literary milestone. Counts use Han characters and non-Han words; book lengths are approximate. Keep positional placeholders.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The Art of War"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "《孙子兵法》"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Die Kunst des Krieges"
           }
         }
       }
@@ -16605,6 +16979,30 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "网站「%@」已在「%@」模式中配置。"
+          }
+        }
+      }
+    },
+    "the Four Great Classical Novels" : {
+      "comment" : "Chinese literary milestone. Counts use Han characters and non-Han words; book lengths are approximate. Keep positional placeholders.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "the Four Great Classical Novels"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "一整套四大名著"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "die vier klassischen Romane Chinas"
           }
         }
       }
@@ -16956,6 +17354,78 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "今年"
+          }
+        }
+      }
+    },
+    "Thousand Character Classic" : {
+      "comment" : "Chinese literary milestone. Counts use Han characters and non-Han words; book lengths are approximate. Keep positional placeholders.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Thousand Character Classic"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "《千字文》"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tausend-Zeichen-Klassiker"
+          }
+        }
+      }
+    },
+    "Three Kingdoms + Journey to the West" : {
+      "comment" : "Chinese literary milestone. Counts use Han characters and non-Han words; book lengths are approximate. Keep positional placeholders.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Three Kingdoms + Journey to the West"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "《三国演义》＋《西游记》"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Drei Reiche + Reise nach Westen"
+          }
+        }
+      }
+    },
+    "Three Kingdoms + Journey to the West + Water Margin" : {
+      "comment" : "Chinese literary milestone. Counts use Han characters and non-Han words; book lengths are approximate. Keep positional placeholders.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Three Kingdoms + Journey to the West + Water Margin"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "《三国演义》＋《西游记》＋《水浒传》"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Drei Reiche + Reise nach Westen + Räuber vom Liang-Schan-Moor"
           }
         }
       }
@@ -18212,6 +18682,30 @@
         }
       }
     },
+    "About this estimate" : {
+      "comment" : "Chinese literary milestone. Counts use Han characters and non-Han words; book lengths are approximate. Keep positional placeholders.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "About this estimate"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "关于这项估算"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Über diese Schätzung"
+          }
+        }
+      }
+    },
     "Accelerate first text" : {
       "localizations" : {
         "de" : { "stringUnit" : { "state" : "translated", "value" : "Erste Textausgabe beschleunigen" } },
@@ -18979,6 +19473,30 @@
         }
       }
     },
+    "Water Margin" : {
+      "comment" : "Chinese literary milestone. Counts use Han characters and non-Han words; book lengths are approximate. Keep positional placeholders.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Water Margin"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "《水浒传》"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Die Räuber vom Liang-Schan-Moor"
+          }
+        }
+      }
+    },
     "Weekly Productivity" : {
       "comment" : "A title for a productivity chart.",
       "isCommentAutoGenerated" : true,
@@ -19231,13 +19749,19 @@
         "de" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Wörter"
+            "value" : "Wörter / Schriftzeichen"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "词数"
+            "value" : "字数"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Words / characters"
           }
         }
       }
@@ -19249,7 +19773,7 @@
         "de" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Diktierte Wörter"
+            "value" : "Diktierter Text"
           }
         },
         "zh-Hans" : {
@@ -19257,8 +19781,15 @@
             "state" : "translated",
             "value" : "听写字数"
           }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Text dictated"
+          }
         }
-      }
+      },
+      "extractionState" : "manual"
     },
     "Write an Email" : {
       "extractionState" : "stale",

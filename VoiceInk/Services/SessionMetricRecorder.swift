@@ -52,7 +52,8 @@ enum SessionMetricRecorder {
             aiEnhancementModelName: transcription.aiEnhancementModelName,
             enhancementDuration: enhancementDuration,
             enhancementEstimatedTokenCount: enhancementTokenEstimate?.tokenCount,
-            performanceData: transcription.performanceData
+            performanceData: transcription.performanceData,
+            wordCountVersion: WordCounter.currentVersion
         )
 
         modelContext.insert(metric)

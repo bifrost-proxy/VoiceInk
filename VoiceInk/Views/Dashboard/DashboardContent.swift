@@ -89,10 +89,12 @@ struct DashboardContent: View {
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             refreshAccessibilityStatus()
         }
-        .onReceive(NotificationCenter.default.publisher(for: .sessionMetricsDidChange)) { _ in
+        .onReceive(NotificationCenter.default.publisher(for: .sessionMetricsDidChange)) { notification in
             DashboardStatsCache.shared.markStale()
 
-            if shouldRefreshStatsAfterMetricChange {
+            if shouldRefreshStatsAfterMetricChange
+                || notification.userInfo?[SessionWordCountMigration.didBackfillCountsKey] as? Bool == true
+            {
                 scheduleDashboardStatsRefresh(debounce: true, allowSkipWhenFresh: false)
             }
         }
@@ -462,6 +464,9 @@ struct DashboardContent: View {
         DashboardHeroCard(
             headline: momentumHeadline,
             subtext: momentumSubtext,
+            benchmarkProgress: hasLoadedStatsSnapshot && statsSummary.totalCount > 0
+                ? benchmarkCopy.nextTarget(count: statsSummary.totalWords) : nil,
+            benchmarkHelp: benchmarkCopy.explanation(hasLegacyCounts: statsSummary.legacyWordCountSessions > 0),
             actionTitle: "View Insights",
             actionIcon: "chart.line.uptrend.xyaxis",
             actionHelp: String(localized: "View dashboard insights"),
@@ -713,37 +718,12 @@ struct DashboardContent: View {
         Formatters.formattedSavedTime(allTimeSaved)
     }
 
-    private var formattedAllTimeWords: String {
-        let words = Formatters.formattedCompactNumber(statsSummary.totalWords)
-        let wordUnit = statsSummary.totalWords == 1 ? String(localized: "word") : String(localized: "words")
-        return String(localized: "\(words) \(wordUnit)")
-    }
+    private var benchmarkCopy: DashboardBenchmarkCopy { DashboardBenchmarkCopy() }
 
     private var formattedProgressBenchmarkText: String {
-        switch DashboardProgressBenchmark.equivalence(for: statsSummary.totalWords) {
-        case .matched(let title):
-            return String(localized: "Dictated \(formattedAllTimeWords), equivalent to \(title).")
-        case .repeated(let title, let count):
-            return String(
-                localized:
-                    "Dictated \(formattedAllTimeWords), equivalent to \(title) \(formattedBenchmarkMultiple(count)).")
-        case .remaining(let words, let title):
-            guard words > 0, !title.isEmpty else {
-                return String(localized: "Dictated \(formattedAllTimeWords).")
-            }
-
-            let remainingWords = Formatters.formattedNumber(words)
-            return String(localized: "Dictated \(formattedAllTimeWords), \(remainingWords) words from \(title).")
-        }
+        benchmarkCopy.summary(count: statsSummary.totalWords)
     }
 
-    private func formattedBenchmarkMultiple(_ count: Int) -> String {
-        if count == 2 {
-            return String(localized: "twice")
-        }
-
-        return String(localized: "\(Formatters.formattedNumber(count)) times")
-    }
 }
 
 private struct DashboardAccessibilityReminder: View {

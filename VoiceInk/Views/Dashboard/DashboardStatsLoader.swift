@@ -12,6 +12,7 @@ enum DashboardStatsLoader {
             try Task.checkCancellation()
 
             var words = 0
+            var legacyWordCountSessions = 0
             var duration: TimeInterval = 0
             var todayCount = 0
             var todayWords = 0
@@ -103,6 +104,9 @@ enum DashboardStatsLoader {
 
                 for metric in records {
                     words += metric.wordCount
+                    if (metric.wordCountVersion ?? 1) < WordCounter.currentVersion {
+                        legacyWordCountSessions += 1
+                    }
                     duration += metric.audioDuration
 
                     if windows.todayInterval.contains(metric.timestamp) {
@@ -239,6 +243,7 @@ enum DashboardStatsLoader {
             return DashboardStatsSummary(
                 totalCount: count,
                 totalWords: words,
+                legacyWordCountSessions: legacyWordCountSessions,
                 totalDuration: duration,
                 todayCount: todayCount,
                 todayWords: todayWords,

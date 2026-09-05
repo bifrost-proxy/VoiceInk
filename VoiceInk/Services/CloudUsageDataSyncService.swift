@@ -55,6 +55,7 @@ final class CloudUsageDataSyncService: ObservableObject {
         let timestamp: Date
         let source: String?
         let wordCount: Int
+        var wordCountVersion: Int? = nil
         let audioDuration: TimeInterval
         let transcriptionModelName: String?
         let transcriptionDuration: TimeInterval?
@@ -1125,12 +1126,27 @@ final class CloudUsageDataSyncService: ObservableObject {
                 metricsByLogicalID[logicalID] = [metric]
             }
             Self.apply(payload, to: metric)
+            if let transcription = Self.preferredTranscription(in: transcriptionsByID[ids.recordID] ?? []) {
+                SessionWordCountMigration.update(metric, from: transcription)
+            }
             metric.syncOriginDeviceID = candidate.envelope.authorDeviceID
             metric.syncModifiedAt = candidate.envelope.createdAt
             metric.syncRevisionID = candidate.envelope.operationID
             changed = true
         }
 
+        // Text can arrive after a legacy metric. Correct it without waiting for
+        // another metric mutation or another application launch.
+        let metricsByTranscriptionID = Dictionary(
+            grouping: metricsByLogicalID.values.flatMap { $0 }, by: \.transcriptionId)
+        for key in effectiveAffectedKeys where key.hasPrefix("transcription/") {
+            guard let recordID = Self.recordID(fromTranscriptionKey: key),
+                let transcription = Self.preferredTranscription(in: transcriptionsByID[recordID] ?? [])
+            else { continue }
+            for metric in metricsByTranscriptionID[recordID] ?? [] {
+                if SessionWordCountMigration.update(metric, from: transcription) { changed = true }
+            }
+        }
         if changed {
             try modelContext.save()
         }
@@ -1943,7 +1959,7 @@ final class CloudUsageDataSyncService: ObservableObject {
     nonisolated private static func payload(from metric: SessionMetric) -> MetricPayload {
         MetricPayload(
             id: metric.id, transcriptionId: metric.transcriptionId, timestamp: metric.timestamp, source: metric.source,
-            wordCount: metric.wordCount, audioDuration: metric.audioDuration,
+            wordCount: metric.wordCount, wordCountVersion: metric.wordCountVersion, audioDuration: metric.audioDuration,
             transcriptionModelName: metric.transcriptionModelName, transcriptionDuration: metric.transcriptionDuration,
             speedFactor: metric.speedFactor, modeName: metric.modeName,
             aiEnhancementModelName: metric.aiEnhancementModelName, enhancementDuration: metric.enhancementDuration,
@@ -1974,7 +1990,9 @@ final class CloudUsageDataSyncService: ObservableObject {
         metric.transcriptionId = payload.transcriptionId
         metric.timestamp = payload.timestamp
         metric.source = payload.source
-        metric.wordCount = payload.wordCount
+        // An older app can re-export a metric without the additive version field.
+        // Keep corrected counts when its payload would downgrade their convention.
+        SessionWordCountMigration.applySyncedCount(payload.wordCount, version: payload.wordCountVersion, to: metric)
         metric.audioDuration = payload.audioDuration
         metric.transcriptionModelName = payload.transcriptionModelName
         metric.transcriptionDuration = payload.transcriptionDuration

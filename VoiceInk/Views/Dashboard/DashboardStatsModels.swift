@@ -253,6 +253,7 @@ struct DashboardStatsSummary: Codable, Equatable, Sendable {
 
     var totalCount: Int = 0
     var totalWords: Int = 0
+    var legacyWordCountSessions: Int = 0
     var totalDuration: TimeInterval = 0
     var todayCount: Int = 0
     var todayWords: Int = 0
@@ -410,60 +411,6 @@ enum DashboardTimeSaving {
 
     static func timeSaved(words: Int, duration: TimeInterval) -> TimeInterval {
         max(estimatedTypingTime(words: words) - duration, 0)
-    }
-}
-
-enum DashboardProgressBenchmark {
-    enum Equivalence {
-        case matched(title: String)
-        case repeated(title: String, count: Int)
-        case remaining(words: Int, title: String)
-    }
-
-    private struct Milestone {
-        let title: LocalizedStringResource
-        let wordCount: Int
-
-        var localizedTitle: String {
-            String(localized: title)
-        }
-    }
-
-    private static let repeatBenchmark = Milestone(
-        title: "Tolstoy's War and Peace",
-        wordCount: 700_000
-    )
-
-    private static let oneTimeMilestones = [
-        Milestone(title: "The Metamorphosis", wordCount: 21_180),
-        Milestone(title: "Animal Farm", wordCount: 29_966),
-        Milestone(title: "The Great Gatsby", wordCount: 47_094),
-        Milestone(title: "Homer's Iliad", wordCount: 114_715),
-        Milestone(title: "Homer's Odyssey", wordCount: 121_365),
-        Milestone(title: "Homer's Iliad and Odyssey", wordCount: 236_080),
-    ]
-
-    static func equivalence(for words: Int) -> Equivalence {
-        if words >= repeatBenchmark.wordCount {
-            let wholeMultiple = words / repeatBenchmark.wordCount
-
-            if wholeMultiple >= 2 {
-                return .repeated(title: repeatBenchmark.localizedTitle, count: wholeMultiple)
-            }
-
-            return .matched(title: repeatBenchmark.localizedTitle)
-        }
-
-        if let milestone = oneTimeMilestones.last(where: { words >= $0.wordCount }) {
-            return .matched(title: milestone.localizedTitle)
-        }
-
-        guard let firstMilestone = oneTimeMilestones.first else {
-            return .remaining(words: 0, title: "")
-        }
-
-        let remainingWords = firstMilestone.wordCount - words
-        return .remaining(words: remainingWords, title: firstMilestone.localizedTitle)
     }
 }
 
