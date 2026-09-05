@@ -779,6 +779,15 @@ final class CloudUsageDataSyncService: ObservableObject {
             pending.formUnion(allIDs)
             persistIDs(pending, forKey: Self.pendingRecordIDsKey)
         }
+        // Recover count changes saved before their notification was delivered.
+        // The local-only outbox flag is saved atomically with the new count.
+        let unsynchronizedCounts = try modelContext.fetch(FetchDescriptor<SessionMetric>(
+            predicate: #Predicate { $0.wordCountNeedsSync == true }))
+        if !unsynchronizedCounts.isEmpty {
+            var pending = loadIDs(forKey: Self.pendingRecordIDsKey)
+            pending.formUnion(unsynchronizedCounts.map(\.transcriptionId))
+            persistIDs(pending, forKey: Self.pendingRecordIDsKey)
+        }
         let didScanLegacyUsage = try migrateLegacyUsageIfNeeded()
         let knownOperationIDs = Set(appliedOperationIDs.values.flatMap { $0 })
         let loaded = try loadRegister(
@@ -883,6 +892,7 @@ final class CloudUsageDataSyncService: ObservableObject {
         var allMutations: [VoiceInkSyncMutation] = []
         var transcriptionsByKey: [String: Transcription] = [:]
         var metricsByKey: [String: SessionMetric] = [:]
+        var acknowledgedCountMetrics: [SessionMetric] = []
 
         for recordID in recordIDs.sorted(by: { $0.uuidString < $1.uuidString }) {
             guard let transcription = transcriptionByID[recordID] else { continue }
@@ -929,6 +939,12 @@ final class CloudUsageDataSyncService: ObservableObject {
                         supersededOperationIDs: isBootstrap ? [] : appliedOperationIDs[key] ?? []
                     ))
                     metricsByKey[key] = metric
+                    acknowledgedCountMetrics.append(contentsOf:
+                        (metricsByRecord[recordID] ?? []).filter { $0.id == metric.id && $0.wordCountNeedsSync == true })
+                } else if register.selectedCandidate(for: key, deleteWins: true)?.mutation.value == data {
+                    // A prior export may have committed before its local acknowledgement.
+                    acknowledgedCountMetrics.append(contentsOf:
+                        (metricsByRecord[recordID] ?? []).filter { $0.id == metric.id && $0.wordCountNeedsSync == true })
                 }
             }
 
@@ -938,7 +954,11 @@ final class CloudUsageDataSyncService: ObservableObject {
                 transcriptionsByKey[transcriptionKey] = transcription
             }
         }
-        guard !allMutations.isEmpty else { return [] }
+        guard !allMutations.isEmpty else {
+            for metric in acknowledgedCountMetrics { metric.wordCountNeedsSync = false }
+            if modelContext.hasChanges { try modelContext.save() }
+            return []
+        }
         let batches = try syncCore.appendChunked(allMutations, domain: .usage)
         for batch in batches {
             for mutation in batch.mutations {
@@ -953,6 +973,7 @@ final class CloudUsageDataSyncService: ObservableObject {
                 }
             }
         }
+        for metric in acknowledgedCountMetrics { metric.wordCountNeedsSync = false }
         try modelContext.save()
         return batches
     }
@@ -1126,12 +1147,12 @@ final class CloudUsageDataSyncService: ObservableObject {
                 metricsByLogicalID[logicalID] = [metric]
             }
             Self.apply(payload, to: metric)
-            if let transcription = Self.preferredTranscription(in: transcriptionsByID[ids.recordID] ?? []) {
-                SessionWordCountMigration.update(metric, from: transcription)
-            }
             metric.syncOriginDeviceID = candidate.envelope.authorDeviceID
             metric.syncModifiedAt = candidate.envelope.createdAt
             metric.syncRevisionID = candidate.envelope.operationID
+            if let transcription = Self.preferredTranscription(in: transcriptionsByID[ids.recordID] ?? []) {
+                SessionWordCountMigration.update(metric, from: transcription)
+            }
             changed = true
         }
 
@@ -1214,7 +1235,7 @@ final class CloudUsageDataSyncService: ObservableObject {
     /// Historical imports did not enforce uniqueness for business UUIDs. Keep
     /// every physical row intact, but deterministically choose the most complete
     /// row whenever the sync protocol needs one logical value.
-    private nonisolated static func preferredTranscription(
+    nonisolated static func preferredTranscription(
         in values: [Transcription]
     ) -> Transcription? {
         values.max { lhs, rhs in

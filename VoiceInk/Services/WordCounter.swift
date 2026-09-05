@@ -32,6 +32,13 @@ struct WordCounter {
         return hanCount + words
     }
 
+    /// Preserve the original word-based convention for enhancement thresholds.
+    static func segmentedWordCount(in text: String) -> Int {
+        let tokenizer = NLTokenizer(unit: .word)
+        tokenizer.string = text
+        return tokenizer.tokens(for: text.startIndex..<text.endIndex).count
+    }
+
     private static func isHan(_ scalar: Unicode.Scalar) -> Bool {
         switch scalar.value {
         case 0x3007, 0x3400...0x4DBF, 0x4E00...0x9FFF, 0xF900...0xFAFF,

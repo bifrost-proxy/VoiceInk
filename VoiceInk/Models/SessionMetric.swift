@@ -10,6 +10,8 @@ final class SessionMetric {
     var wordCount: Int = 0
     // nil identifies counts created before Han-character counting was introduced.
     var wordCountVersion: Int?
+    // Local-only outbox marker, saved atomically with historical count backfill.
+    var wordCountNeedsSync: Bool?
     var audioDuration: TimeInterval = 0
     var transcriptionModelName: String?
     var transcriptionDuration: TimeInterval?

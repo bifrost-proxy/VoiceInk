@@ -54,8 +54,9 @@ final class VoiceInkUITests: XCTestCase {
         // Close the guidance without requesting or changing microphone permissions.
         let closeGuidance = app.dialogs.buttons["xmark"].firstMatch
         if closeGuidance.waitForExistence(timeout: 3) { closeGuidance.click() }
-        app.menuBars.menuBarItems[language == "zh-Hans" ? "窗口" : "Window"].click()
-        app.menuItems["VoiceInk"].firstMatch.click()
+        let windowMenu = app.menuBars.menuBarItems[language == "zh-Hans" ? "窗口" : "Window"]
+        windowMenu.click()
+        windowMenu.menuItems["VoiceInk"].firstMatch.click()
         let overview = app.staticTexts[language == "zh-Hans" ? "概览" : "Overview"].firstMatch
         if overview.waitForExistence(timeout: 3) { overview.click() }
         let button = app.buttons[label]

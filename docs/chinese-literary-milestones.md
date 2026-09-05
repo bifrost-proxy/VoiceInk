@@ -43,3 +43,12 @@ Existing real-model ASR benchmarks are opt-in and were not run: no ASR behavior 
 - Added regression coverage for interruption after a committed 500-row page and retry of the remaining row, and for synchronized re-enhancement after a metric already uses count version 2. All three relevant migration/sync tests passed.
 - The required full local command after review fixes executed 455 Swift Testing tests plus 2 rendering XCTest tests. Ten existing RecorderOverlayPanel tests failed with 16 visibility assertions while macOS reported `CGSSessionScreenIsLocked=Yes`; the remaining tests passed. The earlier unlocked local run and both original PR architecture jobs passed. The updated commit must pass the full arm64/x86_64 CI again before merge. No local UI re-run is claimed while the desktop is locked.
 - Retention startup is unconditional after the backfill attempt. Failed statistics migration cannot disable automatic/zero-retention cleanup for the process lifetime.
+
+## Final recovery and scope checks
+
+- Local history backfill saves an additive optional `wordCountNeedsSync` outbox flag in the same transaction as corrected counts. Sync scans this flag on startup/retry and acknowledges it only after a durable export or an identical existing cloud value. The flag is not part of the sync payload. Remote imports only recount locally, preserving the existing no-echo behavior.
+- Duplicate transcriptions use the existing deterministic preferred-row selector. Short-enhancement decisions retain the original NLTokenizer word count, independently of character-based session statistics.
+- The final required local full command passed: 457 Swift Testing tests in 37 suites plus 2 XCTest rendering tests, zero failures. This includes duplicate/no-echo sync, short-enhancement segmentation, restart without a backfill notification, and outbox acknowledgement. Earlier intermediate sync regressions were fixed before this passing run.
+- The original main-branch physical store was migrated again with the final optional outbox field; nil-to-true persistence and reopening with the original model both passed.
+
+- Final UI verification: English passed in the scoped-menu run; Chinese passed on the observed retry after a transient system SecurityAgent interruption. No keychain or microphone permission was granted. The test scopes the VoiceInk item to the Window menu to avoid hidden namesakes.

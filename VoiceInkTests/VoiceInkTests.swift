@@ -2283,6 +2283,24 @@ struct VoiceInkTests {
         #expect(recounted.wordCount == 10)
         #expect(recounted.wordCountVersion == 2)
 
+        // Simulate process exit after a saved backfill but before its notification.
+        sourceService.setEnabled(false)
+        metric.wordCount = 2
+        metric.wordCountVersion = nil
+        try source.mainContext.save()
+        _ = try SessionWordCountMigration.backfill(in: source.mainContext)
+        #expect(metric.wordCountNeedsSync == true)
+        sourceDefaults.set(true, forKey: CloudSyncSettingsKeys.usageDataSyncEnabled)
+        let restarted = CloudUsageDataSyncService(defaults: sourceDefaults, iCloudDriveRootURL: root)
+        defer { restarted.setEnabled(false) }
+        restarted.start(modelContext: source.mainContext)
+        try await waitForUsageSync(restarted)
+        let recovered = try #require(ModelContext(source).fetch(FetchDescriptor<SessionMetric>()).first)
+        #expect(recovered.wordCount == 10)
+        #expect(recovered.wordCountVersion == 2)
+        #expect(recovered.syncRevisionID != nil)
+        #expect(recovered.wordCountNeedsSync == false)
+
     }
 
     @MainActor

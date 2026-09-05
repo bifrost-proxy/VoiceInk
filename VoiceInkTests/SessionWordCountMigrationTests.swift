@@ -159,6 +159,38 @@ struct SessionWordCountMigrationTests {
         #expect(metric.wordCount == 6)
     }
 
+    @Test func shortEnhancementThresholdRetainsWordSegmentation() {
+        #expect(WordCounter.segmentedWordCount(in: "中国名著") == 2)
+        #expect(WordCounter.count(in: "中国名著") == 4)
+        #expect(WordCounter.segmentedWordCount(in: "one two three") == 3)
+    }
+
+    @MainActor
+    @Test func duplicateHistoryUsesTheCanonicalCompletedRow() throws {
+        let container = try ModelContainer(
+            for: Transcription.self, SessionMetric.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true))
+        let context = ModelContext(container)
+        let old = Transcription(text: "中国", duration: 4)
+        old.transcriptionStatus = "completed"
+        let canonical = Transcription(text: "中国四大名著", duration: 4)
+        canonical.id = old.id
+        canonical.transcriptionStatus = "completed"
+        canonical.syncRevisionID = UUID()
+        canonical.syncModifiedAt = Date()
+        let metric = makeMetric(old.id, count: 1)
+        metric.syncRevisionID = UUID()
+        context.insert(old)
+        context.insert(canonical)
+        context.insert(metric)
+        try context.save()
+        #expect(try SessionWordCountMigration.backfill(in: context) == [old.id])
+        let stored = try #require(ModelContext(container).fetch(FetchDescriptor<SessionMetric>()).first)
+        #expect(stored.wordCount == 6)
+        #expect(stored.wordCountVersion == 2)
+        #expect(stored.wordCountNeedsSync == true)
+    }
+
     private func makeMetric(_ id: UUID, count: Int) -> SessionMetric {
         SessionMetric(
             transcriptionId: id, wordCount: count, audioDuration: 4,

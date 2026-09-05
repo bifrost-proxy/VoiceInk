@@ -67,9 +67,13 @@ enum SessionWordCountMigration {
                 let transcriptionsByID = Dictionary(grouping: transcriptions, by: \.id)
                 var batchIDs: [UUID] = []
                 for metric in legacyMetrics {
-                    if let transcription = transcriptionsByID[metric.transcriptionId]?.first,
+                    if let transcription = CloudUsageDataSyncService.preferredTranscription(
+                        in: transcriptionsByID[metric.transcriptionId] ?? []),
                         update(metric, from: transcription)
                     {
+                        // Only local backfill needs an export marker. Imported
+                        // text is recounted locally without echoing remote edits.
+                        metric.wordCountNeedsSync = true
                         batchIDs.append(metric.transcriptionId)
                     }
                 }
